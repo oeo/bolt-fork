@@ -286,4 +286,40 @@ export class RedisAdapter extends StorageAdapter {
       return data;
     }
   }
+  
+  // custom data storage methods for services like GBT
+  
+  async setCustomData(key: string, value: string, ttl?: number): Promise<void> {
+    this.checkConnection();
+    if (ttl) {
+      await this.redis!.setex(key, ttl, value);
+    } else {
+      await this.redis!.set(key, value);
+    }
+  }
+  
+  async getCustomData(key: string): Promise<string | null> {
+    this.checkConnection();
+    return await this.redis!.get(key);
+  }
+  
+  async deleteCustomData(key: string): Promise<void> {
+    this.checkConnection();
+    await this.redis!.del(key);
+  }
+  
+  async addToSet(key: string, value: string): Promise<void> {
+    this.checkConnection();
+    await this.redis!.sadd(key, value);
+  }
+  
+  async removeFromSet(key: string, value: string): Promise<void> {
+    this.checkConnection();
+    await this.redis!.srem(key, value);
+  }
+  
+  async getSetMembers(key: string): Promise<string[]> {
+    this.checkConnection();
+    return await this.redis!.smembers(key);
+  }
 }

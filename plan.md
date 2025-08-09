@@ -323,11 +323,11 @@ bolt-ts/
 
 ## Phase 3: Mining service
 
-- [ ] implement GetBlockTemplate (GBT) protocol
-  - [ ] create standard block template structure
-  - [ ] template caching and refresh logic
-  - [ ] longpoll support for template updates
-  - [ ] write tests for GBT protocol
+- [x] implement GetBlockTemplate (GBT) protocol
+  - [x] create standard block template structure
+  - [x] template caching and refresh logic with Redis storage
+  - [x] longpoll support for template updates
+  - [x] write tests for GBT protocol
 
 - [x] implement mining service (src/services/mining.ts)
   - [x] continuous mining loop

@@ -602,6 +602,20 @@ export class Blockchain {
   isReady(): boolean {
     return this.isInitialized;
   }
+  
+  /**
+   * get chain configuration
+   */
+  getChainConfig(): ChainConfig {
+    return this.config;
+  }
+  
+  /**
+   * calculate block reward for a given height (public version)
+   */
+  calculateBlockReward(blockHeight: number): bigint {
+    return this.getBlockReward(blockHeight);
+  }
 
   /**
    * cleanup and close storage connection

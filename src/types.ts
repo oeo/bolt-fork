@@ -104,12 +104,52 @@ export interface PeerInfo {
 
 // mining types
 export interface BlockTemplate {
-  previousHash: string;
+  // template identification
+  templateId: string;
+  createdAt: number;
+  expiresAt: number;
+  
+  // block construction data
+  version: number;
   height: number;
-  transactions: Transaction[];
-  difficulty: number;
-  coinbaseValue: bigint;
+  previousHash: string;
+  merkleRootPlaceholder: string;
   timestamp: number;
+  difficulty: number;
+  chainVersionHash: string;
+  
+  // mining data
+  target: string;
+  bits: string;
+  
+  // transaction data
+  transactions: Transaction[];
+  coinbaseTransaction: Transaction;
+  coinbaseValue: bigint; // kept for compatibility
+  totalFees: bigint;
+  blockReward: bigint;
+  
+  // template metadata
+  transactionCount: number;
+  blockSizeBytes: number;
+  sigOpsCount: number;
+  
+  // longpoll support
+  longpollId: string;
+  submitOld: boolean;
+}
+
+export interface BlockSubmission {
+  templateId: string;
+  nonce: number;
+  timestamp?: number;
+  coinbaseNonce?: string;
+}
+
+export interface BlockTemplateRequest {
+  capabilities?: string[];
+  longpollId?: string;
+  maxVersionBits?: number;
 }
 
 export interface MiningJob {

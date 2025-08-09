@@ -207,4 +207,46 @@ export class MemoryAdapter extends StorageAdapter {
     this.checkConnection();
     return this.metadata.get(key) || null;
   }
+  
+  // custom data storage methods
+  private customData: Map<string, string> = new Map();
+  private customSets: Map<string, Set<string>> = new Map();
+  
+  async setCustomData(key: string, value: string, ttl?: number): Promise<void> {
+    this.checkConnection();
+    this.customData.set(key, value);
+    // note: ttl is ignored in memory adapter
+  }
+  
+  async getCustomData(key: string): Promise<string | null> {
+    this.checkConnection();
+    return this.customData.get(key) || null;
+  }
+  
+  async deleteCustomData(key: string): Promise<void> {
+    this.checkConnection();
+    this.customData.delete(key);
+  }
+  
+  async addToSet(key: string, value: string): Promise<void> {
+    this.checkConnection();
+    if (!this.customSets.has(key)) {
+      this.customSets.set(key, new Set());
+    }
+    this.customSets.get(key)!.add(value);
+  }
+  
+  async removeFromSet(key: string, value: string): Promise<void> {
+    this.checkConnection();
+    const set = this.customSets.get(key);
+    if (set) {
+      set.delete(value);
+    }
+  }
+  
+  async getSetMembers(key: string): Promise<string[]> {
+    this.checkConnection();
+    const set = this.customSets.get(key);
+    return set ? Array.from(set) : [];
+  }
 }

@@ -139,6 +139,38 @@ export abstract class StorageAdapter {
    */
   abstract getChainMetadata(key: string): Promise<any>;
   
+  // custom data storage methods for services like GBT
+  
+  /**
+   * set custom data with optional TTL
+   */
+  abstract setCustomData(key: string, value: string, ttl?: number): Promise<void>;
+  
+  /**
+   * get custom data
+   */
+  abstract getCustomData(key: string): Promise<string | null>;
+  
+  /**
+   * delete custom data
+   */
+  abstract deleteCustomData(key: string): Promise<void>;
+  
+  /**
+   * add value to a set
+   */
+  abstract addToSet(key: string, value: string): Promise<void>;
+  
+  /**
+   * remove value from a set
+   */
+  abstract removeFromSet(key: string, value: string): Promise<void>;
+  
+  /**
+   * get all members of a set
+   */
+  abstract getSetMembers(key: string): Promise<string[]>;
+  
   // helper methods
   
   /**
