@@ -63,12 +63,26 @@ const logger = getLogger(__filename);
 
 ```
 src/
-├── core/        # blockchain, blocks, transactions
-├── crypto/      # hashing, addresses, signatures
-├── storage/     # storage adapters
-├── network/     # p2p networking (future)
-├── services/    # mining, sync, metrics (future)
-├── api/         # REST and WebSocket (future)
-├── config/      # constants and configuration
-└── utils/       # logger, currency formatting
+├── core/           # blockchain, blocks, transactions, mempool
+├── crypto/         # hashing, addresses, signatures
+├── storage/        # storage adapters (redis, memory)
+├── services/       # mining, getblocktemplate, metrics
+├── network/        # p2p networking (future)
+├── api/           # REST and WebSocket (future)
+├── config/        # chain configs and constants
+│   └── chains/    # network-specific configurations
+├── utils/         # logger, currency, bigint serialization
+└── types.ts       # all TypeScript interfaces
 ```
+
+## Key components
+
+### Services
+- **GetBlockTemplate** (`services/getblocktemplate.ts`): Mining pool protocol implementation
+- **Mining** (`services/mining.ts`): Internal mining service
+- **Metrics** (`services/metrics.ts`): Prometheus metrics (planned)
+
+### Storage adapters
+- **Redis** (`storage/redis.ts`): Production storage with persistence
+- **Memory** (`storage/memory.ts`): In-memory storage for testing
+- **Abstract** (`storage/adapter.ts`): Base class defining storage interface

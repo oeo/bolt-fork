@@ -13,8 +13,11 @@
 
 ## Current status
 
-Phase 1 complete - Core blockchain implementation with account model, HD addresses, and transaction processing.
-Currently working on Phase 2 - Transaction ecosystem and mempool.
+- ✅ Phase 1: Core foundation (blockchain, storage, cryptography)
+- ✅ Phase 2: Transaction ecosystem (mempool, HD wallets, signatures)
+- ✅ Phase 3: Mining service with GetBlockTemplate (GBT) protocol
+- 🚧 Phase 4: Monitoring and metrics
+- ⏳ Phase 5: P2P networking
 
 ## Quick start
 
@@ -42,9 +45,10 @@ docker-compose down
 - **Account model**: Balance and nonce tracking (no UTXOs)
 - **Address format**: Bitcoin-style base58 addresses with HD key support
 - **HD derivation**: BIP44 path `m/44'/1057'/account'/change/index` (coin type 1057)
-- **Storage**: Redis with swappable adapters
+- **Storage**: Redis with swappable adapters (memory, redis, future: leveldb)
 - **Runtime**: Bun (TypeScript runs directly, no compilation)
-- **Networking**: libp2p with gossipsub
+- **Mining**: GetBlockTemplate (GBT) protocol for mining pool compatibility
+- **Networking**: libp2p with gossipsub (planned)
 
 ## Development
 
@@ -72,10 +76,36 @@ Node operation settings via environment variables:
 - `ENABLE_MINING` - Enable/disable mining
 - `MINER_ADDRESS` - Address for mining rewards
 
+## Mining
+
+Bolt implements the GetBlockTemplate (GBT) protocol for mining pool compatibility:
+
+### Features
+- Standard GBT block template structure
+- Redis-based template caching with automatic expiry
+- Longpoll support for efficient mining operations
+- Mempool monitoring for automatic template refresh
+- Block submission validation
+
+### Mining API
+```typescript
+// Get a block template for mining
+const template = await gbtService.getBlockTemplate();
+
+// Submit a mined block
+const submission = {
+  templateId: template.templateId,
+  nonce: foundNonce,
+  timestamp: template.timestamp
+};
+const result = await gbtService.submitBlock(submission);
+```
+
 ## Testing
 
 ```bash
-bun test              # unit tests
+bun test              # all tests
+bun test:unit         # unit tests only
 bun test:integration  # integration tests
-bun test:e2e         # end-to-end tests
+bun test tests/unit/getblocktemplate.test.ts  # specific test file
 ```

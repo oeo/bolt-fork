@@ -1,6 +1,6 @@
 # bolt blockchain implementation plan
 
-current focus: Phase 3 - mining service and GetBlockTemplate implementation
+current focus: Phase 4 - monitoring and metrics implementation
 
 ## Project file structure
 
@@ -321,13 +321,18 @@ bolt-ts/
   - [x] fee distribution to miners
   - [x] write integration tests for transaction processing
 
-## Phase 3: Mining service
+## Phase 3: Mining service ✅
 
-- [x] implement GetBlockTemplate (GBT) protocol
-  - [x] create standard block template structure
+- [x] implement GetBlockTemplate (GBT) protocol (src/services/getblocktemplate.ts)
+  - [x] create standard block template structure with all GBT fields
   - [x] template caching and refresh logic with Redis storage
+  - [x] automatic template expiry and cleanup mechanisms
+  - [x] mempool change detection for template refresh
   - [x] longpoll support for template updates
-  - [x] write tests for GBT protocol
+  - [x] block submission validation
+  - [x] merkle root calculation for transactions
+  - [x] difficulty target calculation (handles edge cases)
+  - [x] comprehensive tests for GBT protocol (18/18 passing)
 
 - [x] implement mining service (src/services/mining.ts)
   - [x] continuous mining loop
