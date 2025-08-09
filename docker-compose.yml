@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  # redis for storage
+  redis:
+    image: redis:7-alpine
+    container_name: bolt-redis
+    ports:
+      - "7337:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - bolt-network
+
+  # prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: bolt-prometheus
+    ports:
+      - "7338:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - bolt-network
+
+  # loki for logs
+  loki:
+    image: grafana/loki:latest
+    container_name: bolt-loki
+    ports:
+      - "7339:3100"
+    volumes:
+      - ./monitoring/loki.yml:/etc/loki/loki.yml
+      - loki-data:/loki
+    command: -config.file=/etc/loki/loki.yml
+    networks:
+      - bolt-network
+
+  # promtail for log collection
+  promtail:
+    image: grafana/promtail:latest
+    container_name: bolt-promtail
+    volumes:
+      - /var/log:/var/log
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./monitoring/promtail.yml:/etc/promtail/promtail.yml
+    command: -config.file=/etc/promtail/promtail.yml
+    networks:
+      - bolt-network
+
+  # grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: bolt-grafana
+    ports:
+      - "7340:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/dashboard.json:/etc/grafana/provisioning/dashboards/dashboard.json
+      - ./monitoring/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    networks:
+      - bolt-network
+
+  # bolt node (uncomment when ready to run)
+  # bolt:
+  #   build: .
+  #   container_name: bolt-node
+  #   ports:
+  #     - "7333:7333"  # api
+  #     - "7334:7334"  # p2p
+  #     - "7335:7335"  # websocket
+  #     - "7336:7336"  # metrics
+  #   environment:
+  #     - NODE_ENV=development
+  #     - REDIS_URL=redis://redis:6379
+  #     - API_PORT=7333
+  #     - P2P_PORT=7334
+  #     - WS_PORT=7335
+  #     - METRICS_PORT=7336
+  #     - LOG_LEVEL=info
+  #   depends_on:
+  #     - redis
+  #   volumes:
+  #     - ./src:/app/src
+  #     - ./tests:/app/tests
+  #   networks:
+  #     - bolt-network
+
+volumes:
+  redis-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:
+
+networks:
+  bolt-network:
+    driver: bridge

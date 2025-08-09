@@ -1,0 +1,32 @@
+{
+  "name": "bolt-blockchain",
+  "version": "0.1.0",
+  "description": "Bolt - proof-of-work blockchain with account model",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "test:unit": "bun test tests/unit",
+    "test:integration": "bun test tests/integration",
+    "test:bats": "bats tests/bats"
+  },
+  "dependencies": {
+    "@chainsafe/libp2p-gossipsub": "^12.0.0",
+    "@noble/hashes": "^1.3.3",
+    "@noble/secp256k1": "^2.0.0",
+    "@types/elliptic": "^6.4.18",
+    "@types/hdkey": "^2.1.0",
+    "bip39": "^3.1.0",
+    "elliptic": "^6.6.1",
+    "hdkey": "^2.1.0",
+    "ioredis": "^5.3.2",
+    "libp2p": "^1.2.0",
+    "pino": "^9.0.0",
+    "prom-client": "^15.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "pino-pretty": "^13.1.1"
+  }
+}

@@ -1,0 +1,30 @@
+groups:
+  - name: bolt_alerts
+    rules:
+      - alert: NodeOffline
+        expr: up{job="bolt-node"} == 0
+        for: 5m
+        annotations:
+          summary: "Node is offline"
+          description: "The bolt node has been offline for more than 5 minutes"
+
+      - alert: LowPeerCount
+        expr: bolt_peers_connected < 3
+        for: 10m
+        annotations:
+          summary: "Low peer count: {{ $value }}"
+          description: "The node has fewer than 3 connected peers"
+
+      - alert: MempoolBacklog
+        expr: bolt_mempool_size > 1000
+        for: 15m
+        annotations:
+          summary: "Large mempool backlog: {{ $value }} transactions"
+          description: "The mempool has more than 1000 unconfirmed transactions"
+
+      - alert: MiningStalled
+        expr: rate(bolt_blockchain_height[10m]) == 0
+        for: 20m
+        annotations:
+          summary: "No new blocks in 20 minutes"
+          description: "The blockchain has not produced new blocks in 20 minutes"
