@@ -1,39 +1,45 @@
 #!/usr/bin/env bun
 
 import { serve } from 'bun';
-import { getMetrics, initializeMetrics } from '../src/services/metrics';
+import { getMetricsService } from '../src/services/metrics';
 import { getLogger } from '../src/utils/logger';
 
 const logger = getLogger(__filename);
 
 const PORT = parseInt(process.env.METRICS_PORT || '7336');
 
-// Initialize metrics
-initializeMetrics();
+// get metrics service instance
+const metrics = getMetricsService();
 
-// Create HTTP server
+// create http server for prometheus scraping
 const server = serve({
   port: PORT,
   async fetch(request) {
     const url = new URL(request.url);
     
+    // prometheus metrics endpoint
     if (url.pathname === '/metrics') {
-      // Prometheus metrics endpoint
-      const metrics = await getMetrics();
-      return new Response(metrics, {
-        headers: {
-          'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
-          'Cache-Control': 'no-cache'
-        }
-      });
+      try {
+        const metricsData = await metrics.getMetrics();
+        return new Response(metricsData, {
+          headers: {
+            'Content-Type': metrics.getContentType(),
+            'Cache-Control': 'no-cache, no-store, must-revalidate'
+          }
+        });
+      } catch (error) {
+        logger.error('Failed to generate metrics', { error });
+        return new Response('Internal Server Error', { status: 500 });
+      }
     }
     
+    // health check endpoint
     if (url.pathname === '/health') {
-      // Health check endpoint
       return new Response(JSON.stringify({
         status: 'healthy',
         timestamp: new Date().toISOString(),
-        port: PORT
+        port: PORT,
+        service: 'bolt-metrics'
       }), {
         headers: {
           'Content-Type': 'application/json'
@@ -41,15 +47,31 @@ const server = serve({
       });
     }
     
-    // Default response
+    // readiness check endpoint
+    if (url.pathname === '/ready') {
+      return new Response(JSON.stringify({
+        ready: true,
+        timestamp: new Date().toISOString()
+      }), {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+    }
+    
+    // default response
     return new Response(`
-BOLT Blockchain Metrics Server
+bolt blockchain metrics server
 
-Endpoints:
-- GET /metrics - Prometheus metrics
-- GET /health  - Health check
+endpoints:
+  GET /metrics - prometheus metrics
+  GET /health  - health check
+  GET /ready   - readiness check
 
-Server running on port ${PORT}
+prometheus scrape config:
+  - job_name: 'bolt'
+    static_configs:
+      - targets: ['localhost:${PORT}']
     `.trim(), {
       headers: {
         'Content-Type': 'text/plain'
@@ -59,18 +81,24 @@ Server running on port ${PORT}
 });
 
 logger.info(`Metrics server started on port ${PORT}`);
-logger.info(`Prometheus metrics available at: http://localhost:${PORT}/metrics`);
-logger.info(`Health check available at: http://localhost:${PORT}/health`);
+logger.info(`Prometheus metrics: http://localhost:${PORT}/metrics`);
+logger.info(`Health check: http://localhost:${PORT}/health`);
 
-// Graceful shutdown
-process.on('SIGINT', () => {
+// graceful shutdown
+const shutdown = () => {
   logger.info('Shutting down metrics server...');
   server.stop();
   process.exit(0);
+};
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
+// prevent process from exiting
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception', { error });
 });
 
-process.on('SIGTERM', () => {
-  logger.info('Shutting down metrics server...');
-  server.stop();
-  process.exit(0);
+process.on('unhandledRejection', (error) => {
+  logger.error('Unhandled rejection', { error });
 });

@@ -80,9 +80,15 @@ src/
 ### Services
 - **GetBlockTemplate** (`services/getblocktemplate.ts`): Mining pool protocol implementation
 - **Mining** (`services/mining.ts`): Internal mining service
-- **Metrics** (`services/metrics.ts`): Prometheus metrics (planned)
+- **Metrics** (`services/metrics.ts`): Comprehensive Prometheus metrics collection
 
 ### Storage adapters
 - **Redis** (`storage/redis.ts`): Production storage with persistence
 - **Memory** (`storage/memory.ts`): In-memory storage for testing
 - **Abstract** (`storage/adapter.ts`): Base class defining storage interface
+
+### Monitoring and observability
+- **Metrics service**: 60+ Prometheus metrics covering all aspects
+- **Metrics server**: HTTP endpoint for Prometheus scraping
+- **Helper utilities**: Timing and recording utilities
+- **Integration ready**: Hooks for blockchain, mempool, mining, and API metrics

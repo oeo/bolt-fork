@@ -187,6 +187,9 @@ export class Blockchain {
       return poolValidation;
     }
 
+    // track temporary state changes for validation
+    const tempStateChanges = new Map<string, { balance: bigint; nonce: number }>();
+
     // validate each transaction
     for (const tx of transactions) {
       // validate structure
@@ -203,9 +206,14 @@ export class Blockchain {
 
       // validate against account state (skip coinbase)
       if (!tx.isCoinbase()) {
-        const accountState = await this.storage.getAccountState(tx.from!);
+        // get current or temporary state
+        let accountState = tempStateChanges.get(tx.from!);
         if (!accountState) {
-          return { valid: false, error: `Transaction ${tx.hash}: Sender account not found` };
+          const storedState = await this.storage.getAccountState(tx.from!);
+          if (!storedState) {
+            return { valid: false, error: `Transaction ${tx.hash}: Sender account not found` };
+          }
+          accountState = { ...storedState };
         }
 
         const accountValidation = tx.validateAgainstAccount(
@@ -215,6 +223,11 @@ export class Blockchain {
         if (!accountValidation.valid) {
           return { valid: false, error: `Transaction ${tx.hash}: ${accountValidation.error}` };
         }
+
+        // update temporary state
+        accountState.balance -= (tx.amount + tx.fee);
+        accountState.nonce++;
+        tempStateChanges.set(tx.from!, accountState);
       }
     }
 
@@ -585,7 +598,8 @@ export class Blockchain {
       transactions: [coinbase.toObject(), ...transactions],
       difficulty,
       coinbaseValue: blockReward + totalFees,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      chainVersionHash: this.chainVersionHash
     };
   }
 

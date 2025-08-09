@@ -157,3 +157,16 @@ All 18 tests passing including:
 - Fee aggregation
 - Template expiry
 - Cache invalidation
+
+### E2E integration testing
+- Mining pool scenario simulation
+- Template refresh on transaction addition
+- Successful block submission in devnet
+- Integration with BlockchainActor and Miner classes
+
+## Critical fixes from testing phase
+
+1. **Template transaction structure**: Fixed to properly include coinbase transaction in the transactions array
+2. **Nonce handling**: Enhanced to support pending nonce tracking for rapid transaction submission
+3. **Template validation**: Improved to handle edge cases in devnet with difficulty=1
+4. **Mempool integration**: Fixed transaction ordering to respect nonce sequences for same-sender transactions

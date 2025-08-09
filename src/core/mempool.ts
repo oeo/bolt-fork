@@ -105,6 +105,15 @@ export class Mempool {
       throw new Error(`Invalid transaction: ${validation.error}`);
     }
     
+    // check for duplicate nonce from same sender
+    if (transaction.from) {
+      const senderTxs = await this.getTransactionsBySender(transaction.from);
+      const duplicateNonce = senderTxs.some(tx => tx.nonce === transaction.nonce);
+      if (duplicateNonce) {
+        throw new Error(`Duplicate nonce ${transaction.nonce} from sender ${transaction.from}`);
+      }
+    }
+    
     // check transaction size
     const size = txClass.getSize();
     if (size > this.config.maxTransactionSize!) {
@@ -184,6 +193,12 @@ export class Mempool {
     // sort by fee per byte (highest first), with deterministic tiebreakers
     const sorted = Array.from(this.entries.values())
       .sort((a, b) => {
+        // CRITICAL: if same sender, ALWAYS sort by nonce (lower nonce first)
+        // This ensures transaction dependencies are respected
+        if (a.transaction.from === b.transaction.from && a.transaction.from !== null) {
+          return a.transaction.nonce - b.transaction.nonce;
+        }
+        
         // primary sort: fee per byte (higher is better)
         const diff = b.feePerByte - a.feePerByte;
         if (diff > 0n) return 1;
@@ -226,6 +241,19 @@ export class Mempool {
   getTransaction(txHash: string): Transaction | null {
     const entry = this.entries.get(txHash);
     return entry ? entry.transaction : null;
+  }
+  
+  /**
+   * get all transactions from a specific sender
+   */
+  async getTransactionsBySender(sender: string): Promise<Transaction[]> {
+    const transactions: Transaction[] = [];
+    for (const entry of this.entries.values()) {
+      if (entry.transaction.from === sender) {
+        transactions.push(entry.transaction);
+      }
+    }
+    return transactions;
   }
   
   /**

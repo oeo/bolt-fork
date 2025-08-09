@@ -6,10 +6,13 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
+    "metrics": "bun run scripts/metrics-server.ts",
     "test": "bun test",
     "test:unit": "bun test tests/unit",
     "test:integration": "bun test tests/integration",
-    "test:bats": "bats tests/bats"
+    "test:bats": "bats tests/bats",
+    "test:metrics": "bun test tests/unit/metrics.test.ts",
+    "test:gbt": "bun test tests/unit/getblocktemplate.test.ts"
   },
   "dependencies": {
     "@chainsafe/libp2p-gossipsub": "^12.0.0",

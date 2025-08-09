@@ -16,8 +16,9 @@
 - ✅ Phase 1: Core foundation (blockchain, storage, cryptography)
 - ✅ Phase 2: Transaction ecosystem (mempool, HD wallets, signatures)
 - ✅ Phase 3: Mining service with GetBlockTemplate (GBT) protocol
-- 🚧 Phase 4: Monitoring and metrics
-- ⏳ Phase 5: P2P networking
+- ✅ Phase 4: Monitoring and metrics (Prometheus integration)
+- ✅ Phase 4.5: Comprehensive testing (309 tests, 100% passing)
+- 🚧 Phase 5: P2P networking (libp2p)
 
 ## Quick start
 
@@ -35,6 +36,7 @@ docker-compose down
 ## Services
 
 - Redis: `localhost:7337`
+- Metrics: `localhost:7336` (Prometheus endpoint)
 - Prometheus: `localhost:7338`
 - Loki: `localhost:7339`
 - Grafana: `localhost:7340` (admin/admin)
@@ -101,11 +103,31 @@ const submission = {
 const result = await gbtService.submitBlock(submission);
 ```
 
+## Monitoring
+
+Bolt includes comprehensive Prometheus metrics for observability:
+
+### Metrics Categories
+- **Blockchain**: Height, difficulty, blocks mined, validation errors
+- **Mempool**: Size, fees, transaction flow
+- **Mining**: Hash rate, success rate, revenue
+- **GBT**: Template management, longpoll connections
+- **Storage**: Operation latency, errors
+- **Network**: Peer counts, bandwidth (ready for P2P)
+- **API**: Request metrics (ready for REST API)
+
+### Running the Metrics Server
+```bash
+bun run scripts/metrics-server.ts
+# Metrics available at http://localhost:7336/metrics
+```
+
 ## Testing
 
 ```bash
 bun test              # all tests
 bun test:unit         # unit tests only
 bun test:integration  # integration tests
-bun test tests/unit/getblocktemplate.test.ts  # specific test file
+bun test tests/unit/metrics.test.ts   # metrics tests
+bun test tests/unit/getblocktemplate.test.ts  # GBT tests
 ```
