@@ -1,0 +1,73 @@
+services:
+  # Redis for node1
+  node1-redis:
+    image: redis:7-alpine
+    container_name: bolt-node1-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - node1-redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - bolt-node1-network
+    restart: unless-stopped
+
+  # IPFS for node1
+  node1-ipfs:
+    image: ipfs/kubo:latest
+    container_name: bolt-node1-ipfs
+    environment:
+      - IPFS_PROFILE=server
+    ports:
+      - "4001:4001"     # Swarm port
+      - "5001:5001"     # API port
+      - "8080:8080"     # Gateway port
+    volumes:
+      - node1-ipfs-data:/data/ipfs
+    networks:
+      - bolt-node1-network
+      - bolt-shared-network  # for inter-node IPFS communication
+    restart: unless-stopped
+
+  # bolt node1
+  node1:
+    build: 
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: bolt-node1
+    environment:
+      NODE_ID: node1
+      NODE_HOST: bolt-node1
+      NODE_ROLE: miner
+      API_PORT: 7333
+      REDIS_URL: redis://node1-redis:6379
+      MINING_ENABLED: "true"
+      MINER_ADDRESS: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+      MINING_MAX_ITERATIONS: "1000000"
+      MINING_INTERVAL: "10000"
+      ENABLE_IPFS: "true"
+      IPFS_API_URL: "http://node1-ipfs:5001"
+      LOG_LEVEL: info
+    ports:
+      - "7333:7333"  # API
+    volumes:
+      - node1-data:/data
+      - ../../src:/app/src  # for development
+    depends_on:
+      - node1-redis
+      - node1-ipfs
+    networks:
+      - bolt-node1-network
+      - bolt-shared-network  # for inter-node communication
+    restart: unless-stopped
+
+volumes:
+  node1-redis-data:
+  node1-ipfs-data:
+  node1-data:
+
+networks:
+  bolt-node1-network:
+    driver: bridge
+  bolt-shared-network:
+    external: true  # shared network for inter-node communication

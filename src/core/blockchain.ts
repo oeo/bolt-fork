@@ -4,6 +4,7 @@ import { BlockClass, createGenesisBlock } from './block';
 import { TransactionClass, createCoinbaseTransaction, validateTransactionPool } from './transaction';
 import { getDifficultyAdjustment, shouldAdjustDifficulty, DifficultyConfig, calculateCumulativeDifficulty } from './difficulty';
 import { HashAlgorithm, hash } from '../crypto/hash';
+import { ForkManager } from './fork-manager';
 import { getLogger } from '../utils/logger';
 
 const logger = getLogger(__filename);
@@ -19,6 +20,7 @@ export class Blockchain {
   private difficultyConfig: DifficultyConfig;
   private currentHeight: number = -1;
   private isInitialized: boolean = false;
+  private forkManager: ForkManager;
 
   constructor(
     storage: StorageAdapter,
@@ -29,6 +31,7 @@ export class Blockchain {
     this.config = config;
     this.hashAlgorithm = hashAlgorithm;
     this.chainVersionHash = calculateChainVersionHash(config);
+    this.forkManager = new ForkManager();
 
     // setup difficulty config from chain config
     this.difficultyConfig = {
@@ -537,6 +540,217 @@ export class Blockchain {
     } else {
       logger.info('Current chain has higher difficulty, keeping current');
       return false;
+    }
+  }
+
+  /**
+   * handle a competing block that may trigger reorganization
+   */
+  async handleCompetingBlock(block: BlockClass, peerId?: string): Promise<ValidationResult> {
+    logger.info(`Handling competing block ${block.index} with hash ${block.hash}`);
+    
+    // check if this block extends a known fork
+    const fork = this.forkManager.updateFork(block.previousHash, block.toObject(), peerId);
+    
+    if (!fork) {
+      // new fork or orphan block
+      const previousBlock = await this.storage.getBlockByHash(block.previousHash);
+      if (previousBlock) {
+        // new fork starting from our chain
+        const forkBase = await this.storage.getBlock(previousBlock.index);
+        if (forkBase) {
+          const forkCumulativeDifficulty = await this.storage.getCumulativeDifficulty() - 
+            BigInt(forkBase.difficulty) + BigInt(block.difficulty);
+          this.forkManager.addFork(block.toObject(), forkCumulativeDifficulty, peerId);
+        }
+      } else {
+        // orphan block
+        this.forkManager.addOrphan(block.toObject());
+        return { valid: false, error: 'Orphan block, parent not found' };
+      }
+    }
+    
+    // check if this fork should trigger reorganization
+    const ourCumulativeDifficulty = await this.getCumulativeDifficulty();
+    const ourLatestBlock = await this.getLatestBlock();
+    const bestFork = this.forkManager.getBestFork();
+    
+    if (bestFork) {
+      const comparison = this.forkManager.compareFork(
+        bestFork, 
+        this.currentHeight, 
+        ourCumulativeDifficulty,
+        ourLatestBlock?.hash
+      );
+      
+      if (comparison.shouldReorganize) {
+        logger.warn(`Fork should trigger reorganization: work ${bestFork.cumulativeDifficulty} vs ${ourCumulativeDifficulty}, hash ${bestFork.tipHash} vs ${ourLatestBlock?.hash}`);
+        
+        // find common ancestor
+        const commonAncestorHeight = await this.findCommonAncestor(bestFork.blocks);
+        
+        if (commonAncestorHeight >= 0) {
+          // trigger reorganization
+          const success = await this.reorganize(commonAncestorHeight, bestFork.blocks);
+          if (success) {
+            this.forkManager.removeFork(bestFork.tipHash);
+            return { valid: true };
+          }
+        }
+      }
+    }
+    
+    return { valid: false, error: 'Block on competing chain with less work' };
+  }
+  
+  /**
+   * find common ancestor between our chain and fork
+   */
+  async findCommonAncestor(forkBlocks: Block[]): Promise<number> {
+    // start from the earliest block in the fork
+    const earliestForkBlock = forkBlocks[0];
+    
+    // check if fork's previous block exists in our chain
+    const previousBlock = await this.storage.getBlockByHash(earliestForkBlock.previousHash);
+    if (previousBlock) {
+      return previousBlock.index;
+    }
+    
+    // if not found, we need more blocks from the fork to find common ancestor
+    logger.warn('Cannot find common ancestor, need more fork history');
+    return -1;
+  }
+
+  /**
+   * reorganize blockchain from a specific height
+   */
+  async reorganize(commonAncestorHeight: number, newBlocks: Block[]): Promise<boolean> {
+    logger.warn(`Starting chain reorganization from height ${commonAncestorHeight}`);
+    
+    try {
+      // calculate cumulative difficulty of new chain segment
+      let newSegmentDifficulty = 0n;
+      for (const block of newBlocks) {
+        newSegmentDifficulty += BigInt(block.difficulty);
+      }
+      
+      // calculate current chain segment difficulty
+      let currentSegmentDifficulty = 0n;
+      for (let height = commonAncestorHeight + 1; height <= this.currentHeight; height++) {
+        const block = await this.storage.getBlock(height);
+        if (block) {
+          currentSegmentDifficulty += BigInt(block.difficulty);
+        }
+      }
+      
+      // verify new chain has more work
+      if (newSegmentDifficulty <= currentSegmentDifficulty) {
+        logger.warn('New chain does not have more work, aborting reorganization');
+        return false;
+      }
+      
+      // rollback to common ancestor
+      logger.info(`Rolling back from height ${this.currentHeight} to ${commonAncestorHeight}`);
+      
+      // collect all transactions from blocks being removed
+      const removedTransactions: Transaction[] = [];
+      for (let height = this.currentHeight; height > commonAncestorHeight; height--) {
+        const block = await this.storage.getBlock(height);
+        if (block) {
+          // skip coinbase transactions
+          removedTransactions.push(...block.transactions.filter(tx => tx.from !== null));
+        }
+      }
+      
+      // reset chain height
+      this.currentHeight = commonAncestorHeight;
+      
+      // recalculate account states up to common ancestor
+      await this.recalculateStateFromHeight(0, commonAncestorHeight);
+      
+      // apply new blocks
+      logger.info(`Applying ${newBlocks.length} new blocks`);
+      for (const block of newBlocks) {
+        // ensure we have a BlockClass instance
+        const blockClass = block instanceof BlockClass ? block : BlockClass.fromObject(block);
+        const result = await this.addBlock(blockClass);
+        if (!result.valid) {
+          logger.error(`Failed to apply block ${block.index} during reorg: ${result.error}`);
+          throw new Error(`Reorganization failed: ${result.error}`);
+        }
+      }
+      
+      // re-add removed transactions to mempool (if they're still valid)
+      logger.info(`Re-adding ${removedTransactions.length} transactions to mempool`);
+      for (const tx of removedTransactions) {
+        try {
+          // check if transaction is still valid with new state
+          const balance = await this.getBalance(tx.from!);
+          const nonce = await this.getNonce(tx.from!);
+          
+          const txClass = TransactionClass.fromObject(tx);
+          const validation = txClass.validateAgainstAccount(balance, nonce);
+          
+          if (validation.valid) {
+            // re-add to mempool if we have one
+            // note: mempool integration would go here
+            logger.debug(`Re-added transaction ${tx.hash} to mempool`);
+          } else {
+            logger.debug(`Transaction ${tx.hash} no longer valid: ${validation.error}`);
+          }
+        } catch (error) {
+          logger.debug(`Failed to re-add transaction ${tx.hash}`, error);
+        }
+      }
+      
+      logger.info(`Chain reorganization completed, new height=${this.currentHeight}`);
+      return true;
+      
+    } catch (error) {
+      logger.error('Chain reorganization failed', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * recalculate account states from a specific height
+   */
+  private async recalculateStateFromHeight(startHeight: number, endHeight: number): Promise<void> {
+    logger.info(`Recalculating state from height ${startHeight} to ${endHeight}`);
+    
+    // reset all account states
+    const accounts = new Map<string, AccountState>();
+    
+    // process all blocks up to end height
+    for (let height = startHeight; height <= endHeight; height++) {
+      const block = await this.storage.getBlock(height);
+      if (!block) continue;
+      
+      // process each transaction
+      for (const tx of block.transactions) {
+        // handle coinbase
+        if (tx.from === null) {
+          const recipientState = accounts.get(tx.to) || { balance: 0n, nonce: 0 };
+          recipientState.balance += tx.amount;
+          accounts.set(tx.to, recipientState);
+        } else {
+          // handle regular transaction
+          const senderState = accounts.get(tx.from) || { balance: 0n, nonce: 0 };
+          const recipientState = accounts.get(tx.to) || { balance: 0n, nonce: 0 };
+          
+          senderState.balance -= (tx.amount + tx.fee);
+          senderState.nonce = tx.nonce + 1;
+          recipientState.balance += tx.amount;
+          
+          accounts.set(tx.from, senderState);
+          accounts.set(tx.to, recipientState);
+        }
+      }
+    }
+    
+    // update storage with recalculated states
+    for (const [address, state] of accounts) {
+      await this.storage.updateAccountState(address, state);
     }
   }
 

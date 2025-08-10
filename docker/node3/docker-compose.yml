@@ -1,0 +1,69 @@
+services:
+  # Redis for node3
+  node3-redis:
+    image: redis:7-alpine
+    container_name: bolt-node3-redis
+    ports:
+      - "6399:6379"  # different external port to avoid conflicts
+    volumes:
+      - node3-redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - bolt-node3-network
+    restart: unless-stopped
+
+  # IPFS for node3
+  node3-ipfs:
+    image: ipfs/kubo:latest
+    container_name: bolt-node3-ipfs
+    environment:
+      - IPFS_PROFILE=server
+    ports:
+      - "4021:4001"     # Swarm port
+      - "5021:5001"     # API port
+      - "8100:8080"     # Gateway port
+    volumes:
+      - node3-ipfs-data:/data/ipfs
+    networks:
+      - bolt-node3-network
+      - bolt-shared-network  # for inter-node IPFS communication
+    restart: unless-stopped
+
+  # bolt node3 - full node (non-mining)
+  node3:
+    build: 
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: bolt-node3
+    environment:
+      NODE_ID: node3
+      NODE_HOST: bolt-node3
+      NODE_ROLE: full
+      API_PORT: 7333
+      REDIS_URL: redis://node3-redis:6379
+      ENABLE_IPFS: "true"
+      IPFS_API_URL: "http://node3-ipfs:5001"
+      LOG_LEVEL: info
+    ports:
+      - "7353:7333"  # API - different external port
+    volumes:
+      - node3-data:/data
+      - ../../src:/app/src  # for development
+    depends_on:
+      - node3-redis
+      - node3-ipfs
+    networks:
+      - bolt-node3-network
+      - bolt-shared-network  # for inter-node communication
+    restart: unless-stopped
+
+volumes:
+  node3-redis-data:
+  node3-ipfs-data:
+  node3-data:
+
+networks:
+  bolt-node3-network:
+    driver: bridge
+  bolt-shared-network:
+    external: true  # shared network for inter-node communication

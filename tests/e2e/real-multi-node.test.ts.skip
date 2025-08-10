@@ -1,0 +1,463 @@
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { Blockchain } from '../../src/core/blockchain';
+import { Mempool } from '../../src/core/mempool';
+import { BoltNode } from '../../src/network/node';
+import { SyncService } from '../../src/services/sync';
+import { MempoolSync } from '../../src/network/mempool-sync';
+import { PeerManager } from '../../src/network/peer-manager';
+import { NetworkSecurity } from '../../src/network/security';
+import { ApiServer } from '../../src/api/server';
+import { MiningService } from '../../src/services/mining';
+import { createStorage } from '../../src/storage';
+import { config as chainConfig } from '../../src/config/chain';
+import { TransactionClass } from '../../src/core/transaction';
+import { generateAddress } from '../../src/crypto/address';
+import { getLogger } from '../../src/utils/logger';
+
+const logger = getLogger(__filename);
+
+interface TestNode {
+  id: string;
+  blockchain: Blockchain;
+  mempool: Mempool;
+  node: BoltNode;
+  sync: SyncService;
+  mempoolSync: MempoolSync;
+  peerManager: PeerManager;
+  security: NetworkSecurity;
+  api: ApiServer;
+  miner?: MiningService;
+  storage: any;
+  port: number;
+  apiPort: number;
+}
+
+describe('Real Multi-Node E2E Tests', () => {
+  let nodes: TestNode[] = [];
+  const BASE_PORT = 18000;
+  const BASE_API_PORT = 8000;
+  
+  async function createTestNode(
+    id: string,
+    index: number,
+    enableMining: boolean = false,
+    bootstrapPeers: string[] = []
+  ): Promise<TestNode> {
+    const port = BASE_PORT + index;
+    const apiPort = BASE_API_PORT + index;
+    
+    logger.info(`Creating test node ${id} on port ${port}`);
+    
+    // create storage and blockchain
+    const storage = createStorage('memory');
+    await storage.connect();
+    const blockchain = new Blockchain(storage, chainConfig);
+    await blockchain.initialize();
+    
+    // create mempool
+    const mempool = new Mempool(storage, chainConfig);
+    
+    // create p2p node
+    const node = new BoltNode({
+      port,
+      chainConfig,
+      bootstrapPeers,
+      enableDHT: true,
+      enableGossipsub: true
+    });
+    
+    // create network services (these require the node to be passed)
+    const peerManager = new PeerManager({
+      node,
+      maxPeers: 10,
+      minPeers: 1,
+      banDuration: 60000
+    });
+    
+    const security = new NetworkSecurity({
+      node,
+      maxRequestsPerMinute: 100,
+      maxConnectionsPerIp: 5,
+      banDuration: 60000
+    });
+    
+    const sync = new SyncService({
+      blockchain,
+      node,
+      syncBatchSize: 10,
+      syncTimeout: 5000,
+      maxReorgDepth: 100
+    });
+    
+    const mempoolSync = new MempoolSync({
+      mempool,
+      node,
+      syncInterval: 1000,
+      maxTxPerMessage: 10,
+      maxInventorySize: 100
+    });
+    
+    // create api server
+    const api = new ApiServer({
+      port: apiPort,
+      blockchain,
+      mempool,
+      node
+    });
+    
+    // create miner if requested
+    let miner: MiningService | undefined;
+    if (enableMining) {
+      const minerAddress = generateAddress();
+      miner = new MiningService({
+        blockchain,
+        mempool,
+        minerAddress: minerAddress.address,
+        autoStart: false
+      });
+    }
+    
+    return {
+      id,
+      blockchain,
+      mempool,
+      node,
+      sync,
+      mempoolSync,
+      peerManager,
+      security,
+      api,
+      miner,
+      storage,
+      port,
+      apiPort
+    };
+  }
+  
+  async function startNode(node: TestNode): Promise<void> {
+    logger.info(`Starting node ${node.id}`);
+    
+    // start p2p node
+    await node.node.start();
+    
+    // start services
+    await node.sync.start();
+    node.mempoolSync.start();
+    
+    // start api
+    await node.api.start();
+    
+    // start miner if present
+    if (node.miner) {
+      node.miner.start();
+    }
+    
+    logger.info(`Node ${node.id} started successfully`);
+  }
+  
+  async function stopNode(node: TestNode): Promise<void> {
+    logger.info(`Stopping node ${node.id}`);
+    
+    // stop miner
+    if (node.miner) {
+      node.miner.stop();
+    }
+    
+    // stop api
+    await node.api.stop();
+    
+    // stop services
+    node.mempoolSync.stop();
+    node.sync.stop();
+    
+    // stop p2p node
+    await node.node.stop();
+    
+    // close storage
+    await node.storage.close();
+    
+    logger.info(`Node ${node.id} stopped`);
+  }
+  
+  beforeAll(async () => {
+    logger.info('Setting up real multi-node test network...');
+  });
+  
+  afterAll(async () => {
+    logger.info('Tearing down test network...');
+    for (const node of nodes) {
+      try {
+        await stopNode(node);
+      } catch (error) {
+        logger.error(`Error stopping node ${node.id}:`, error);
+      }
+    }
+    nodes = [];
+  });
+  
+  test('should connect multiple nodes via bootstrap', async () => {
+    // create bootstrap node
+    const bootstrap = await createTestNode('bootstrap', 0, false);
+    await startNode(bootstrap);
+    nodes.push(bootstrap);
+    
+    // get bootstrap multiaddr
+    const bootstrapAddrs = await bootstrap.node.getMultiaddrs();
+    expect(bootstrapAddrs.length).toBeGreaterThan(0);
+    
+    // create two more nodes that connect to bootstrap
+    const node1 = await createTestNode('node1', 1, false, bootstrapAddrs);
+    await startNode(node1);
+    nodes.push(node1);
+    
+    const node2 = await createTestNode('node2', 2, false, bootstrapAddrs);
+    await startNode(node2);
+    nodes.push(node2);
+    
+    // wait for peer discovery
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // verify connections
+    const bootstrapPeers = bootstrap.node.getPeers();
+    const node1Peers = node1.node.getPeers();
+    const node2Peers = node2.node.getPeers();
+    
+    logger.info(`Bootstrap peers: ${bootstrapPeers.length}`);
+    logger.info(`Node1 peers: ${node1Peers.length}`);
+    logger.info(`Node2 peers: ${node2Peers.length}`);
+    
+    // each node should have at least 1 peer
+    expect(bootstrapPeers.length).toBeGreaterThanOrEqual(1);
+    expect(node1Peers.length).toBeGreaterThanOrEqual(1);
+    expect(node2Peers.length).toBeGreaterThanOrEqual(1);
+  }, 30000);
+  
+  test('should propagate transactions across network', async () => {
+    // ensure we have nodes from previous test
+    expect(nodes.length).toBeGreaterThanOrEqual(3);
+    
+    const [bootstrap, node1, node2] = nodes;
+    
+    // create test accounts
+    const alice = generateAddress();
+    const bob = generateAddress();
+    
+    // give alice some balance on all nodes
+    const initialBalance = 10_000_000_000n;
+    for (const node of nodes) {
+      await node.storage.updateAccountState(alice.address, {
+        balance: initialBalance,
+        nonce: 0
+      });
+    }
+    
+    // create transaction
+    const tx = new TransactionClass(
+      alice.address,
+      bob.address,
+      1_000_000_000n,
+      0,
+      1_000_000n,
+      Date.now()
+    );
+    await tx.sign(alice.privateKey);
+    
+    // submit transaction to node1
+    await node1.mempool.addTransaction(tx.toObject());
+    
+    // wait for propagation
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // verify transaction is in all mempools
+    expect(bootstrap.mempool.hasTransaction(tx.hash)).toBe(true);
+    expect(node2.mempool.hasTransaction(tx.hash)).toBe(true);
+    
+    logger.info('Transaction successfully propagated to all nodes');
+  }, 10000);
+  
+  test('should sync blockchain when new node joins', async () => {
+    // ensure we have existing nodes
+    expect(nodes.length).toBeGreaterThanOrEqual(3);
+    
+    // mine some blocks on node1
+    const node1 = nodes[1];
+    const minerAddress = generateAddress();
+    
+    // temporarily create a miner for node1
+    const miner = new MiningService({
+      blockchain: node1.blockchain,
+      mempool: node1.mempool,
+      minerAddress: minerAddress.address,
+      autoStart: false
+    });
+    
+    // mine 5 blocks
+    logger.info('Mining 5 blocks on node1...');
+    for (let i = 0; i < 5; i++) {
+      await miner.mineBlock();
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    const node1Height = await node1.blockchain.getHeight();
+    expect(node1Height).toBe(5);
+    
+    // wait for block propagation
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // verify other nodes synced
+    const bootstrapHeight = await nodes[0].blockchain.getHeight();
+    const node2Height = await nodes[2].blockchain.getHeight();
+    
+    expect(bootstrapHeight).toBe(5);
+    expect(node2Height).toBe(5);
+    
+    // now add a new node
+    const bootstrapAddrs = await nodes[0].node.getMultiaddrs();
+    const newNode = await createTestNode('newNode', 3, false, bootstrapAddrs);
+    await startNode(newNode);
+    nodes.push(newNode);
+    
+    // wait for sync
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // verify new node synced the chain
+    const newNodeHeight = await newNode.blockchain.getHeight();
+    expect(newNodeHeight).toBe(5);
+    
+    logger.info('New node successfully synced blockchain');
+  }, 30000);
+  
+  test('should handle competing miners', async () => {
+    // ensure we have nodes
+    expect(nodes.length).toBeGreaterThanOrEqual(3);
+    
+    // create miners for two nodes
+    const miner1Address = generateAddress();
+    const miner2Address = generateAddress();
+    
+    const miner1 = new MiningService({
+      blockchain: nodes[0].blockchain,
+      mempool: nodes[0].mempool,
+      minerAddress: miner1Address.address,
+      autoStart: false
+    });
+    
+    const miner2 = new MiningService({
+      blockchain: nodes[1].blockchain,
+      mempool: nodes[1].mempool,
+      minerAddress: miner2Address.address,
+      autoStart: false
+    });
+    
+    // add some transactions to mine
+    const alice = generateAddress();
+    const bob = generateAddress();
+    
+    await nodes[0].storage.updateAccountState(alice.address, {
+      balance: 100_000_000_000n,
+      nonce: 0
+    });
+    
+    for (let i = 0; i < 5; i++) {
+      const tx = new TransactionClass(
+        alice.address,
+        bob.address,
+        1_000_000_000n,
+        i,
+        1_000_000n,
+        Date.now()
+      );
+      await tx.sign(alice.privateKey);
+      await nodes[0].mempool.addTransaction(tx.toObject());
+    }
+    
+    // wait for mempool sync
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // start both miners
+    logger.info('Starting competing miners...');
+    miner1.start();
+    miner2.start();
+    
+    // let them mine for a bit
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    
+    // stop miners
+    miner1.stop();
+    miner2.stop();
+    
+    // check that all nodes converged to same chain
+    const heights = await Promise.all(nodes.map(n => n.blockchain.getHeight()));
+    const maxHeight = Math.max(...heights);
+    
+    logger.info(`Chain heights: ${heights.join(', ')}`);
+    
+    // all should be at same height (allowing for 1 block difference during propagation)
+    for (const height of heights) {
+      expect(Math.abs(height - maxHeight)).toBeLessThanOrEqual(1);
+    }
+    
+    // verify chain consistency by checking latest block hash
+    if (maxHeight > 0) {
+      const latestBlocks = await Promise.all(
+        nodes.map(n => n.blockchain.getBlockByHeight(maxHeight))
+      );
+      
+      const hashes = latestBlocks.filter(b => b).map(b => b!.hash);
+      if (hashes.length > 1) {
+        // all nodes should have same block at same height
+        const firstHash = hashes[0];
+        for (const hash of hashes) {
+          expect(hash).toBe(firstHash);
+        }
+      }
+    }
+    
+    logger.info('Competing miners reached consensus');
+  }, 30000);
+  
+  test('should handle network partition and recovery', async () => {
+    // this test requires network manipulation which is complex in-process
+    // for now, we'll simulate by disconnecting nodes
+    
+    expect(nodes.length).toBeGreaterThanOrEqual(3);
+    
+    // record initial peer counts
+    const initialPeerCounts = nodes.map(n => n.node.getPeers().length);
+    logger.info(`Initial peer counts: ${initialPeerCounts.join(', ')}`);
+    
+    // simulate partition by stopping node2's p2p layer
+    logger.info('Simulating network partition...');
+    await nodes[2].node.stop();
+    
+    // wait a bit
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // verify node2 is disconnected
+    const node2Peers = nodes[2].node.getPeers();
+    expect(node2Peers.length).toBe(0);
+    
+    // other nodes should detect disconnection
+    const node0Peers = nodes[0].node.getPeers();
+    const node1Peers = nodes[1].node.getPeers();
+    expect(node0Peers.length).toBeLessThan(initialPeerCounts[0]);
+    
+    // restart node2 to simulate recovery
+    logger.info('Recovering from partition...');
+    await nodes[2].node.start();
+    
+    // wait for reconnection
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // verify network reformed
+    const finalPeerCounts = nodes.map(n => n.node.getPeers().length);
+    logger.info(`Final peer counts: ${finalPeerCounts.join(', ')}`);
+    
+    // all nodes should have peers again
+    for (const count of finalPeerCounts) {
+      expect(count).toBeGreaterThan(0);
+    }
+    
+    logger.info('Network recovered from partition');
+  }, 30000);
+});

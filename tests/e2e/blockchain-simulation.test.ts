@@ -118,7 +118,12 @@ class Miner extends BlockchainActor {
     storage: MemoryAdapter
   ) {
     super(name, blockchain, mempool);
-    this.miningService = new MiningService(blockchain, mempool, storage);
+    this.miningService = new MiningService({
+      blockchain,
+      mempool,
+      minerAddress: generateAddress().address,
+      autoStart: false
+    });
   }
   
   async startMining(): Promise<void> {

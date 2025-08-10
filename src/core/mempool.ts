@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { Transaction } from '../types';
 import { StorageAdapter } from '../storage/adapter';
 import { TransactionClass } from './transaction';
@@ -34,13 +35,14 @@ export interface MempoolStats {
 /**
  * mempool manages pending transactions waiting for block inclusion
  */
-export class Mempool {
+export class Mempool extends EventEmitter {
   private storage: StorageAdapter;
   private config: MempoolConfig;
   private entries: Map<string, MempoolEntry>;
   private totalBytes: number;
   
   constructor(storage: StorageAdapter, config: MempoolConfig = {}) {
+    super();
     this.storage = storage;
     this.config = {
       maxSize: config.maxSize || 10000,
@@ -120,7 +122,7 @@ export class Mempool {
       throw new Error(`Transaction too large: ${size} > ${this.config.maxTransactionSize}`);
     }
     
-    // check minimum fee
+    // check minimum fee (ensure size is BigInt for division)
     const feePerByte = transaction.fee / BigInt(size);
     if (feePerByte < this.config.minFeePerByte!) {
       throw new Error(`Fee too low: ${formatWatts(feePerByte)}/byte < ${formatWatts(this.config.minFeePerByte!)}/byte`);
@@ -163,6 +165,9 @@ export class Mempool {
       fee: formatWatts(transaction.fee),
       feePerByte: formatWatts(feePerByte)
     });
+    
+    // emit event for listeners
+    this.emit('transactionAdded', transaction);
   }
   
   /**

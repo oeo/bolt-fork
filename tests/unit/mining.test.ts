@@ -73,7 +73,10 @@ describe('MiningService', () => {
     it('should not start when mining disabled', () => {
       process.env.ENABLE_MINING = 'false';
       
-      miningService = new MiningService(blockchain, mempool);
+      miningService = new MiningService({
+        blockchain,
+        mempool
+      });
       
       expect(miningService.isEnabled()).toBe(false);
     });
@@ -82,7 +85,10 @@ describe('MiningService', () => {
       process.env.ENABLE_MINING = 'true';
       delete process.env.MINER_ADDRESS;
       
-      miningService = new MiningService(blockchain, mempool);
+      miningService = new MiningService({
+        blockchain,
+        mempool
+      });
       
       expect(miningService.isEnabled()).toBe(true);
       // but should not actually mine without address
@@ -93,7 +99,12 @@ describe('MiningService', () => {
       process.env.ENABLE_MINING = 'true';
       process.env.MINER_ADDRESS = miner.address;
       
-      miningService = new MiningService(blockchain, mempool);
+      miningService = new MiningService({
+        blockchain,
+        mempool,
+        minerAddress: miner.address,
+        autoStart: true
+      });
       
       expect(miningService.isEnabled()).toBe(true);
     });
@@ -105,7 +116,14 @@ describe('MiningService', () => {
       process.env.ENABLE_MINING = 'true';
       process.env.MINER_ADDRESS = miner.address;
       
-      miningService = new MiningService(blockchain, mempool);
+      miningService = new MiningService({
+        blockchain,
+        mempool,
+        minerAddress: miner.address,
+        autoStart: true,
+        interval: 100,
+        maxIterations: 1000
+      });
       
       // wait for a block to be mined
       await new Promise(resolve => setTimeout(resolve, 200));
@@ -151,7 +169,14 @@ describe('MiningService', () => {
       process.env.ENABLE_MINING = 'true';
       process.env.MINER_ADDRESS = miner.address;
       
-      miningService = new MiningService(blockchain, mempool);
+      miningService = new MiningService({
+        blockchain,
+        mempool,
+        minerAddress: miner.address,
+        autoStart: true,
+        interval: 100,
+        maxIterations: 10000
+      });
       
       // wait for mining
       await new Promise(resolve => setTimeout(resolve, 200));
@@ -175,7 +200,14 @@ describe('MiningService', () => {
       process.env.MINER_ADDRESS = miner.address;
       process.env.MINING_MAX_ITERATIONS = '1'; // limit iterations
       
-      miningService = new MiningService(blockchain, mempool);
+      miningService = new MiningService({
+        blockchain,
+        mempool,
+        minerAddress: miner.address,
+        autoStart: true,
+        interval: 100,
+        maxIterations: 1
+      });
       
       // wait for mining attempt
       await new Promise(resolve => setTimeout(resolve, 200));
@@ -194,7 +226,14 @@ describe('MiningService', () => {
       process.env.ENABLE_MINING = 'true';
       process.env.MINER_ADDRESS = miner.address;
       
-      miningService = new MiningService(blockchain, mempool);
+      miningService = new MiningService({
+        blockchain,
+        mempool,
+        minerAddress: miner.address,
+        autoStart: true,
+        interval: 100,
+        maxIterations: 10000
+      });
       
       // wait for multiple blocks
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -214,7 +253,14 @@ describe('MiningService', () => {
       process.env.ENABLE_MINING = 'true';
       process.env.MINER_ADDRESS = miner.address;
       
-      miningService = new MiningService(blockchain, mempool);
+      miningService = new MiningService({
+        blockchain,
+        mempool,
+        minerAddress: miner.address,
+        autoStart: true,
+        interval: 100,
+        maxIterations: 10000
+      });
       
       // wait for a block
       await new Promise(resolve => setTimeout(resolve, 200));

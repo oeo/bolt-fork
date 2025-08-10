@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { Blockchain } from '../core/blockchain';
 import { Mempool } from '../core/mempool';
 import { BlockClass } from '../core/block';
@@ -5,6 +6,7 @@ import { createCoinbaseTransaction } from '../core/transaction';
 import { getLogger } from '../utils/logger';
 import { formatWatts } from '../utils/currency';
 import { calculateChainVersionHash } from '../config/chain';
+import { generateAddress } from '../crypto/address';
 
 const logger = getLogger(__filename);
 
@@ -20,7 +22,7 @@ export interface MiningStats {
  * this is a basic miner to keep the network alive during development
  * and early testing. production mining should use external software.
  */
-export class MiningService {
+export class MiningService extends EventEmitter {
   private blockchain: Blockchain;
   private mempool: Mempool;
   private enabled: boolean;
@@ -31,15 +33,31 @@ export class MiningService {
   private stats: MiningStats;
   private isMining: boolean = false;
   
-  constructor(blockchain: Blockchain, mempool: Mempool) {
-    this.blockchain = blockchain;
-    this.mempool = mempool;
+  constructor(options: {
+    blockchain: Blockchain;
+    mempool: Mempool;
+    minerAddress?: string;
+    autoStart?: boolean;
+    interval?: number;
+    maxIterations?: number;
+  }) {
+    super();
+    this.blockchain = options.blockchain;
+    this.mempool = options.mempool;
     
-    // read configuration from environment
-    this.enabled = process.env.ENABLE_MINING === 'true';
-    this.minerAddress = process.env.MINER_ADDRESS;
-    this.interval = parseInt(process.env.MINING_INTERVAL || '30000'); // default 30s
-    this.maxIterations = parseInt(process.env.MINING_MAX_ITERATIONS || '10000'); // very limited
+    // use provided options or read from environment
+    this.enabled = options.autoStart !== undefined ? options.autoStart : process.env.ENABLE_MINING === 'true';
+    
+    // use provided address, env address, or generate a random one
+    this.minerAddress = options.minerAddress || process.env.MINER_ADDRESS;
+    if (!this.minerAddress && this.enabled) {
+      const randomMiner = generateAddress();
+      this.minerAddress = randomMiner.address;
+      logger.info(`Generated random miner address: ${this.minerAddress}`);
+    }
+    
+    this.interval = options.interval || parseInt(process.env.MINING_INTERVAL || '30000'); // default 30s
+    this.maxIterations = options.maxIterations || parseInt(process.env.MINING_MAX_ITERATIONS || '10000'); // very limited
     
     this.stats = {
       blocksFound: 0,
@@ -52,9 +70,9 @@ export class MiningService {
         interval: `${this.interval / 1000}s`,
         maxIterations: this.maxIterations
       });
-      this.start();
-    } else if (this.enabled) {
-      logger.warn('Mining enabled but no MINER_ADDRESS configured');
+      if (options.autoStart) {
+        this.start();
+      }
     }
   }
   
@@ -112,12 +130,13 @@ export class MiningService {
     }
     
     this.isMining = true;
+    let currentHeight = -1;
     
     try {
       const startTime = Date.now();
       
       // get blockchain state
-      const currentHeight = await this.blockchain.getHeight();
+      currentHeight = await this.blockchain.getHeight();
       const height = currentHeight + 1;
       const previousBlock = await this.blockchain.getLatestBlock();
       
@@ -197,13 +216,17 @@ export class MiningService {
           time: `${Date.now() - startTime}ms`,
           nonce: block.nonce
         });
+        
+        // emit event for listeners
+        this.emit('blockMined', block);
       } else {
         logger.debug(`Mining attempt failed after ${this.maxIterations} iterations`);
       }
     } catch (error: any) {
-      logger.error('Mining error', { 
-        error: error.message,
-        stack: error.stack 
+      logger.error(`Mining error: ${error.message || error}`);
+      logger.debug('Mining error details', {
+        stack: error.stack,
+        height: currentHeight + 1
       });
     } finally {
       this.isMining = false;

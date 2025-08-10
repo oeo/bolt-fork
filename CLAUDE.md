@@ -8,3 +8,5 @@
 - When referring to bolt in files like the one pasted below, do it all in lowercase.
 - Don't use emojis
 
+
+- We have a utility for serializing bigints in the src/utils folder.

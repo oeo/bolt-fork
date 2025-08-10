@@ -18,17 +18,39 @@ interface StorageConfig {
 
 /**
  * create a storage adapter based on configuration
+ * accepts either a string type or full config object
  */
-export async function createStorage(config: StorageConfig): Promise<StorageAdapter> {
+export function createStorage(typeOrConfig: StorageType | StorageConfig | any): StorageAdapter {
+  // handle both old and new config formats
+  let config: StorageConfig;
+  
+  if (typeof typeOrConfig === 'string') {
+    config = { type: typeOrConfig };
+  } else if (typeOrConfig.type === 'redis' && (typeOrConfig.host || typeOrConfig.port)) {
+    // new format with direct properties
+    config = {
+      type: 'redis',
+      redis: {
+        host: typeOrConfig.host,
+        port: typeOrConfig.port,
+        db: typeOrConfig.db
+      }
+    };
+  } else {
+    config = typeOrConfig;
+  }
+  
   let adapter: StorageAdapter;
   
   switch (config.type) {
     case 'redis':
       const redisConfig = config.redis || {};
       adapter = new RedisAdapter(
-        redisConfig.host || 'localhost',
-        redisConfig.port || 7337,
-        redisConfig.db || 0
+        redisConfig.host || typeOrConfig.host || 'localhost',
+        redisConfig.port || typeOrConfig.port || 7337,
+        redisConfig.db || typeOrConfig.db || 0,
+        typeOrConfig.keyPrefix || '',
+        typeOrConfig.password
       );
       break;
       
@@ -44,7 +66,6 @@ export async function createStorage(config: StorageConfig): Promise<StorageAdapt
       throw new Error(`Unknown storage type: ${config.type}`);
   }
   
-  await adapter.connect();
   logger.info(`Created ${config.type} storage adapter`);
   
   return adapter;
@@ -53,7 +74,7 @@ export async function createStorage(config: StorageConfig): Promise<StorageAdapt
 /**
  * create storage from environment variables
  */
-export async function createStorageFromEnv(): Promise<StorageAdapter> {
+export function createStorageFromEnv(): StorageAdapter {
   const type = (process.env.STORAGE_TYPE || 'memory') as StorageType;
   
   const config: StorageConfig = {

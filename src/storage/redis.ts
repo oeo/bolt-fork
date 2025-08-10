@@ -2,6 +2,7 @@ import Redis from 'ioredis';
 import { StorageAdapter } from './adapter';
 import { Block, Transaction, AccountState } from '../types';
 import { getLogger } from '../utils/logger';
+import { serialize, deserialize } from '../utils/bigint';
 
 const logger = getLogger(__filename);
 
@@ -13,12 +14,22 @@ export class RedisAdapter extends StorageAdapter {
   private readonly host: string;
   private readonly port: number;
   private readonly db: number;
+  private readonly keyPrefix: string;
+  private readonly password?: string;
   
-  constructor(host: string = 'localhost', port: number = 7337, db: number = 0) {
+  constructor(
+    host: string = 'localhost', 
+    port: number = 7337, 
+    db: number = 0,
+    keyPrefix: string = '',
+    password?: string
+  ) {
     super();
     this.host = host;
     this.port = port;
     this.db = db;
+    this.keyPrefix = keyPrefix;
+    this.password = password;
   }
   
   async connect(): Promise<void> {
@@ -27,6 +38,8 @@ export class RedisAdapter extends StorageAdapter {
         host: this.host,
         port: this.port,
         db: this.db,
+        password: this.password,
+        keyPrefix: this.keyPrefix,
         retryStrategy: (times) => {
           const delay = Math.min(times * 50, 2000);
           logger.warn(`Redis connection retry ${times}, delay ${delay}ms`);
@@ -66,7 +79,7 @@ export class RedisAdapter extends StorageAdapter {
     const multi = this.redis!.multi();
     
     // save block by height
-    multi.set(`block:${block.index}`, JSON.stringify(block));
+    multi.set(`block:${block.index}`, serialize(block));
     
     // save block hash to height mapping
     multi.set(`block:hash:${block.hash}`, block.index.toString());
@@ -75,7 +88,7 @@ export class RedisAdapter extends StorageAdapter {
     const current = await this.getChainHeight();
     if (block.index > current) {
       multi.set('chain:height', block.index.toString());
-      multi.set('chain:latest', JSON.stringify(block));
+      multi.set('chain:latest', serialize(block));
     }
     
     await multi.exec();
@@ -87,7 +100,7 @@ export class RedisAdapter extends StorageAdapter {
     const data = await this.redis!.get(`block:${height}`);
     if (!data) return null;
     
-    return JSON.parse(data);
+    return deserialize(data);
   }
   
   async getBlockByHash(hash: string): Promise<Block | null> {
@@ -103,7 +116,7 @@ export class RedisAdapter extends StorageAdapter {
     const data = await this.redis!.get('chain:latest');
     if (!data) return null;
     
-    return JSON.parse(data);
+    return deserialize(data);
   }
   
   async getBlockRange(start: number, end: number): Promise<Block[]> {
@@ -131,9 +144,9 @@ export class RedisAdapter extends StorageAdapter {
     const data = await this.redis!.get(`account:${address}`);
     if (!data) return null;
     
-    const parsed = JSON.parse(data);
+    const parsed = deserialize(data);
     return {
-      balance: BigInt(parsed.balance),
+      balance: typeof parsed.balance === 'bigint' ? parsed.balance : BigInt(parsed.balance),
       nonce: parsed.nonce
     };
   }
@@ -145,7 +158,7 @@ export class RedisAdapter extends StorageAdapter {
       nonce: state.nonce
     };
     
-    await this.redis!.set(`account:${address}`, JSON.stringify(data));
+    await this.redis!.set(`account:${address}`, serialize(state));
     logger.debug(`Updated account ${address}: balance=${state.balance}, nonce=${state.nonce}`);
   }
   
@@ -176,23 +189,12 @@ export class RedisAdapter extends StorageAdapter {
     const data = await this.redis!.get(`tx:${hash}`);
     if (!data) return null;
     
-    const parsed = JSON.parse(data);
-    return {
-      ...parsed,
-      amount: BigInt(parsed.amount),
-      fee: BigInt(parsed.fee)
-    };
+    return deserialize(data);
   }
   
   async saveTransaction(tx: Transaction): Promise<void> {
     this.checkConnection();
-    const data = {
-      ...tx,
-      amount: tx.amount.toString(),
-      fee: tx.fee.toString()
-    };
-    
-    await this.redis!.set(`tx:${tx.hash}`, JSON.stringify(data));
+    await this.redis!.set(`tx:${tx.hash}`, serialize(tx));
     
     // index by address
     if (tx.from) {
@@ -225,13 +227,7 @@ export class RedisAdapter extends StorageAdapter {
   
   async addToMempool(tx: Transaction): Promise<void> {
     this.checkConnection();
-    const data = {
-      ...tx,
-      amount: tx.amount.toString(),
-      fee: tx.fee.toString()
-    };
-    
-    await this.redis!.hset('mempool', tx.hash, JSON.stringify(data));
+    await this.redis!.hset('mempool', tx.hash, serialize(tx));
     logger.debug(`Added transaction ${tx.hash} to mempool`);
   }
   
@@ -271,7 +267,7 @@ export class RedisAdapter extends StorageAdapter {
   
   async saveChainMetadata(key: string, value: any): Promise<void> {
     this.checkConnection();
-    const data = typeof value === 'object' ? JSON.stringify(value) : value.toString();
+    const data = typeof value === 'object' ? serialize(value) : value.toString();
     await this.redis!.set(`meta:${key}`, data);
   }
   
@@ -281,7 +277,7 @@ export class RedisAdapter extends StorageAdapter {
     if (!data) return null;
     
     try {
-      return JSON.parse(data);
+      return deserialize(data);
     } catch {
       return data;
     }

@@ -266,12 +266,9 @@ export class TransactionClass {
    * get transaction size in bytes (approximate)
    */
   getSize(): number {
-    const obj = {
-      ...this.toObject(),
-      amount: this.amount.toString(),
-      fee: this.fee.toString()
-    };
-    return JSON.stringify(obj).length;
+    // use our bigint serializer
+    const { serialize } = require('../utils/bigint');
+    return serialize(this.toObject()).length;
   }
 
   /**

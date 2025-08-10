@@ -1,0 +1,93 @@
+import { describe, test, expect } from 'bun:test';
+import { BoltNode } from '../../src/network/node';
+import { config as chainConfig } from '../../src/config/chain';
+import { getLogger } from '../../src/utils/logger';
+
+const logger = getLogger(__filename);
+
+describe('Simple Node Connection Test', () => {
+  test('should create and start a single node', async () => {
+    const node = new BoltNode({
+      port: 18500,
+      chainConfig,
+      enableDHT: false,
+      enableGossipsub: false
+    });
+    
+    await node.start();
+    
+    expect(node.isStarted()).toBe(true);
+    
+    const addrs = await node.getMultiaddrs();
+    logger.info(`Node addresses: ${addrs.join(', ')}`);
+    expect(addrs.length).toBeGreaterThan(0);
+    
+    await node.stop();
+    expect(node.isStarted()).toBe(false);
+  }, 10000);
+  
+  test('should connect two nodes directly', async () => {
+    // create first node
+    const node1 = new BoltNode({
+      port: 18501,
+      chainConfig,
+      enableDHT: false,
+      enableGossipsub: false
+    });
+    
+    await node1.start();
+    const node1Addrs = await node1.getMultiaddrs();
+    logger.info(`Node1 addresses: ${node1Addrs.join(', ')}`);
+    
+    // create second node with first node as bootstrap
+    const node2 = new BoltNode({
+      port: 18502,
+      chainConfig,
+      bootstrapPeers: node1Addrs,
+      enableDHT: false,
+      enableGossipsub: false
+    });
+    
+    await node2.start();
+    const node2Addrs = await node2.getMultiaddrs();
+    logger.info(`Node2 addresses: ${node2Addrs.join(', ')}`);
+    
+    // wait for connection
+    logger.info('Waiting for nodes to connect...');
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // check peers
+    const node1Peers = node1.getPeers();
+    const node2Peers = node2.getPeers();
+    
+    logger.info(`Node1 has ${node1Peers.length} peers: ${node1Peers.join(', ')}`);
+    logger.info(`Node2 has ${node2Peers.length} peers: ${node2Peers.join(', ')}`);
+    
+    // try to manually dial if no connection
+    if (node1Peers.length === 0 && node2Peers.length === 0) {
+      logger.info('No automatic connection, trying manual dial...');
+      try {
+        // use localhost address for direct connection
+        const localAddr = node1Addrs.find(addr => addr.includes('127.0.0.1'));
+        if (localAddr) {
+          logger.info(`Dialing ${localAddr}`);
+          await node2.dial(localAddr);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          const afterDialNode1Peers = node1.getPeers();
+          const afterDialNode2Peers = node2.getPeers();
+          logger.info(`After dial - Node1: ${afterDialNode1Peers.length} peers, Node2: ${afterDialNode2Peers.length} peers`);
+        }
+      } catch (error) {
+        logger.error('Manual dial failed:', error);
+      }
+    }
+    
+    expect(node1Peers.length).toBeGreaterThan(0);
+    expect(node2Peers.length).toBeGreaterThan(0);
+    
+    // cleanup
+    await node1.stop();
+    await node2.stop();
+  }, 15000);
+});

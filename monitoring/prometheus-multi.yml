@@ -1,0 +1,35 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # bootstrap node
+  - job_name: 'bolt-bootstrap'
+    static_configs:
+      - targets: ['bolt-bootstrap:9464']
+        labels:
+          node_type: 'bootstrap'
+          
+  # miner nodes
+  - job_name: 'bolt-miners'
+    static_configs:
+      - targets: ['bolt-miner-1:9464']
+        labels:
+          node_type: 'miner'
+          miner_id: '1'
+      - targets: ['bolt-miner-2:9464']
+        labels:
+          node_type: 'miner'
+          miner_id: '2'
+          
+  # full node
+  - job_name: 'bolt-full-node'
+    static_configs:
+      - targets: ['bolt-full-node:9464']
+        labels:
+          node_type: 'full_node'
+          
+  # prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

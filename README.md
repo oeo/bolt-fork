@@ -13,15 +13,48 @@
 
 ## Current status
 
+- ✅ Phase 0: Docker environment setup
 - ✅ Phase 1: Core foundation (blockchain, storage, cryptography)
 - ✅ Phase 2: Transaction ecosystem (mempool, HD wallets, signatures)
 - ✅ Phase 3: Mining service with GetBlockTemplate (GBT) protocol
 - ✅ Phase 4: Monitoring and metrics (Prometheus integration)
-- ✅ Phase 4.5: Comprehensive testing (309 tests, 100% passing)
-- 🚧 Phase 5: P2P networking (libp2p)
+- ✅ Phase 4.5: Comprehensive testing
+- ✅ Phase 5: Multi-node Docker infrastructure with IPFS peer discovery
+- ✅ Phase 6: HTTP peer-to-peer blockchain synchronization
+- ✅ Phase 7: Cumulative proof-of-work consensus mechanism (COMPLETED!)
+- 📋 Phase 8: Production deployment and optimization
+
+**Working features**:
+- **CONSENSUS WORKING!** All nodes converge on the same chain
+- Cumulative proof-of-work consensus mechanism
+- Automatic chain reorganization to follow most work
+- Deterministic tie-breaker for equal-work chains
+- Fork detection and management (ForkManager)
+- Multi-node mining with separate Docker environments
+- IPFS-based peer discovery
+- HTTP-based blockchain synchronization
+- Automatic peer-to-peer sync service
+- BigInt-safe Redis storage
+- Block broadcasting between nodes
+
+**Test results (2025-08-10)**:
+- 3 nodes successfully converged on identical chain
+- All nodes at same height with identical block hashes
+- Fork resolution working correctly
+- Chain reorganization functioning as expected
+
+**Minor issues**:
+- Peer cumulative difficulty occasionally shows as "undefined" in logs (doesn't affect consensus)
+- Timestamp validation sometimes fails during reorg (self-corrects)
+
+**Next priority**:
+- Performance optimization and stress testing
+- Deep reorganization limits and checkpoint system
+- Production deployment preparation
 
 ## Quick start
 
+### Single node development
 ```bash
 # start the development environment
 docker-compose up -d
@@ -33,24 +66,108 @@ docker-compose logs -f
 docker-compose down
 ```
 
+### Multi-node testing
+```bash
+# start all 3 nodes with orchestration script
+./scripts/test-multinode.sh start
+
+# check node status
+./scripts/test-multinode.sh status
+
+# view logs from all nodes
+./scripts/test-multinode.sh logs
+
+# stop all nodes
+./scripts/test-multinode.sh stop
+```
+
 ## Services
 
+### Infrastructure
 - Redis: `localhost:7337`
-- Metrics: `localhost:7336` (Prometheus endpoint)
 - Prometheus: `localhost:7338`
 - Loki: `localhost:7339`
 - Grafana: `localhost:7340` (admin/admin)
 
+### Bolt services (single node)
+- API Server: `localhost:7333` (REST API + Peer Communication)
+- IPFS Node: `localhost:5001` (Peer Discovery Only)
+- Metrics: `localhost:7336` (Prometheus endpoint)
+
+### Multi-node setup
+- Node 1: API `localhost:7333`, IPFS `localhost:5001`
+- Node 2: API `localhost:7343`, IPFS `localhost:5011`  
+- Node 3: API `localhost:7353`, IPFS `localhost:5021`
+
 ## Architecture
 
+### Blockchain
 - **Consensus**: Proof-of-work with cumulative difficulty (highest work wins)
 - **Account model**: Balance and nonce tracking (no UTXOs)
 - **Address format**: Bitcoin-style base58 addresses with HD key support
 - **HD derivation**: BIP44 path `m/44'/1057'/account'/change/index` (coin type 1057)
 - **Storage**: Redis with swappable adapters (memory, redis, future: leveldb)
-- **Runtime**: Bun (TypeScript runs directly, no compilation)
+
+### Simplified Networking Architecture
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│     node-1      │    │     node-2      │    │     node-3      │
+│                 │    │                 │    │                 │
+│ ┌─────────────┐ │    │ ┌─────────────┐ │    │ ┌─────────────┐ │
+│ │ HTTP Server │◄┼────┼─┤ HTTP Client │ │    │ │ HTTP Client │ │
+│ │ Port 7333   │ │    │ │             │◄┼────┼─┤ Port 7353   │ │
+│ └─────────────┘ │    │ └─────────────┘ │    │ └─────────────┘ │
+│        │        │    │        │        │    │        │        │
+│ ┌─────────────┐ │    │ ┌─────────────┐ │    │ ┌─────────────┐ │
+│ │ IPFS Client │ │    │ │ IPFS Client │ │    │ │ IPFS Client │ │
+│ │  Discovery  │ │────┼──│  Discovery  │ │────┼──│  Discovery  │ │
+│ └─────────────┘ │    │ └─────────────┘ │    │ └─────────────┘ │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         └───────────────────────┼───────────────────────┘
+                                 │
+                    ┌─────────────────┐
+                    │  IPFS Network   │
+                    │ (Peer Discovery)│
+                    └─────────────────┘
+```
+
+- **IPFS Layer**: Used ONLY for peer discovery and endpoint announcements
+- **HTTP Layer**: Direct peer-to-peer blockchain data exchange (blocks, transactions, sync)
+- **Peer Discovery**: Nodes announce their HTTP endpoints via IPFS pubsub
+- **Data Exchange**: All blockchain data flows over standard HTTP between discovered peers
+- **Benefits**: Simple debugging, reliable connections, faster sync, clear separation of concerns
+### Mining
 - **Mining**: GetBlockTemplate (GBT) protocol for mining pool compatibility
-- **Networking**: libp2p with gossipsub (planned)
+- **Runtime**: Bun (TypeScript runs directly, no compilation)
+
+## Features
+
+### Completed
+- Full proof-of-work blockchain with account model
+- Transaction signing and verification (secp256k1)
+- HD wallet support (BIP32/BIP39/BIP44)
+- Mining with GetBlockTemplate protocol
+- Comprehensive metrics (60+ Prometheus metrics)
+- IPFS-based peer discovery system
+- REST API with full blockchain access
+- Docker development environment
+- 330+ unit and integration tests
+
+### API endpoints
+See [docs/api.md](docs/api.md) for full API documentation.
+
+Key endpoints:
+- `GET /blockchain/info` - Chain statistics
+- `POST /transactions` - Submit transactions
+- `GET /accounts/:address/balance` - Check balances
+- `GET /network/status` - P2P network info
+
+### Demo scripts
+- `scripts/demo.ts` - Basic blockchain demo
+- `scripts/p2p-demo.ts` - Multi-node P2P simulation
+- `scripts/generate-wallet.ts` - HD wallet generation
 
 ## Development
 

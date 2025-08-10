@@ -39,8 +39,36 @@
   - Nonce tracking with pending transactions
   - Mining pool GBT integration
 
+### Multi-node integration tests
+- Each node runs in separate docker-compose file to avoid port conflicts
+- Individual node directories: `docker/node1/`, `docker/node2/`, `docker/node3/`
+- Each node has its own Redis and IPFS instance
+- Test scripts orchestrate multi-node scenarios
+- Validates IPFS peer discovery and HTTP data exchange
+
+**Working features:**
+- Nodes successfully start and discover each other via IPFS
+- Mining nodes produce valid blocks independently
+- BigInt serialization working correctly in Redis storage
+- Peer discovery announcements via IPFS pubsub
+- HTTP synchronization between nodes
+- Block propagation across network
+- Automatic sync service
+
+**Known issues:**
+- Nodes create competing forks when mining simultaneously
+- Each miner stays on its own fork (no consensus)
+- Missing cumulative difficulty-based chain selection
+
+**Needs testing after consensus implementation:**
+- Fork resolution between multiple miners
+- Chain reorganization mechanics
+- Convergence time measurement
+- Deep reorganization limits
+- Attack scenario simulations
+
 ### BATS tests (`tests/bats/`)
-- Deployment testing
+- Deployment testing  
 - Docker container orchestration
 - System-level validation
 

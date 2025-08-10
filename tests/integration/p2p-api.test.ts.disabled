@@ -1,0 +1,239 @@
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { BoltNode } from '../../src/network/node';
+import { ApiServer } from '../../src/api/server';
+import { Blockchain } from '../../src/core/blockchain';
+import { Mempool } from '../../src/core/mempool';
+import { createStorage } from '../../src/storage';
+import { config as chainConfig } from '../../src/config/chain';
+import { generateAddress } from '../../src/crypto/address';
+import { TransactionClass } from '../../src/core/transaction';
+
+describe('P2P and API Integration', () => {
+  let node: BoltNode;
+  let apiServer: ApiServer;
+  let blockchain: Blockchain;
+  let mempool: Mempool;
+  let storage: any;
+
+  beforeAll(async () => {
+    // create storage
+    storage = createStorage('memory');
+
+    // create blockchain
+    blockchain = new Blockchain(storage, chainConfig);
+    await blockchain.initialize();
+
+    // create mempool
+    mempool = new Mempool(storage, chainConfig);
+
+    // create p2p node
+    node = new BoltNode({
+      port: 17334, // test port
+      chainConfig,
+      enableDHT: false,
+      enableGossipsub: true,
+      bootstrapNodes: [] // no bootstrap for test
+    });
+
+    // create api server
+    apiServer = new ApiServer({
+      port: 17333, // test port
+      blockchain,
+      mempool,
+      node,
+      storage
+    });
+
+    // start services
+    await node.start();
+    await apiServer.start();
+  });
+
+  afterAll(async () => {
+    await apiServer.stop();
+    await node.stop();
+    await storage.close();
+  });
+
+  test('should start P2P node successfully', () => {
+    expect(node.isStarted()).toBe(true);
+    const stats = node.getStats();
+    expect(stats.peerId).toBeDefined();
+    expect(stats.multiaddrs.length).toBeGreaterThan(0);
+  });
+
+  test('should expose API endpoints', async () => {
+    const response = await fetch('http://localhost:17333/health');
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.status).toBe('ok');
+  });
+
+  test('should get blockchain info via API', async () => {
+    const response = await fetch('http://localhost:17333/blockchain/info');
+    expect(response.status).toBe(200);
+    const info = await response.json();
+    
+    expect(info.network).toBe(chainConfig.name);
+    expect(info.height).toBe(0); // genesis only
+    expect(info.difficulty).toBeDefined();
+    expect(info.targetBlockTime).toBe(chainConfig.targetBlockTime);
+  });
+
+  test('should get network status via API', async () => {
+    const response = await fetch('http://localhost:17333/network/status');
+    expect(response.status).toBe(200);
+    const status = await response.json();
+    
+    expect(status.peerId).toBeDefined();
+    expect(status.multiaddrs).toBeInstanceOf(Array);
+    expect(status.connectedPeers).toBe(0); // no peers in test
+    expect(status.blockHeight).toBe(0);
+  });
+
+  test('should get mempool info via API', async () => {
+    const response = await fetch('http://localhost:17333/mempool');
+    expect(response.status).toBe(200);
+    const mempoolInfo = await response.json();
+    
+    expect(mempoolInfo.size).toBe(0);
+    expect(mempoolInfo.bytes).toBe(0);
+    expect(mempoolInfo.totalFees).toBeDefined();
+  });
+
+  test('should submit transaction via API', async () => {
+    // create a test account with balance
+    const alice = generateAddress();
+    const bob = generateAddress();
+    
+    await storage.updateAccountState(alice.address, {
+      balance: 1_000_000_000n, // 10 BOLT
+      nonce: 0
+    });
+
+    // create transaction
+    const tx = new TransactionClass(
+      alice.address,
+      bob.address,
+      100_000_000n, // 1 BOLT
+      1_000_000n, // 0.01 BOLT fee
+      0,
+      Date.now()
+    );
+    await tx.sign(alice.privateKey);
+
+    // submit via API
+    const response = await fetch('http://localhost:17333/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(tx.toObject())
+    });
+
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.accepted).toBe(true);
+    expect(result.hash).toBe(tx.hash);
+
+    // verify in mempool
+    const mempoolTx = mempool.getTransaction(tx.hash);
+    expect(mempoolTx).toBeDefined();
+  });
+
+  test('should get account balance via API', async () => {
+    const alice = generateAddress();
+    
+    await storage.updateAccountState(alice.address, {
+      balance: 5_000_000_000n, // 50 BOLT
+      nonce: 2
+    });
+
+    const response = await fetch(`http://localhost:17333/accounts/${alice.address}/balance`);
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    
+    expect(data.address).toBe(alice.address);
+    expect(data.balance).toBe('5000000000');
+    expect(data.formatted).toBe('50 BOLT');
+  });
+
+  test('should get account nonce via API', async () => {
+    const alice = generateAddress();
+    
+    await storage.updateAccountState(alice.address, {
+      balance: 1_000_000_000n,
+      nonce: 5
+    });
+
+    const response = await fetch(`http://localhost:17333/accounts/${alice.address}/nonce`);
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    
+    expect(data.address).toBe(alice.address);
+    expect(data.nonce).toBe(5);
+  });
+
+  test('should handle block broadcast events', (done) => {
+    const testBlock = {
+      index: 1,
+      hash: 'testhash',
+      previousHash: 'prevhash',
+      timestamp: Date.now(),
+      transactions: [],
+      difficulty: 1,
+      nonce: 0,
+      merkleRoot: 'merkle',
+      chainVersionHash: 'chain'
+    };
+
+    node.once('block', (block) => {
+      expect(block).toEqual(testBlock);
+      done();
+    });
+
+    // simulate receiving a block
+    node.emit('block', testBlock);
+  });
+
+  test('should handle transaction broadcast events', (done) => {
+    const testTx = {
+      hash: 'txhash',
+      from: 'address1',
+      to: 'address2',
+      amount: 100_000_000n,
+      fee: 1_000_000n,
+      nonce: 0,
+      timestamp: Date.now()
+    };
+
+    node.once('transaction', (tx) => {
+      expect(tx).toEqual(testTx);
+      done();
+    });
+
+    // simulate receiving a transaction
+    node.emit('transaction', testTx);
+  });
+
+  test('should get peers list via API', async () => {
+    const response = await fetch('http://localhost:17333/peers');
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    
+    expect(data.peers).toBeInstanceOf(Array);
+    expect(data.count).toBe(0); // no peers in isolated test
+  });
+
+  test('should handle API errors gracefully', async () => {
+    // request non-existent block
+    const response = await fetch('http://localhost:17333/blocks/999999');
+    expect(response.status).toBe(500);
+    const error = await response.json();
+    expect(error.error).toContain('Block not found');
+  });
+
+  test('should handle CORS headers', async () => {
+    const response = await fetch('http://localhost:17333/health');
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(response.headers.get('Access-Control-Allow-Methods')).toContain('GET');
+  });
+});
