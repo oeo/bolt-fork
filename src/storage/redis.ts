@@ -72,6 +72,36 @@ export class RedisAdapter extends StorageAdapter {
     logger.warn('Cleared all data from Redis');
   }
   
+  async getStorageStats(): Promise<{
+    used: number;
+    keys: number;
+    type: string;
+  }> {
+    this.checkConnection();
+    
+    try {
+      // get memory info from redis
+      const info = await this.redis!.info('memory');
+      const memoryUsed = info.match(/used_memory:(\d+)/)?.[1] || '0';
+      
+      // get key count
+      const dbSize = await this.redis!.dbsize();
+      
+      return {
+        used: parseInt(memoryUsed),
+        keys: dbSize,
+        type: 'redis'
+      };
+    } catch (error) {
+      logger.error('Failed to get Redis storage stats', error);
+      return {
+        used: 0,
+        keys: 0,
+        type: 'redis'
+      };
+    }
+  }
+  
   // block operations
   
   async saveBlock(block: Block): Promise<void> {

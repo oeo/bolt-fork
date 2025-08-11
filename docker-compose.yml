@@ -1,5 +1,5 @@
 services:
-  # shared redis for all nodes
+  # redis for storage
   redis:
     image: redis:7-alpine
     container_name: bolt-redis
@@ -12,99 +12,116 @@ services:
       - bolt-network
     restart: unless-stopped
 
-  # node 1 - bootstrap/miner
-  node1:
+  # single bolt node (full node by default)
+  bolt:
     build: .
-    container_name: bolt-node1
+    container_name: bolt-node
+    env_file:
+      - .env
     environment:
-      NODE_ID: node1
-      NODE_HOST: bolt-node1
-      NODE_ROLE: miner
-      API_PORT: 7333
+      NODE_ID: ${NODE_ID:-primary}
+      NODE_HOST: bolt-node
+      BOLT_NETWORK: ${BOLT_NETWORK:-testnet}
+      API_PORT: ${API_PORT:-7333}
       REDIS_URL: redis://redis:6379
-      MINING_ENABLED: "true"
-      MINER_ADDRESS: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-      MINING_MAX_ITERATIONS: "1000000"
-      MINING_INTERVAL: "10000"
-      ENABLE_IPFS: "true"
-      LOG_LEVEL: info
+      MINING_ENABLED: ${MINING_ENABLED:-true}
+      MINER_ADDRESS: ${MINER_ADDRESS:-1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa}
+      MINING_MAX_ITERATIONS: ${MINING_MAX_ITERATIONS:-1000000}
+      MINING_INTERVAL: ${MINING_INTERVAL:-10000}
+      ENABLE_IPFS: ${ENABLE_IPFS:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_DIR: /app/logs
     ports:
       - "7333:7333"  # API
+      - "7336:7336"  # Metrics
       - "5001:5001"  # IPFS API
       - "4001:4001"  # IPFS Swarm
     volumes:
-      - node1-data:/data
-      - node1-ipfs:/ipfs
+      - bolt-data:/data
+      - bolt-ipfs:/ipfs
+      - ./logs:/app/logs
       - ./src:/app/src  # for development
     depends_on:
       - redis
     networks:
       - bolt-network
+    restart: unless-stopped
 
-  # node 2 - miner  
-  node2:
-    build: .
-    container_name: bolt-node2
-    environment:
-      NODE_ID: node2
-      NODE_HOST: bolt-node2
-      NODE_ROLE: miner
-      API_PORT: 7333
-      REDIS_URL: redis://redis:6379
-      MINING_ENABLED: "true"
-      MINER_ADDRESS: "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
-      MINING_MAX_ITERATIONS: "1000000"
-      MINING_INTERVAL: "10000"
-      ENABLE_IPFS: "true"
-      LOG_LEVEL: info
-    ports:
-      - "7343:7333"  # API
-      - "5011:5001"  # IPFS API
-      - "4011:4001"  # IPFS Swarm
+  # prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: bolt-prometheus
     volumes:
-      - node2-data:/data
-      - node2-ipfs:/ipfs
-      - ./src:/app/src
-    depends_on:
-      - redis
-      - node1
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
     networks:
       - bolt-network
+    restart: unless-stopped
 
-  # node 3 - full node (non-mining)
-  node3:
-    build: .
-    container_name: bolt-node3
-    environment:
-      NODE_ID: node3
-      NODE_HOST: bolt-node3
-      NODE_ROLE: full
-      API_PORT: 7333
-      REDIS_URL: redis://redis:6379
-      ENABLE_IPFS: "true"
-      LOG_LEVEL: info
-    ports:
-      - "7353:7333"  # API
-      - "5021:5001"  # IPFS API
-      - "4021:4001"  # IPFS Swarm
+  # grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: bolt-grafana
     volumes:
-      - node3-data:/data
-      - node3-ipfs:/ipfs
-      - ./src:/app/src
-    depends_on:
-      - redis
-      - node1
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=bolt123
+      - GF_INSTALL_PLUGINS=
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
     networks:
       - bolt-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # loki for log aggregation
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: bolt-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki.yml:/etc/loki/local-config.yaml
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - bolt-network
+    restart: unless-stopped
+
+  # promtail for log shipping
+  promtail:
+    image: grafana/promtail:latest
+    container_name: bolt-promtail
+    volumes:
+      - ./monitoring/promtail.yml:/etc/promtail/config.yml
+      - ./logs:/var/log/bolt:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - bolt-network
+    depends_on:
+      - loki
+    restart: unless-stopped
 
 volumes:
   redis-data:
-  node1-data:
-  node1-ipfs:
-  node2-data:
-  node2-ipfs:
-  node3-data:
-  node3-ipfs:
+  bolt-data:
+  bolt-ipfs:
+  prometheus-data:
+  grafana-data:
+  loki-data:
 
 networks:
   bolt-network:

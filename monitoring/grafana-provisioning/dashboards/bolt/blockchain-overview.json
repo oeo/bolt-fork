@@ -1,0 +1,286 @@
+{
+  "id": null,
+  "uid": "bolt-overview",
+  "title": "Blockchain Overview",
+  "tags": ["bolt", "blockchain"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1,
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "type": "stat",
+      "title": "Block Height",
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "bolt_blockchain_height",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null}
+            ]
+          },
+          "unit": "none",
+          "decimals": 0
+        }
+      }
+    },
+    {
+      "id": 2,
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "type": "stat",
+      "title": "Mining Difficulty",
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "bolt_blockchain_difficulty",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "yellow", "value": null}
+            ]
+          },
+          "unit": "none",
+          "decimals": 0
+        }
+      }
+    },
+    {
+      "id": 3,
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "type": "stat",
+      "title": "Hash Rate",
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "bolt_mining_hash_rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "blue", "value": null}
+            ]
+          },
+          "unit": "Hs",
+          "decimals": 0
+        }
+      }
+    },
+    {
+      "id": 4,
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "type": "stat",
+      "title": "Connected Peers",
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "bolt_network_peers_connected",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "green", "value": 3}
+            ]
+          },
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "type": "timeseries",
+      "title": "Block Production",
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(bolt_blocks_mined_total[5m]) * 60",
+          "legendFormat": "Blocks/min",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {"mode": "none", "group": "A"},
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {"type": "linear"},
+            "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "unit": "blocks/min"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "type": "timeseries",
+      "title": "Mining Performance",
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "bolt_mining_hash_rate",
+          "legendFormat": "Hash Rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "opacity"
+          },
+          "unit": "Hs"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 12},
+      "type": "stat",
+      "title": "Mempool Size",
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "bolt_mempool_size",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 100},
+              {"color": "red", "value": 500}
+            ]
+          },
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 12},
+      "type": "stat",
+      "title": "Avg Block Size",
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "bolt_block_size_bytes_sum / bolt_block_size_bytes_count / 1024",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "KiB",
+          "decimals": 2,
+          "noValue": "0"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 12},
+      "type": "stat",
+      "title": "Avg Block Time",
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "bolt_mining_time_seconds_sum / bolt_mining_time_seconds_count",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "noValue": "0"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "type": "timeseries",
+      "title": "Transaction Activity",
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(bolt_mempool_transactions_added_total[5m]) * 60",
+          "legendFormat": "Added to Mempool",
+          "refId": "A"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(bolt_transaction_size_bytes_count[5m]) * 60",
+          "legendFormat": "Confirmed in Blocks",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "opacity"
+          },
+          "unit": "tx/min",
+          "noValue": "0"
+        }
+      }
+    }
+  ]
+}

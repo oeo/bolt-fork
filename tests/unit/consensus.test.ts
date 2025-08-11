@@ -414,4 +414,168 @@ describe('consensus mechanism', () => {
       expect(equalWork).toBe(false); // keep current when equal
     });
   });
+  
+  describe('median time validation during reorganization', () => {
+    let blockchain: Blockchain;
+    let storage: MemoryAdapter;
+    const chainVersionHash = calculateChainVersionHash(testnet);
+    const miner1Address = generateAddress().address;
+    const miner2Address = generateAddress().address;
+    
+    beforeEach(async () => {
+      storage = new MemoryAdapter();
+      await storage.connect();
+      blockchain = new Blockchain(storage, testnet);
+      await blockchain.initialize();
+    });
+    
+    test('should validate median time during chain reorganization', async () => {
+      // build a chain of 5 blocks
+      const genesis = await blockchain.getBlock(0);
+      expect(genesis).toBeDefined();
+      
+      let previousHash = genesis!.hash;
+      const baseTimestamp = Date.now();
+      
+      // create main chain blocks with proper timestamps
+      for (let i = 1; i <= 5; i++) {
+        const coinbase = createCoinbaseTransaction(miner1Address, testnet.initialReward, 0n);
+        const block = new BlockClass(
+          i,
+          baseTimestamp + (i * 1000), // increasing timestamps
+          previousHash,
+          [coinbase],
+          testnet.initialDifficulty,
+          chainVersionHash,
+          'miner1'
+        );
+        block.mine();
+        
+        const result = await blockchain.addBlock(block);
+        if (!result.valid) {
+          console.log(`Block ${i} validation failed:`, result.error);
+        }
+        expect(result.valid).toBe(true);
+        previousHash = block.hash;
+      }
+      
+      // create competing fork from block 3 with 3 blocks (total height 6)
+      const block3 = await blockchain.getBlock(3);
+      expect(block3).toBeDefined();
+      
+      const forkBlocks: BlockClass[] = [];
+      previousHash = block3!.hash;
+      
+      // create fork blocks with valid median time
+      for (let i = 4; i <= 6; i++) {
+        const coinbase = createCoinbaseTransaction(miner2Address, testnet.initialReward, 0n);
+        const block = new BlockClass(
+          i,
+          baseTimestamp + (i * 1100), // slightly different timestamps but still valid
+          previousHash,
+          [coinbase],
+          testnet.initialDifficulty,
+          chainVersionHash,
+          'miner2'
+        );
+        block.mine();
+        forkBlocks.push(block);
+        previousHash = block.hash;
+      }
+      
+      // trigger reorganization with the fork
+      const reorgResult = await blockchain.reorganize(3, forkBlocks.map(b => b.toObject()));
+      
+      // reorganization should succeed with valid median times
+      expect(reorgResult).toBe(true);
+      
+      // verify the chain now has height 6
+      const currentHeight = await blockchain.getHeight();
+      expect(currentHeight).toBe(6);
+      
+      // verify the tip is from the fork
+      const tip = await blockchain.getLatestBlock();
+      expect(tip?.hash).toBe(forkBlocks[2].hash);
+    });
+    
+    test('should reject reorganization with invalid median time', async () => {
+      // build a chain of 5 blocks
+      const genesis = await blockchain.getBlock(0);
+      expect(genesis).toBeDefined();
+      
+      let previousHash = genesis!.hash;
+      const baseTimestamp = Date.now();
+      
+      // create main chain blocks
+      for (let i = 1; i <= 5; i++) {
+        const coinbase = createCoinbaseTransaction(miner1Address, testnet.initialReward, 0n);
+        const block = new BlockClass(
+          i,
+          baseTimestamp + (i * 1000),
+          previousHash,
+          [coinbase],
+          testnet.initialDifficulty,
+          chainVersionHash,
+          'miner1'
+        );
+        block.mine();
+        
+        const result = await blockchain.addBlock(block);
+        if (!result.valid) {
+          console.log(`Block ${i} validation failed:`, result.error);
+        }
+        expect(result.valid).toBe(true);
+        previousHash = block.hash;
+      }
+      
+      // create competing fork with invalid median time
+      const block3 = await blockchain.getBlock(3);
+      expect(block3).toBeDefined();
+      
+      const forkBlocks: BlockClass[] = [];
+      previousHash = block3!.hash;
+      
+      // create first fork block with valid time
+      const coinbase1 = createCoinbaseTransaction(miner2Address, testnet.initialReward, 0n);
+      const forkBlock1 = new BlockClass(
+        4,
+        baseTimestamp + 4100,
+        previousHash,
+        [coinbase1],
+        testnet.initialDifficulty,
+        chainVersionHash,
+        'miner2'
+      );
+      forkBlock1.mine();
+      forkBlocks.push(forkBlock1);
+      
+      // create second fork block with timestamp that violates median time
+      const coinbase2 = createCoinbaseTransaction(miner2Address, testnet.initialReward, 0n);
+      const forkBlock2 = new BlockClass(
+        5,
+        baseTimestamp - 10000, // way in the past, violates median time
+        forkBlock1.hash,
+        [coinbase2],
+        testnet.initialDifficulty,
+        chainVersionHash,
+        'miner2'
+      );
+      forkBlock2.mine();
+      forkBlocks.push(forkBlock2);
+      
+      // attempt reorganization with invalid median time
+      const reorgResult = await blockchain.reorganize(3, forkBlocks.map(b => b.toObject()));
+      
+      // reorganization should fail due to median time violation
+      expect(reorgResult).toBe(false);
+      
+      // verify the chain height hasn't changed
+      const currentHeight = await blockchain.getHeight();
+      expect(currentHeight).toBe(5);
+      
+      // verify the tip is still from the original chain
+      const tip = await blockchain.getLatestBlock();
+      expect(tip?.miner).toBe('miner1');
+    });
+  });
 });

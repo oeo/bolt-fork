@@ -14,6 +14,8 @@ export interface MiningStats {
   blocksFound: number;
   lastBlockTime?: number;
   totalReward: bigint;
+  lastHashRate?: number; // hashes per second
+  startTime?: number;
 }
 
 /**
@@ -61,7 +63,8 @@ export class MiningService extends EventEmitter {
     
     this.stats = {
       blocksFound: 0,
-      totalReward: 0n
+      totalReward: 0n,
+      startTime: Date.now()
     };
     
     if (this.enabled && this.minerAddress) {
@@ -186,9 +189,14 @@ export class MiningService extends EventEmitter {
       });
       
       // mine with limited iterations
-      const success = block.mine(config.hashAlgorithm, this.maxIterations);
+      const miningResult = block.mine(config.hashAlgorithm, this.maxIterations);
       
-      if (success) {
+      // calculate hash rate (hashes per second)
+      const hashRate = miningResult.timeMs > 0 ? 
+        (miningResult.iterations * 1000) / miningResult.timeMs : 0;
+      this.stats.lastHashRate = hashRate;
+      
+      if (miningResult.success) {
         // submit to blockchain
         const result = await this.blockchain.addBlock(block);
         
@@ -213,12 +221,13 @@ export class MiningService extends EventEmitter {
           hash: block.hash,
           transactions: transactions.length,
           reward: formatWatts(blockReward + totalFees),
-          time: `${Date.now() - startTime}ms`,
-          nonce: block.nonce
+          time: `${miningResult.timeMs}ms`,
+          nonce: block.nonce,
+          hashRate: `${Math.round(hashRate)} H/s`
         });
         
-        // emit event for listeners
-        this.emit('blockMined', block);
+        // emit event for listeners with mining stats
+        this.emit('blockMined', block, { hashRate, iterations: miningResult.iterations, timeMs: miningResult.timeMs });
       } else {
         logger.debug(`Mining attempt failed after ${this.maxIterations} iterations`);
       }

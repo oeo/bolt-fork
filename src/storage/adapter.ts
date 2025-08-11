@@ -22,6 +22,15 @@ export abstract class StorageAdapter {
    */
   abstract clear(): Promise<void>;
   
+  /**
+   * get storage statistics
+   */
+  abstract getStorageStats(): Promise<{
+    used: number;
+    keys: number;
+    type: string;
+  }>;
+  
   // block operations
   
   /**

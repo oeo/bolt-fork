@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { Block, Transaction, AccountState, StorageAdapter, BlockTemplate, ValidationResult } from '../types';
 import { ChainConfig, calculateChainVersionHash } from '../config/chain';
 import { BlockClass, createGenesisBlock } from './block';
@@ -12,7 +13,7 @@ const logger = getLogger(__filename);
 /**
  * main blockchain orchestration class
  */
-export class Blockchain {
+export class Blockchain extends EventEmitter {
   private storage: StorageAdapter;
   private config: ChainConfig;
   private hashAlgorithm: HashAlgorithm;
@@ -27,6 +28,7 @@ export class Blockchain {
     config: ChainConfig,
     hashAlgorithm: HashAlgorithm = 'sha256'
   ) {
+    super();
     this.storage = storage;
     this.config = config;
     this.hashAlgorithm = hashAlgorithm;
@@ -174,6 +176,9 @@ export class Blockchain {
     this.currentHeight = block.index;
 
     logger.info(`Block ${block.index} added successfully`);
+
+    // emit event with block details for metrics recording
+    this.emit('blockAdded', block);
 
     return { valid: true };
   }
@@ -649,6 +654,14 @@ export class Blockchain {
         return false;
       }
       
+      // pre-validate entire new chain before applying
+      logger.info(`Pre-validating ${newBlocks.length} new blocks`);
+      const validationResult = await this.validateReorgChain(commonAncestorHeight, newBlocks);
+      if (!validationResult.valid) {
+        logger.error(`New chain validation failed: ${validationResult.error}`);
+        return false;
+      }
+      
       // rollback to common ancestor
       logger.info(`Rolling back from height ${this.currentHeight} to ${commonAncestorHeight}`);
       
@@ -668,12 +681,14 @@ export class Blockchain {
       // recalculate account states up to common ancestor
       await this.recalculateStateFromHeight(0, commonAncestorHeight);
       
-      // apply new blocks
+      // apply new blocks using special reorg mode
       logger.info(`Applying ${newBlocks.length} new blocks`);
-      for (const block of newBlocks) {
-        // ensure we have a BlockClass instance
+      for (let i = 0; i < newBlocks.length; i++) {
+        const block = newBlocks[i];
         const blockClass = block instanceof BlockClass ? block : BlockClass.fromObject(block);
-        const result = await this.addBlock(blockClass);
+        
+        // use special add method that considers already validated chain
+        const result = await this.addBlockDuringReorg(blockClass, newBlocks.slice(0, i));
         if (!result.valid) {
           logger.error(`Failed to apply block ${block.index} during reorg: ${result.error}`);
           throw new Error(`Reorganization failed: ${result.error}`);
@@ -710,6 +725,214 @@ export class Blockchain {
       logger.error('Chain reorganization failed', error);
       throw error;
     }
+  }
+  
+  /**
+   * validate entire competing chain before reorganization
+   */
+  private async validateReorgChain(
+    commonAncestorHeight: number,
+    newBlocks: Block[]
+  ): Promise<ValidationResult> {
+    // get blocks up to common ancestor for median time validation
+    const ancestorBlocks: BlockClass[] = [];
+    for (let height = Math.max(0, commonAncestorHeight - 10); height <= commonAncestorHeight; height++) {
+      const block = await this.storage.getBlock(height);
+      if (block) {
+        ancestorBlocks.push(BlockClass.fromObject(block));
+      }
+    }
+    
+    // validate each block in the new chain
+    for (let i = 0; i < newBlocks.length; i++) {
+      const block = newBlocks[i];
+      const blockClass = block instanceof BlockClass ? block : BlockClass.fromObject(block);
+      
+      // validate block structure
+      const structureValidation = blockClass.validate(this.hashAlgorithm);
+      if (!structureValidation.valid) {
+        return { valid: false, error: `Block ${block.index}: ${structureValidation.error}` };
+      }
+      
+      // validate against previous block
+      const prevBlock = i === 0
+        ? await this.storage.getBlock(commonAncestorHeight)
+        : newBlocks[i - 1];
+      
+      if (!prevBlock) {
+        return { valid: false, error: `Block ${block.index}: Previous block not found` };
+      }
+      
+      const prevBlockClass = prevBlock instanceof BlockClass
+        ? prevBlock
+        : BlockClass.fromObject(prevBlock);
+      
+      const prevValidation = blockClass.validatePreviousBlock(prevBlockClass);
+      if (!prevValidation.valid) {
+        return { valid: false, error: `Block ${block.index}: ${prevValidation.error}` };
+      }
+      
+      // validate median time using correct past blocks
+      const pastBlocksForMedian = this.getPastBlocksForReorg(
+        ancestorBlocks,
+        newBlocks.slice(0, i),
+        11
+      );
+      
+      const medianValidation = blockClass.validateMedianTime(pastBlocksForMedian);
+      if (!medianValidation.valid) {
+        return { valid: false, error: `Block ${block.index}: ${medianValidation.error}` };
+      }
+      
+      // validate difficulty
+      const expectedDifficulty = await this.getDifficulty(block.index);
+      const difficultyValidation = blockClass.validateDifficulty(expectedDifficulty);
+      if (!difficultyValidation.valid) {
+        return { valid: false, error: `Block ${block.index}: ${difficultyValidation.error}` };
+      }
+      
+      // validate coinbase
+      const blockReward = this.getBlockReward(block.index);
+      const coinbaseValidation = blockClass.validateCoinbase(blockReward);
+      if (!coinbaseValidation.valid) {
+        return { valid: false, error: `Block ${block.index}: ${coinbaseValidation.error}` };
+      }
+    }
+    
+    return { valid: true };
+  }
+  
+  /**
+   * get past blocks for median time validation during reorganization
+   */
+  private getPastBlocksForReorg(
+    ancestorBlocks: BlockClass[],
+    newBlocksBefore: Block[],
+    count: number
+  ): BlockClass[] {
+    const allBlocks: BlockClass[] = [...ancestorBlocks];
+    
+    // add new blocks that come before current block
+    for (const block of newBlocksBefore) {
+      const blockClass = block instanceof BlockClass ? block : BlockClass.fromObject(block);
+      allBlocks.push(blockClass);
+    }
+    
+    // return last 'count' blocks
+    return allBlocks.slice(-count);
+  }
+  
+  /**
+   * add block during reorganization with special handling for median time
+   */
+  private async addBlockDuringReorg(
+    block: BlockClass,
+    previousNewBlocks: Block[]
+  ): Promise<ValidationResult> {
+    if (!this.isInitialized) {
+      throw new Error('Blockchain not initialized');
+    }
+    
+    logger.debug(`Adding block ${block.index} during reorganization`);
+    
+    // validate block structure
+    const structureValidation = block.validate(this.hashAlgorithm);
+    if (!structureValidation.valid) {
+      return structureValidation;
+    }
+    
+    // get previous block
+    const previousBlock = await this.storage.getBlock(block.index - 1);
+    if (!previousBlock) {
+      return { valid: false, error: 'Previous block not found' };
+    }
+    
+    const prevBlockClass = BlockClass.fromObject(previousBlock);
+    
+    // validate against previous block
+    const prevValidation = block.validatePreviousBlock(prevBlockClass);
+    if (!prevValidation.valid) {
+      return prevValidation;
+    }
+    
+    // for median time validation, we need to consider the new chain being built
+    // get past blocks including those from the new chain
+    const pastBlocks = await this.getPastBlocksForReorgAdd(previousNewBlocks, 11);
+    const medianValidation = block.validateMedianTime(pastBlocks);
+    if (!medianValidation.valid) {
+      return medianValidation;
+    }
+    
+    // validate difficulty
+    const expectedDifficulty = await this.getDifficulty(block.index);
+    const difficultyValidation = block.validateDifficulty(expectedDifficulty);
+    if (!difficultyValidation.valid) {
+      return difficultyValidation;
+    }
+    
+    // validate coinbase
+    const blockReward = this.getBlockReward(block.index);
+    const coinbaseValidation = block.validateCoinbase(blockReward);
+    if (!coinbaseValidation.valid) {
+      return coinbaseValidation;
+    }
+    
+    // validate all transactions
+    const txValidation = await this.validateBlockTransactions(block);
+    if (!txValidation.valid) {
+      return txValidation;
+    }
+    
+    // process transactions and update state
+    await this.processBlockTransactions(block);
+    
+    // save block to storage
+    await this.storage.saveBlock(block.toObject());
+    
+    // update cumulative difficulty
+    const currentCumulative = await this.storage.getCumulativeDifficulty();
+    const newCumulative = currentCumulative + BigInt(block.difficulty);
+    await this.storage.updateCumulativeDifficulty(newCumulative);
+    
+    // update current height
+    this.currentHeight = block.index;
+    
+    logger.info(`Block ${block.index} added successfully during reorganization`);
+    
+    // emit event with block details for metrics recording
+    this.emit('blockAdded', block);
+    
+    return { valid: true };
+  }
+  
+  /**
+   * get past blocks during reorganization add phase
+   */
+  private async getPastBlocksForReorgAdd(
+    previousNewBlocks: Block[],
+    count: number
+  ): Promise<BlockClass[]> {
+    const blocks: BlockClass[] = [];
+    const startHeight = Math.max(0, this.currentHeight - count + 1);
+    
+    // first get blocks from storage up to current height
+    for (let height = startHeight; height <= this.currentHeight; height++) {
+      const block = await this.storage.getBlock(height);
+      if (block) {
+        blocks.push(BlockClass.fromObject(block));
+      }
+    }
+    
+    // then add any new blocks that were already added during this reorg
+    for (const block of previousNewBlocks) {
+      if (block.index > this.currentHeight) {
+        const blockClass = block instanceof BlockClass ? block : BlockClass.fromObject(block);
+        blocks.push(blockClass);
+      }
+    }
+    
+    // return last 'count' blocks
+    return blocks.slice(-count);
   }
   
   /**

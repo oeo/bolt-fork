@@ -82,8 +82,17 @@ export class MetricsService {
   private apiRequestErrors: Counter;
   private apiActiveConnections: Gauge;
   
+  // node health metrics
+  private nodeUptime: Gauge;
+  private nodeHealth: Gauge;
+  private nodeStartTime: Gauge;
+  private nodeSyncStatus: Gauge;
+  private nodeRole: Gauge;
+  private startTime: number;
+  
   constructor() {
     this.registry = new Registry();
+    this.startTime = Date.now() / 1000;
     
     // collect default nodejs metrics
     collectDefaultMetrics({ register: this.registry });
@@ -433,6 +442,41 @@ export class MetricsService {
       registers: [this.registry]
     });
     
+    // initialize node health metrics
+    this.nodeUptime = new Gauge({
+      name: 'bolt_node_uptime_seconds',
+      help: 'Node uptime in seconds',
+      registers: [this.registry]
+    });
+    
+    this.nodeHealth = new Gauge({
+      name: 'bolt_node_health',
+      help: 'Node health status (1 = healthy, 0 = unhealthy)',
+      registers: [this.registry]
+    });
+    
+    this.nodeStartTime = new Gauge({
+      name: 'bolt_node_start_time_seconds',
+      help: 'Unix timestamp when node started',
+      registers: [this.registry]
+    });
+    
+    this.nodeSyncStatus = new Gauge({
+      name: 'bolt_node_sync_status',
+      help: 'Node sync status (1 = synced, 0 = syncing)',
+      registers: [this.registry]
+    });
+    
+    this.nodeRole = new Gauge({
+      name: 'bolt_node_role',
+      help: 'Node role (1 = full, 2 = miner, 3 = bootstrap)',
+      labelNames: ['role'],
+      registers: [this.registry]
+    });
+    
+    // set node start time
+    this.nodeStartTime.set(this.startTime);
+    
     logger.info('Metrics service initialized');
   }
   
@@ -686,6 +730,44 @@ export class MetricsService {
    */
   updateApiConnections(type: string, count: number): void {
     this.apiActiveConnections.set({ type }, count);
+  }
+  
+  /**
+   * Update node health metrics
+   */
+  updateNodeHealth(isHealthy: boolean, isSyncing: boolean, role: string): void {
+    // update uptime
+    const uptimeSeconds = (Date.now() / 1000) - this.startTime;
+    this.nodeUptime.set(uptimeSeconds);
+    
+    // update health status
+    this.nodeHealth.set(isHealthy ? 1 : 0);
+    
+    // update sync status
+    this.nodeSyncStatus.set(isSyncing ? 0 : 1);
+    
+    // update role
+    const roleValue = role === 'miner' ? 2 : role === 'bootstrap' ? 3 : 1;
+    this.nodeRole.set({ role }, roleValue);
+  }
+  
+  /**
+   * Update storage metrics
+   */
+  async updateStorageMetrics(storage: any): Promise<void> {
+    try {
+      const stats = await storage.getStorageStats();
+      
+      // update storage size metric
+      this.storageSize.set({ type: stats.type }, stats.used);
+      
+      // also set a generic storage metric for the dashboard
+      this.storageSize.set({ type: 'total' }, stats.used);
+      
+      logger.debug(`Storage stats: ${stats.used} bytes, ${stats.keys} keys`);
+    } catch (error) {
+      logger.error('Failed to update storage metrics', error);
+    }
   }
   
   /**

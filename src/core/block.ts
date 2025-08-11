@@ -114,8 +114,9 @@ export class BlockClass {
   
   /**
    * mine block with proof-of-work
+   * @returns object with success status and mining stats
    */
-  mine(algorithm: HashAlgorithm = 'sha256', maxIterations: number = Number.MAX_SAFE_INTEGER): boolean {
+  mine(algorithm: HashAlgorithm = 'sha256', maxIterations: number = Number.MAX_SAFE_INTEGER): { success: boolean; iterations: number; timeMs: number } {
     logger.info(`Mining block ${this.index} with difficulty ${this.difficulty}`);
     const startTime = Date.now();
     let iterations = 0;
@@ -129,7 +130,7 @@ export class BlockClass {
         const elapsed = Date.now() - startTime;
         logger.info(`Block ${this.index} mined in ${elapsed}ms after ${iterations} iterations`);
         logger.debug(`Block hash: ${this.hash}`);
-        return true;
+        return { success: true, iterations, timeMs: elapsed };
       }
       
       // log progress every million hashes
@@ -138,8 +139,9 @@ export class BlockClass {
       }
     }
     
+    const elapsed = Date.now() - startTime;
     logger.warn(`Mining stopped after ${maxIterations} iterations`);
-    return false;
+    return { success: false, iterations: maxIterations, timeMs: elapsed };
   }
   
   /**

@@ -9,10 +9,22 @@ clients:
   - url: http://loki:3100/loki/api/v1/push
 
 scrape_configs:
-  - job_name: containers
+  - job_name: bolt
     static_configs:
       - targets:
           - localhost
         labels:
-          job: containerlogs
-          __path__: /var/lib/docker/containers/*/*log
+          job: bolt
+          app: blockchain
+          __path__: /var/log/bolt/*.log
+    pipeline_stages:
+      - regex:
+          expression: '^(?P<timestamp>\S+) (?P<level>\S+)\s+(\[(?P<domain>\S+)\]\s+)?(?P<message>.*)$'
+      - labels:
+          level:
+          domain:
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+      - output:
+          source: message

@@ -16,7 +16,7 @@ export const testnet: ChainConfig = {
   minFeePerByte: 1n,
   
   // difficulty
-  initialDifficulty: 10,                   // lower difficulty for testing
+  initialDifficulty: 100000,               // increased difficulty for more realistic mining
   minDifficulty: 1,
   maxDifficultyAdjustment: 4,
   

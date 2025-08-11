@@ -45,6 +45,33 @@ export class MemoryAdapter extends StorageAdapter {
     logger.warn('Cleared all data from memory');
   }
   
+  async getStorageStats(): Promise<{
+    used: number;
+    keys: number;
+    type: string;
+  }> {
+    this.checkConnection();
+    
+    // count total keys
+    const totalKeys = 
+      this.blocks.size + 
+      this.blockHashes.size + 
+      this.accounts.size + 
+      this.transactions.size + 
+      this.txByAddress.size +
+      this.mempool.size +
+      this.metadata.size;
+    
+    // rough estimate: 1KB per item average
+    const estimatedBytes = totalKeys * 1024;
+    
+    return {
+      used: estimatedBytes,
+      keys: totalKeys,
+      type: 'memory'
+    };
+  }
+  
   // block operations
   
   async saveBlock(block: Block): Promise<void> {

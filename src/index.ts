@@ -7,10 +7,14 @@ import { PeerManager } from './network/peer-manager';
 import { ApiServer } from './api/server';
 import { MiningService } from './services/mining';
 import { SyncService } from './services/sync';
+import { MetricsService } from './services/metrics';
 import { createStorage } from './storage';
 import { config as chainConfig } from './config/chain';
 import { generateAddress } from './crypto/address';
 import { getLogger } from './utils/logger';
+import { serialize } from './utils/bigint';
+import { TransactionClass } from './core/transaction';
+import { serve } from 'bun';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -47,6 +51,8 @@ class BoltIPFSNode {
   private api!: ApiServer;
   private miner?: MiningService;
   private syncService!: SyncService;
+  private metrics!: MetricsService;
+  private metricsServer: any;
   private running: boolean = false;
   
   constructor(config: NodeConfig) {
@@ -114,6 +120,9 @@ class BoltIPFSNode {
     await this.blockchain.initialize();
     logger.info(`Blockchain initialized at height ${await this.blockchain.getHeight()}`);
     
+    // setup blockchain event handlers for metrics
+    this.setupBlockchainHandlers();
+    
     // create mempool
     this.mempool = new Mempool(this.storage, chainConfig);
     logger.info('Mempool initialized');
@@ -152,8 +161,14 @@ class BoltIPFSNode {
       syncService: this.syncService
     });
     
+    // create metrics service
+    this.metrics = new MetricsService();
+    this.metrics.setBlockchain(this.blockchain);
+    this.metrics.setMempool(this.mempool);
+    logger.info('Metrics service initialized');
+    
     // create mining service if enabled
-    if (this.config.miningEnabled && this.config.role === 'miner') {
+    if (this.config.miningEnabled) {
       const minerAddress = this.config.minerAddress || generateAddress().address;
       this.miner = new MiningService({
         blockchain: this.blockchain,
@@ -165,6 +180,59 @@ class BoltIPFSNode {
     }
     
     logger.info('Node initialization complete');
+  }
+  
+  private setupBlockchainHandlers(): void {
+    // record metrics for ALL blocks added to the chain, regardless of source
+    this.blockchain.on('blockAdded', async (block) => {
+      try {
+        const blockSize = serialize(block).length;
+        
+        // separate coinbase from regular transactions
+        let regularTxCount = 0;
+        let coinbaseTx = null;
+        let totalFees = 0n;
+        
+        if (block.transactions && block.transactions.length > 0) {
+          for (const txData of block.transactions) {
+            const tx = TransactionClass.fromObject(txData);
+            
+            if (tx.isCoinbase()) {
+              coinbaseTx = tx;
+            } else {
+              // this is a regular transaction
+              regularTxCount++;
+              
+              // record transaction processing metrics for non-coinbase transactions
+              const txSize = serialize(txData).length;
+              this.metrics.recordTransactionProcessing(0.001, txSize, tx.fee || 0n);
+              totalFees += tx.fee || 0n;
+            }
+          }
+        }
+        
+        // calculate block time (time between this block and previous)
+        let blockTimeSeconds = 10; // default to 10 seconds if we can't calculate
+        if (block.index > 0) {
+          const prevBlock = await this.storage.getBlock(block.index - 1);
+          if (prevBlock) {
+            // timestamps are in milliseconds, convert to seconds
+            blockTimeSeconds = Math.max(1, Math.floor((block.timestamp - prevBlock.timestamp) / 1000));
+          }
+        }
+        
+        // record block metrics with ONLY regular transaction count (excluding coinbase)
+        this.metrics.recordBlockMined(blockTimeSeconds, blockSize, regularTxCount);
+        
+        // record mining success metrics (even if not locally mined)
+        const reward = coinbaseTx ? coinbaseTx.amount : 0n;
+        this.metrics.recordMiningSuccess(blockTimeSeconds, reward - totalFees);
+        
+        logger.debug(`Metrics recorded for block ${block.index} with ${regularTxCount} regular transactions (${block.transactions?.length || 0} total including coinbase)`);
+      } catch (error: any) {
+        logger.error('Failed to record block metrics:', error);
+      }
+    });
   }
   
   private setupIPFSHandlers(): void {
@@ -243,6 +311,53 @@ class BoltIPFSNode {
     await this.api.start();
     logger.info(`API server started on port ${this.config.apiPort}`);
     
+    // start metrics server
+    this.metricsServer = serve({
+      port: this.config.metricsPort,
+      fetch: async (request) => {
+        const url = new URL(request.url);
+        
+        if (url.pathname === '/metrics') {
+          try {
+            // update node health metrics before serving
+            const isSyncing = this.syncService.isSyncing();
+            this.metrics.updateNodeHealth(true, isSyncing, this.config.role);
+            
+            // update storage metrics
+            await this.metrics.updateStorageMetrics(this.storage);
+            
+            // update network metrics
+            const peerStats = this.peerManager.getStats();
+            this.metrics.updateNetworkMetrics(peerStats.activePeers, peerStats.totalPeers);
+            
+            const metricsData = await this.metrics.getMetrics();
+            return new Response(metricsData, {
+              headers: {
+                'Content-Type': this.metrics.getContentType(),
+                'Cache-Control': 'no-cache, no-store, must-revalidate'
+              }
+            });
+          } catch (error) {
+            logger.error('Failed to generate metrics', error);
+            return new Response('Internal Server Error', { status: 500 });
+          }
+        }
+        
+        if (url.pathname === '/health') {
+          return new Response(JSON.stringify({
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+            service: 'bolt-metrics'
+          }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        
+        return new Response('Not Found', { status: 404 });
+      }
+    });
+    logger.info(`Metrics server started on port ${this.config.metricsPort}`);
+    
     // start sync service
     this.syncService.start();
     logger.info('Sync service started');
@@ -253,9 +368,19 @@ class BoltIPFSNode {
       logger.info('Mining service started');
       
       // broadcast mined blocks to peers
-      this.miner.on('blockMined', async (block) => {
+      this.miner.on('blockMined', async (block, miningStats) => {
         try {
           logger.info(`Broadcasting mined block ${block.index} to peers`);
+          
+          // update hash rate metric when we mine locally
+          if (miningStats && miningStats.hashRate) {
+            const currentDifficulty = await this.blockchain.getDifficulty();
+            this.metrics.updateMiningMetrics(miningStats.hashRate, currentDifficulty);
+          }
+          
+          // note: block metrics are recorded in blockchain event handler
+          // this ensures all blocks (local and remote) are tracked
+          
           await this.peerManager.broadcastBlock(block.toObject());
         } catch (error: any) {
           logger.error('Failed to broadcast block:', { 
@@ -268,6 +393,12 @@ class BoltIPFSNode {
     // announce transactions when added to mempool
     this.mempool.on('transactionAdded', async (tx) => {
       try {
+        // record mempool addition metric
+        this.metrics.recordMempoolTransactionAdded();
+        
+        // note: transaction processing metrics are recorded when the tx is included in a block
+        // this avoids double-counting for transactions that enter mempool then get mined
+        
         await this.peerManager.broadcastTransaction(tx);
       } catch (error: any) {
         logger.error('Failed to broadcast transaction:', error.message);
@@ -282,6 +413,16 @@ class BoltIPFSNode {
     
     // periodic status logging
     setInterval(async () => await this.logStatus(), 60000); // every minute
+    
+    // periodic hash rate update (every 10 seconds)
+    setInterval(async () => {
+      if (this.miner) {
+        const stats = this.miner.getStats();
+        const currentDifficulty = await this.blockchain.getDifficulty();
+        // use last hash rate if available, otherwise 0
+        this.metrics.updateMiningMetrics(stats.lastHashRate || 0, currentDifficulty);
+      }
+    }, 10000);
   }
   
   private async logStatus(): Promise<void> {
@@ -318,6 +459,12 @@ class BoltIPFSNode {
     await this.api.stop();
     logger.info('API server stopped');
     
+    // stop metrics server
+    if (this.metricsServer) {
+      this.metricsServer.stop();
+      logger.info('Metrics server stopped');
+    }
+    
     // stop ipfs service
     await this.ipfs.stop();
     logger.info('IPFS service stopped');
@@ -336,7 +483,7 @@ function parseConfig(): NodeConfig {
   const config: NodeConfig = {
     // network ports
     apiPort: parseInt(process.env.API_PORT || '7333'),
-    metricsPort: parseInt(process.env.METRICS_PORT || '9464'),
+    metricsPort: parseInt(process.env.METRICS_PORT || '7336'),
     
     // node identity
     nodeId: process.env.NODE_ID || 'bolt-node',

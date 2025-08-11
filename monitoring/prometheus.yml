@@ -1,11 +1,15 @@
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 5s
+  evaluation_interval: 5s
 
 scrape_configs:
-  - job_name: 'bolt-node'
+  - job_name: 'prometheus'
     static_configs:
-      - targets: ['bolt:7336']
+      - targets: ['localhost:9090']
+
+  - job_name: 'bolt'
+    static_configs:
+      - targets: ['host.docker.internal:7336']
         labels:
           network: 'testnet'
           
