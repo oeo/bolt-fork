@@ -4,9 +4,9 @@ import {
   MessageType,
   InvType,
   RejectCode,
-  NETWORK_MAGIC,
   PROTOCOL_VERSION,
 } from '../../src/network/protocol';
+import { NETWORK_MAGIC } from '../../src/constants';
 
 describe('network protocol', () => {
   let protocol: Protocol;

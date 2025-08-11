@@ -1,6 +1,6 @@
 # bolt blockchain implementation plan
 
-current focus: persistent node identity and enhanced logging implemented - ready for messaging protocol improvements
+current focus: complete bun-native p2p networking stack implemented - all 8 phases complete
 
 ## phase 1: storage foundation
 
@@ -55,13 +55,133 @@ current focus: persistent node identity and enhanced logging implemented - ready
   - [x] node identity management with persistent .identity file
   - [x] ipfs-based peer discovery working
 
-### network synchronization
-- [ ] implement chain synchronization
-  - [ ] create headers-first sync strategy
-  - [ ] implement block download and validation queue
-  - [ ] add orphan block handling
-  - [ ] implement transaction relay
-  - [ ] add inventory management system
+### network synchronization (redesigned - starting implementation)
+
+#### complete peer handling redesign using bun-native features
+
+**core principles:**
+- ipfs only for peer discovery (no blocks/txs on ipfs)
+- binary tcp protocol for all blockchain data exchange
+- bun-native everything (uint8array, bun.listen, bun.cryptohasher)
+
+**architecture overview:**
+```
+peer discovery (ipfs pubsub) → tcp connection manager (bun.listen/connect)
+→ binary protocol handler → sync manager → blockchain
+```
+
+#### phase 1: peer discovery service (completed)
+- [x] clean ipfs-only discovery implementation
+  - [x] announce tcp endpoint every 30 seconds on /bolt/peers
+  - [x] subscribe to peer announcements
+  - [x] track known peers with metadata (height, chain hash, version)
+  - [x] emit peer:discovered events for connection manager
+  - [x] no blocks or transactions on ipfs
+
+#### phase 2: tcp connection manager (completed)
+- [x] bun-native tcp server and client
+  - [x] use bun.listen for incoming connections
+  - [x] use bun.connect for outbound connections
+  - [x] connection pool management (max 125 peers)
+  - [x] message buffering for partial messages
+  - [x] backpressure handling with drain callback
+  - [x] automatic reconnection logic
+
+#### phase 3: binary protocol handler (completed)
+- [x] efficient binary protocol using uint8array
+  - [x] message format: [magic(4)][type(4)][length(4)][checksum(4)][payload]
+  - [x] use bun.cryptohasher for 2x faster checksums
+  - [x] commands: version, headers, blocks, inv, getdata, tx
+  - [x] payload encoding/decoding for each message type
+  - [x] strict validation and error handling
+  - [x] added getheaders, headers, getdata message types for sync
+
+#### phase 4: headers-first sync manager (completed)
+- [x] implement headers-first synchronization
+  - [x] build block locator with exponential backoff
+  - [x] request headers from peers
+  - [x] validate header chain before requesting blocks
+  - [x] queue blocks for parallel download
+  - [x] handle chain reorganizations
+
+#### phase 5: block download manager (completed)
+- [x] parallel block downloading system
+  - [x] priority queue for block requests
+  - [x] track in-flight requests with timeouts
+  - [x] max 16 concurrent block downloads
+  - [x] peer selection based on inventory and performance
+  - [x] retry failed downloads with different peers
+
+#### phase 6: inventory management (completed)
+- [x] track what each peer has
+  - [x] maintain per-peer block and transaction inventory
+  - [x] handle inv message announcements
+  - [x] filter broadcasts to avoid redundancy
+  - [x] request needed items via getdata
+  - [x] announce our new blocks/txs to peers
+
+#### phase 7: orphan pool (completed)
+- [x] handle out-of-order blocks
+  - [x] store orphan blocks temporarily (max 100)
+  - [x] connect orphans when parent arrives
+  - [x] evict old orphans (>1 hour)
+  - [x] prevent memory exhaustion
+
+#### phase 8: transaction relay (completed)
+- [x] efficient transaction propagation
+  - [x] deduplicate recent transactions
+  - [x] relay new transactions to peers
+  - [x] handle getdata requests for transactions
+  - [x] mempool synchronization on connect
+
+#### implementation approach
+- start with peer discovery service
+- build tcp connection manager with bun.listen/connect
+- implement binary protocol handler with bun.cryptohasher
+- create headers-first sync manager
+- add parallel block download manager
+- implement inventory management system
+- add orphan pool for out-of-order blocks
+- complete with transaction relay system
+
+#### success metrics
+- support 125+ concurrent peer connections
+- sync 100,000 blocks in under 10 minutes
+- process 1000+ transactions per second
+- memory usage under 500mb for full node
+- network bandwidth under 10 mbps average
+
+## phase 9: comprehensive testing
+
+### integration tests for networking stack
+- [ ] peer discovery tests
+  - [ ] nodes discover each other via ipfs
+  - [ ] tcp endpoints are correctly announced
+  - [ ] stale peers are removed
+  - [ ] peer metadata is updated
+
+- [ ] tcp connection tests
+  - [ ] nodes establish tcp connections
+  - [ ] message buffering handles partial messages
+  - [ ] backpressure is handled correctly
+  - [ ] reconnection on failure
+
+- [ ] synchronization tests
+  - [ ] headers-first sync completes
+  - [ ] blocks are downloaded in parallel
+  - [ ] orphans are handled correctly
+  - [ ] chain reorganization works
+
+- [ ] transaction relay tests
+  - [ ] transactions propagate across network
+  - [ ] deduplication prevents loops
+  - [ ] mempool synchronization works
+
+### cluster testing framework
+- [ ] launch multi-node clusters with docker
+- [ ] simulate network partitions
+- [ ] test consensus under various conditions
+- [ ] measure performance metrics
 
 ## phase 3: parallel processing
 

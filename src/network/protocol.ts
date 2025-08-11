@@ -1,11 +1,9 @@
 import { getLogger } from '../utils/logger';
 import type { Block } from '../core/block';
 import type { Transaction } from '../core/transaction';
+import { NETWORK_MAGIC } from '../constants';
 
 const logger = getLogger(__filename);
-
-// network magic bytes for bolt network
-export const NETWORK_MAGIC = 0xb017b017; // "bolt bolt" in hex-ish
 
 // protocol version
 export const PROTOCOL_VERSION = 1;
@@ -423,5 +421,285 @@ export class Protocol {
     }
     
     return new Uint8Array(buffer);
+  }
+
+  /**
+   * serialize getheaders message
+   */
+  serializeGetHeaders(locator: string[], stopHash: string): Uint8Array {
+    const encoder = new TextEncoder();
+    const buffer = new ArrayBuffer(4 + locator.length * 32 + 32);
+    const view = new DataView(buffer);
+    
+    view.setUint32(0, locator.length, false);
+    
+    let offset = 4;
+    for (const hash of locator) {
+      const hashBytes = encoder.encode(hash.padEnd(32, '\0'));
+      new Uint8Array(buffer, offset, 32).set(hashBytes.slice(0, 32));
+      offset += 32;
+    }
+    
+    const stopBytes = encoder.encode(stopHash.padEnd(32, '\0'));
+    new Uint8Array(buffer, offset, 32).set(stopBytes.slice(0, 32));
+    
+    return new Uint8Array(buffer);
+  }
+
+  /**
+   * deserialize getheaders message
+   */
+  deserializeGetHeaders(data: Uint8Array): { locator: string[], stopHash: string } | null {
+    if (data.length < 36) return null;
+    
+    const view = new DataView(data.buffer, data.byteOffset);
+    const decoder = new TextDecoder();
+    
+    const count = view.getUint32(0, false);
+    if (data.length < 4 + count * 32 + 32) return null;
+    
+    const locator: string[] = [];
+    let offset = 4;
+    
+    for (let i = 0; i < count; i++) {
+      const hashBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
+      const hash = decoder.decode(hashBytes).replace(/\0+$/, '');
+      locator.push(hash);
+      offset += 32;
+    }
+    
+    const stopBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
+    const stopHash = decoder.decode(stopBytes).replace(/\0+$/, '');
+    
+    return { locator, stopHash };
+  }
+
+  /**
+   * serialize headers message (array of block headers)
+   */
+  serializeHeaders(headers: any[]): Uint8Array {
+    const encoder = new TextEncoder();
+    // each header: hash(32) + prevHash(32) + merkleRoot(32) + timestamp(8) + difficulty(4) + nonce(8) = 116 bytes
+    const buffer = new ArrayBuffer(4 + headers.length * 116);
+    const view = new DataView(buffer);
+    
+    view.setUint32(0, headers.length, false);
+    let offset = 4;
+    
+    for (const header of headers) {
+      // hash
+      const hashBytes = encoder.encode(header.hash.padEnd(32, '\0'));
+      new Uint8Array(buffer, offset, 32).set(hashBytes.slice(0, 32));
+      offset += 32;
+      
+      // previous hash
+      const prevBytes = encoder.encode(header.previousHash.padEnd(32, '\0'));
+      new Uint8Array(buffer, offset, 32).set(prevBytes.slice(0, 32));
+      offset += 32;
+      
+      // merkle root
+      const merkleBytes = encoder.encode(header.merkleRoot.padEnd(32, '\0'));
+      new Uint8Array(buffer, offset, 32).set(merkleBytes.slice(0, 32));
+      offset += 32;
+      
+      // timestamp
+      view.setBigUint64(offset, BigInt(header.timestamp), false);
+      offset += 8;
+      
+      // difficulty
+      view.setUint32(offset, header.difficulty, false);
+      offset += 4;
+      
+      // nonce
+      view.setBigUint64(offset, BigInt(header.nonce), false);
+      offset += 8;
+    }
+    
+    return new Uint8Array(buffer);
+  }
+
+  /**
+   * deserialize headers message
+   */
+  deserializeHeaders(data: Uint8Array): any[] | null {
+    if (data.length < 4) return null;
+    
+    const view = new DataView(data.buffer, data.byteOffset);
+    const decoder = new TextDecoder();
+    
+    const count = view.getUint32(0, false);
+    if (data.length < 4 + count * 116) return null;
+    
+    const headers: any[] = [];
+    let offset = 4;
+    
+    for (let i = 0; i < count; i++) {
+      const hashBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
+      const hash = decoder.decode(hashBytes).replace(/\0+$/, '');
+      offset += 32;
+      
+      const prevBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
+      const previousHash = decoder.decode(prevBytes).replace(/\0+$/, '');
+      offset += 32;
+      
+      const merkleBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
+      const merkleRoot = decoder.decode(merkleBytes).replace(/\0+$/, '');
+      offset += 32;
+      
+      const timestamp = Number(view.getBigUint64(offset, false));
+      offset += 8;
+      
+      const difficulty = view.getUint32(offset, false);
+      offset += 4;
+      
+      const nonce = Number(view.getBigUint64(offset, false));
+      offset += 8;
+      
+      headers.push({
+        hash,
+        previousHash,
+        merkleRoot,
+        timestamp,
+        difficulty,
+        nonce
+      });
+    }
+    
+    return headers;
+  }
+
+  /**
+   * serialize getdata message
+   */
+  serializeGetData(items: InvItem[]): Uint8Array {
+    return this.serializeInv(items); // same format as inv
+  }
+
+  /**
+   * deserialize getdata message
+   */
+  deserializeGetData(data: Uint8Array): InvItem[] | null {
+    return this.deserializeInv(data); // same format as inv
+  }
+
+  /**
+   * encode complete message with header and payload
+   */
+  encodeMessage(command: string, payload: any): Uint8Array {
+    // map command to message type
+    const typeMap: { [key: string]: MessageType } = {
+      'version': MessageType.VERSION,
+      'verack': MessageType.VERACK,
+      'ping': MessageType.PING,
+      'pong': MessageType.PONG,
+      'getblocks': MessageType.GETBLOCKS,
+      'getdata': MessageType.GETDATA,
+      'getheaders': MessageType.GETHEADERS,
+      'block': MessageType.BLOCK,
+      'tx': MessageType.TX,
+      'inv': MessageType.INV,
+      'headers': MessageType.HEADERS,
+      'reject': MessageType.REJECT,
+    };
+    
+    const type = typeMap[command.toLowerCase()];
+    if (!type) {
+      throw new Error(`unknown command: ${command}`);
+    }
+    
+    // serialize payload based on type
+    let payloadBytes: Uint8Array;
+    switch (type) {
+      case MessageType.VERSION:
+        payloadBytes = this.serializeVersion(payload);
+        break;
+      case MessageType.VERACK:
+        payloadBytes = new Uint8Array(0); // empty
+        break;
+      case MessageType.PING:
+      case MessageType.PONG:
+        payloadBytes = this.serializePing(payload.nonce);
+        break;
+      case MessageType.INV:
+        payloadBytes = this.serializeInv(payload);
+        break;
+      case MessageType.GETDATA:
+        payloadBytes = this.serializeGetData(payload);
+        break;
+      case MessageType.GETHEADERS:
+        payloadBytes = this.serializeGetHeaders(payload.locator, payload.stopHash);
+        break;
+      case MessageType.HEADERS:
+        payloadBytes = this.serializeHeaders(payload);
+        break;
+      default:
+        throw new Error(`serialization not implemented for ${command}`);
+    }
+    
+    return this.serializeMessage(type, payloadBytes);
+  }
+
+  /**
+   * decode message from bytes
+   */
+  decodeMessage(data: Uint8Array): { command: string, payload: any } | null {
+    const result = this.deserializeMessage(data);
+    if (!result) return null;
+    
+    const { header, payload } = result;
+    
+    // map type to command
+    const commandMap: { [key: number]: string } = {
+      [MessageType.VERSION]: 'version',
+      [MessageType.VERACK]: 'verack',
+      [MessageType.PING]: 'ping',
+      [MessageType.PONG]: 'pong',
+      [MessageType.GETBLOCKS]: 'getblocks',
+      [MessageType.GETDATA]: 'getdata',
+      [MessageType.GETHEADERS]: 'getheaders',
+      [MessageType.BLOCK]: 'block',
+      [MessageType.TX]: 'tx',
+      [MessageType.INV]: 'inv',
+      [MessageType.HEADERS]: 'headers',
+      [MessageType.REJECT]: 'reject',
+    };
+    
+    const command = commandMap[header.type];
+    if (!command) {
+      logger.warn(`unknown message type: ${header.type}`);
+      return null;
+    }
+    
+    // deserialize payload based on type
+    let decodedPayload: any;
+    switch (header.type) {
+      case MessageType.VERSION:
+        decodedPayload = this.deserializeVersion(payload);
+        break;
+      case MessageType.VERACK:
+        decodedPayload = {}; // empty
+        break;
+      case MessageType.PING:
+      case MessageType.PONG:
+        decodedPayload = { nonce: this.deserializePing(payload) };
+        break;
+      case MessageType.INV:
+        decodedPayload = this.deserializeInv(payload);
+        break;
+      case MessageType.GETDATA:
+        decodedPayload = this.deserializeGetData(payload);
+        break;
+      case MessageType.GETHEADERS:
+        decodedPayload = this.deserializeGetHeaders(payload);
+        break;
+      case MessageType.HEADERS:
+        decodedPayload = this.deserializeHeaders(payload);
+        break;
+      default:
+        logger.warn(`deserialization not implemented for ${command}`);
+        decodedPayload = payload;
+    }
+    
+    return { command, payload: decodedPayload };
   }
 }
