@@ -118,8 +118,7 @@ describe('Full Blockchain Flow Integration', () => {
       template.timestamp,
       template.previousHash,
       template.transactions, // already includes coinbase
-      template.difficulty,
-      template.chainVersionHash
+      template.difficulty
     );
     
     // In devnet, difficulty is 1, so any nonce works
@@ -231,8 +230,7 @@ describe('Full Blockchain Flow Integration', () => {
       template.timestamp,
       template.previousHash,
       template.transactions, // already includes coinbase and tx1
-      template.difficulty,
-      template.chainVersionHash
+      template.difficulty
     );
     block.nonce = 1;
     block.hash = block.calculateHash();
@@ -282,8 +280,7 @@ describe('Full Blockchain Flow Integration', () => {
       template.timestamp,
       template.previousHash,
       template.transactions, // already includes coinbase
-      template.difficulty,
-      template.chainVersionHash
+      template.difficulty
     );
     block.nonce = 1;
     block.hash = block.calculateHash();
@@ -458,8 +455,7 @@ describe('Full Blockchain Flow Integration', () => {
       template.timestamp,
       template.previousHash,
       template.transactions, // already includes coinbase
-      template.difficulty,
-      template.chainVersionHash
+      template.difficulty
     );
     block.nonce = 1;
     block.hash = block.calculateHash();

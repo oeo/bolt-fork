@@ -68,22 +68,32 @@ class FileLogger {
   }
 
   private formatMessage(level: LogLevel, message: string, data?: any): string {
-    const timestamp = new Date().toISOString();
-    const domain = this.domain ? `[${this.domain}]` : '';
+    // compact timestamp: HH:MM:SS.mmm
+    const now = new Date();
+    const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}.${now.getMilliseconds().toString().padStart(3, '0')}`;
     
-    let formatted = `${timestamp} ${level.toUpperCase().padEnd(5)} ${domain} ${message}`;
+    // compact level: first letter uppercase
+    const levelChar = level[0].toUpperCase();
+    
+    // always show domain/filename
+    const domain = this.domain || 'main';
+    
+    let formatted = `${time} ${levelChar} [${domain}] ${message}`;
     
     if (data !== undefined) {
       if (data instanceof Error) {
-        formatted += ` ${data.message}`;
-        if (data.stack) {
-          formatted += `\n${data.stack}`;
+        formatted += `: ${data.message}`;
+        if (data.stack && level === 'error' || level === 'fatal') {
+          // stack trace on separate lines without indentation
+          const stackLines = data.stack.split('\n').map(line => line.trim());
+          formatted += '\n' + stackLines.join('\n');
         }
       } else if (typeof data === 'object') {
         try {
+          // compact JSON on same line
           formatted += ` ${JSON.stringify(data)}`;
         } catch {
-          formatted += ` [circular object]`;
+          formatted += ` [circular]`;
         }
       } else {
         formatted += ` ${data}`;
@@ -143,19 +153,25 @@ class FileLogger {
     // console output
     if (this.console) {
       const color = this.getColor(level);
-      console.log(`${color}${formatted.trim()}\x1b[0m`);
+      // remove trailing newline for console output
+      const output = formatted.trim();
+      if (color) {
+        console.log(`${color}${output}\x1b[0m`);
+      } else {
+        console.log(output);
+      }
     }
   }
 
   private getColor(level: LogLevel): string {
     switch (level) {
-      case 'trace': return '\x1b[90m';
-      case 'debug': return '\x1b[36m';
-      case 'info': return '\x1b[0m';   // no color for info
-      case 'warn': return '\x1b[33m';
-      case 'error': return '\x1b[31m';
-      case 'fatal': return '\x1b[35m';
-      default: return '\x1b[0m';
+      case 'trace': return '\x1b[90m';  // gray
+      case 'debug': return '\x1b[36m';  // cyan
+      case 'info': return '';            // no color for info
+      case 'warn': return '\x1b[33m';   // yellow
+      case 'error': return '\x1b[31m';  // red
+      case 'fatal': return '\x1b[35m';  // magenta
+      default: return '';
     }
   }
 
@@ -213,17 +229,10 @@ export function getLogger(filePath?: string): FileLogger {
     return logger;
   }
   
-  // extract domain from file path
-  const srcIndex = filePath.indexOf('/src/');
-  if (srcIndex === -1) {
-    return logger;
-  }
+  // extract basename without extension
+  const basename = path.basename(filePath, path.extname(filePath));
   
-  const relativePath = filePath.substring(srcIndex + 5);
-  const parts = relativePath.split('/');
-  const domain = parts.length === 1 ? 'root' : parts[0];
-  
-  return logger.child({ domain });
+  return logger.child({ domain: basename });
 }
 
 // handle uncaught errors

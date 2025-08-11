@@ -7,7 +7,6 @@ import { BlockClass } from '../src/core/block';
 import { TransactionClass, createCoinbaseTransaction, createSignedTransaction } from '../src/core/transaction';
 import { createStorage } from '../src/storage';
 import { devnet } from '../src/config/chains/devnet';
-import { calculateChainVersionHash } from '../src/config/chain';
 import { generateAddress, validateAddress } from '../src/crypto/address';
 import { formatWatts } from '../src/utils/currency';
 import { getLogger } from '../src/utils/logger';
@@ -173,7 +172,6 @@ async function advancedDemo() {
         template.previousHash,
         template.transactions,
         template.difficulty,
-        calculateChainVersionHash(config),
         minerAddress
       );
       
@@ -346,7 +344,6 @@ async function advancedDemo() {
         template.previousHash,
         template.transactions,
         template.difficulty,
-        calculateChainVersionHash(config),
         miner2Address
       );
       

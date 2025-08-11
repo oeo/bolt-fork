@@ -1,11 +1,12 @@
 import { StorageAdapter } from './adapter';
 import { MemoryAdapter } from './memory';
 import { RedisAdapter } from './redis';
+import { LMDBAdapter } from './lmdb-adapter';
 import { getLogger } from '../utils/logger';
 
 const logger = getLogger(__filename);
 
-export type StorageType = 'redis' | 'memory' | 'leveldb';
+export type StorageType = 'redis' | 'memory' | 'lmdb';
 
 interface StorageConfig {
   type: StorageType;
@@ -13,6 +14,10 @@ interface StorageConfig {
     host?: string;
     port?: number;
     db?: number;
+  };
+  lmdb?: {
+    path?: string;
+    mapSize?: number;
   };
 }
 
@@ -58,9 +63,14 @@ export function createStorage(typeOrConfig: StorageType | StorageConfig | any): 
       adapter = new MemoryAdapter();
       break;
       
-    case 'leveldb':
-      // placeholder for future leveldb implementation
-      throw new Error('LevelDB adapter not yet implemented');
+    case 'lmdb':
+      const lmdbConfig = config.lmdb || {};
+      const lmdbPath = lmdbConfig.path || typeOrConfig.path || './data/lmdb';
+      adapter = new LMDBAdapter({
+        path: lmdbPath,
+        mapSize: lmdbConfig.mapSize || typeOrConfig.mapSize || 100 * 1024 * 1024 * 1024 // 100GB default
+      });
+      break;
       
     default:
       throw new Error(`Unknown storage type: ${config.type}`);
@@ -75,7 +85,7 @@ export function createStorage(typeOrConfig: StorageType | StorageConfig | any): 
  * create storage from environment variables
  */
 export function createStorageFromEnv(): StorageAdapter {
-  const type = (process.env.STORAGE_TYPE || 'memory') as StorageType;
+  const type = (process.env.STORAGE_TYPE || 'lmdb') as StorageType;
   
   const config: StorageConfig = {
     type,
@@ -83,6 +93,10 @@ export function createStorageFromEnv(): StorageAdapter {
       host: process.env.REDIS_HOST || 'localhost',
       port: parseInt(process.env.REDIS_PORT || '7337'),
       db: parseInt(process.env.REDIS_DB || '0')
+    },
+    lmdb: {
+      path: process.env.LMDB_PATH || './data/lmdb',
+      mapSize: parseInt(process.env.LMDB_MAP_SIZE || String(100 * 1024 * 1024 * 1024)) // 100GB default
     }
   };
   

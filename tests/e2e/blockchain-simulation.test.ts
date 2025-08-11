@@ -184,8 +184,7 @@ class Miner extends BlockchainActor {
       template.timestamp,
       template.previousHash,
       template.transactions, // already includes coinbase
-      template.difficulty,
-      template.chainVersionHash
+      template.difficulty
     );
     
     // in devnet, difficulty 1 means any hash is valid

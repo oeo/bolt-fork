@@ -149,7 +149,6 @@ async function simulateActivity(nodes: any[]) {
     template.previousHash,
     template.transactions,
     template.difficulty,
-    template.chainVersionHash,
     nodes[0].minerAddress
   );
 

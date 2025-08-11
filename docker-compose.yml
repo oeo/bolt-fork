@@ -2,8 +2,7 @@
 # usage: docker compose up
 
 include:
-  - compose/base.yml
-  - compose/redis.yml
+  # Don't include base.yml - it's only for extending
   - compose/ipfs.yml
   - compose/prometheus.yml
   - compose/grafana.yml
@@ -23,7 +22,8 @@ services:
       NODE_HOST: ${NODE_HOST:-bolt-node}
       BOLT_NETWORK: ${BOLT_NETWORK:-testnet}
       API_PORT: ${API_PORT:-7333}
-      REDIS_URL: redis://redis:6379
+      STORAGE_TYPE: lmdb
+      DATA_DIR: /data
       MINING_ENABLED: ${MINING_ENABLED:-true}
       MINER_ADDRESS: ${MINER_ADDRESS:-1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa}
       MINING_MAX_ITERATIONS: ${MINING_MAX_ITERATIONS:-1000000}
@@ -39,8 +39,6 @@ services:
       - ./logs:/app/logs
       - ./src:/app/src  # for development
     depends_on:
-      redis:
-        condition: service_healthy
       ipfs:
         condition: service_healthy
     networks:

@@ -28,7 +28,7 @@ COPY src ./src
 COPY scripts ./scripts
 
 # create directories
-RUN mkdir -p /data /ipfs
+RUN mkdir -p /data/lmdb /ipfs
 
 # create startup script
 RUN cat > /start.sh << 'EOF'
@@ -43,6 +43,8 @@ if [ ! -d /ipfs/.ipfs ]; then
     IPFS_PATH=/ipfs/.ipfs ipfs config Addresses.API /ip4/0.0.0.0/tcp/5001
     IPFS_PATH=/ipfs/.ipfs ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin '["*"]'
     IPFS_PATH=/ipfs/.ipfs ipfs config Datastore.StorageMax 1GB
+    # disable autorelay to prevent the errors
+    IPFS_PATH=/ipfs/.ipfs ipfs config --json Swarm.RelayClient.Enabled false
 fi
 
 # start IPFS daemon in background

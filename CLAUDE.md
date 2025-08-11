@@ -10,3 +10,5 @@
 
 
 - We have a utility for serializing bigints in the src/utils folder.
+- Always run `bun test` with `--bail` or using a timeout so you don't get a process that keeps running forever
+- Whenever you have the chance use tools native to Bun vs the ones provided in Node because they offer far better performance!

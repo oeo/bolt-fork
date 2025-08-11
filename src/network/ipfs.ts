@@ -174,7 +174,7 @@ export class IPFSService extends EventEmitter {
               nodeId: data.nodeId,
               httpUrl: data.httpUrl
             });
-            logger.info(`Discovered new peer: ${data.nodeId} at ${data.httpUrl}`);
+            logger.info(`discovered new peer: ${data.nodeId.substring(0, 8)}... at ${data.httpUrl}`);
           }
         }
         this.emit('peer', data);
@@ -191,7 +191,7 @@ export class IPFSService extends EventEmitter {
   async announceNode(): Promise<void> {
     // get our HTTP API endpoint
     const apiPort = process.env.API_PORT || '7333';
-    const nodeHost = process.env.NODE_HOST || this.config.nodeId;
+    const nodeHost = process.env.NODE_HOST || 'bolt-node';
     const httpUrl = `http://${nodeHost}:${apiPort}`;
     
     const announcement: IPFSMessage = {
@@ -207,7 +207,7 @@ export class IPFSService extends EventEmitter {
     };
     
     await this.publishToTopic(IPFSService.TOPIC_PEERS, announcement);
-    logger.info(`Announced node: ${this.config.nodeId} at ${httpUrl}`);
+    logger.info(`announced node: ${this.config.nodeId} at ${httpUrl}`);
   }
   
   // block and transaction announcements removed - will use HTTP directly

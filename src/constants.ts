@@ -3,6 +3,8 @@
  * these values are fundamental to the protocol and never change
  */
 
+export const NETWORK_MAGIC = 0x12699C94; // network protocol magic bytes
+
 // ===========================
 // currency definition
 // ===========================

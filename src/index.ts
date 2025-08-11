@@ -14,6 +14,7 @@ import { generateAddress } from './crypto/address';
 import { getLogger } from './utils/logger';
 import { serialize } from './utils/bigint';
 import { TransactionClass } from './core/transaction';
+import { IdentityManager } from './utils/identity';
 import { serve } from 'bun';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -32,6 +33,7 @@ interface NodeConfig {
   // storage
   dataDir: string;
   redisUrl?: string;
+  storageType?: string;
   
   // mining
   minerAddress?: string;
@@ -43,6 +45,7 @@ interface NodeConfig {
 
 class BoltIPFSNode {
   private config: NodeConfig;
+  private identity!: IdentityManager;
   private storage: any;
   private blockchain!: Blockchain;
   private mempool!: Mempool;
@@ -91,15 +94,22 @@ class BoltIPFSNode {
   }
   
   async initialize(): Promise<void> {
-    logger.info(`Initializing bolt IPFS node ${this.config.nodeId} with role: ${this.config.role}`);
-    
     // ensure data directory exists
     if (!fs.existsSync(this.config.dataDir)) {
       fs.mkdirSync(this.config.dataDir, { recursive: true });
     }
     
+    // load or create node identity
+    this.identity = new IdentityManager(this.config.dataDir);
+    const nodeIdentity = await this.identity.loadOrCreate();
+    
+    // override nodeId with address from identity
+    this.config.nodeId = nodeIdentity.address;
+    
+    logger.info(`initializing bolt node ${this.identity.getDisplayName()} (${nodeIdentity.address}) with role: ${this.config.role}`);
+    
     // create storage
-    if (this.config.redisUrl) {
+    if (this.config.storageType === 'redis' && this.config.redisUrl) {
       const url = new URL(this.config.redisUrl);
       this.storage = createStorage({
         type: 'redis',
@@ -108,8 +118,16 @@ class BoltIPFSNode {
         password: url.password,
         keyPrefix: `bolt:${this.config.nodeId}:`
       });
-    } else {
+    } else if (this.config.storageType === 'memory') {
       this.storage = createStorage('memory');
+    } else {
+      // default to lmdb
+      const lmdbPath = path.join(this.config.dataDir, 'lmdb');
+      this.storage = createStorage({
+        type: 'lmdb',
+        path: lmdbPath,
+        mapSize: 100 * 1024 * 1024 * 1024 // 100GB
+      });
     }
     
     await this.storage.connect();
@@ -127,18 +145,18 @@ class BoltIPFSNode {
     this.mempool = new Mempool(this.storage, chainConfig);
     logger.info('Mempool initialized');
     
-    // create ipfs service
+    // create ipfs service with identity address
     this.ipfs = new IPFSService({
-      nodeId: this.config.nodeId,
+      nodeId: this.identity.getNodeId(),
       chainConfig,
       apiUrl: this.config.ipfsApi
     });
     
-    // create peer manager
-    const nodeHost = process.env.NODE_HOST || this.config.nodeId;
+    // create peer manager with identity address
+    const nodeHost = process.env.NODE_HOST || 'bolt-node';
     const httpUrl = `http://${nodeHost}:${this.config.apiPort}`;
     this.peerManager = new PeerManager({
-      ownNodeId: this.config.nodeId,
+      ownNodeId: this.identity.getNodeId(),
       ownHttpUrl: httpUrl
     });
     
@@ -273,10 +291,10 @@ class BoltIPFSNode {
     
     // handle peer announcements
     this.ipfs.on('peer', (message: any) => {
-      logger.debug(`Peer announcement from ${message.nodeId}`);
+      logger.debug(`peer announcement from ${message.nodeId}`);
       
-      // add discovered peer to peer manager
-      if (message.httpUrl && message.nodeId !== this.config.nodeId) {
+      // add discovered peer to peer manager (filter by identity address)
+      if (message.httpUrl && message.nodeId !== this.identity.getNodeId()) {
         this.peerManager.addPeer({
           nodeId: message.nodeId,
           httpUrl: message.httpUrl,
@@ -431,7 +449,7 @@ class BoltIPFSNode {
       const height = await this.blockchain.getHeight();
       const syncing = this.syncService.isSyncing();
       
-      logger.info(`Node status: id=${this.config.nodeId}, role=${this.config.role}, activePeers=${peerStats.activePeers}, height=${height}, syncing=${syncing}`);
+      logger.info(`node status: id=${this.identity.getDisplayName()}, role=${this.config.role}, activePeers=${peerStats.activePeers}, height=${height}, syncing=${syncing}`);
     } catch (error) {
       logger.error('Error logging status:', error);
     }
@@ -491,6 +509,7 @@ function parseConfig(): NodeConfig {
     // storage
     dataDir: process.env.DATA_DIR || './data',
     redisUrl: process.env.REDIS_URL,
+    storageType: process.env.STORAGE_TYPE || 'lmdb',
     
     // mining
     minerAddress: process.env.MINER_ADDRESS,
@@ -505,9 +524,9 @@ function parseConfig(): NodeConfig {
 
 // main entry point
 async function main() {
-  logger.info('Starting bolt blockchain node with IPFS...');
-  logger.info(`Node version: 0.1.0`);
-  logger.info(`Network: ${chainConfig.name}`);
+  logger.info('starting bolt blockchain node with IPFS...');
+  logger.info(`node version: 0.1.0`);
+  logger.info(`network: ${chainConfig.name}`);
   
   const config = parseConfig();
   const node = new BoltIPFSNode(config);
@@ -516,7 +535,7 @@ async function main() {
     await node.initialize();
     await node.start();
     
-    logger.info('Node is running. Press Ctrl+C to stop.');
+    logger.info('node is running. press Ctrl+C to stop.');
     
     // keep process alive
     setInterval(() => {}, 1000);

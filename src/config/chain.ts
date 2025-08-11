@@ -50,22 +50,6 @@ export const config: ChainConfig = configModule[network] || configModule.default
 // get the configured hash algorithm for mining
 export const miningHashAlgorithm = config.hashAlgorithm || 'sha256';
 
-/**
- * calculate a unique hash for the chain configuration
- * this ensures nodes with different configs cannot connect
- */
-export function calculateChainVersionHash(chainConfig: ChainConfig): string {
-  const versionData = JSON.stringify({
-    chainId: chainConfig.chainId,
-    name: chainConfig.name,
-    hashAlgorithm: chainConfig.hashAlgorithm,
-    genesisTimestamp: chainConfig.genesisTimestamp,
-    initialDifficulty: chainConfig.initialDifficulty,
-    maxSupply: chainConfig.maxSupply.toString()
-  });
-  
-  return hash(versionData, 'sha256').substring(0, 16);
-}
 
 // simple feature check
 export function isFeatureActive(feature: string, height: number): boolean {
