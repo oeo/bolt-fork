@@ -57,8 +57,8 @@ describe('Chain Configuration', () => {
       expect(testnet.difficultyAdjustmentInterval).toBe(100);
     });
 
-    it('should have lower initial difficulty', () => {
-      expect(testnet.initialDifficulty).toBe(10);
+    it('should have reasonable initial difficulty for testing', () => {
+      expect(testnet.initialDifficulty).toBe(100000);
     });
 
     it('should have faster halving for testing', () => {

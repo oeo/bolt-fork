@@ -129,7 +129,7 @@ export class SyncService extends EventEmitter {
         
         // if at same height, compare block hashes
         if (peerHeight === ourHeight) {
-          const peerBlocks = await this.config.peerManager.requestBlocks(peer, peerHeight);
+          const peerBlocks = await this.config.peerManager.requestBlocks(bestPeer, peerHeight);
           
           if (peerBlocks.length > 0 && ourLatest) {
             const peerLatest = peerBlocks[0];
@@ -142,7 +142,7 @@ export class SyncService extends EventEmitter {
             // lexicographically lower hash wins (deterministic across all nodes)
             if (peerLatest.hash < ourLatest.hash) {
               logger.info(`Tie-breaker: Peer's hash ${peerLatest.hash} < our hash ${ourLatest.hash}, switching chains`);
-              await this.fetchCompleteChain(peer);
+              await this.fetchCompleteChain(bestPeer);
               return;
             } else {
               logger.debug(`Tie-breaker: Our hash ${ourLatest.hash} <= peer's hash ${peerLatest.hash}, keeping our chain`);
@@ -153,7 +153,7 @@ export class SyncService extends EventEmitter {
           // peer has more blocks with same cumulative difficulty (shouldn't happen with proper difficulty)
           // but if it does, they have more proof of work
           logger.info(`Peer has more blocks (${peerHeight} > ${ourHeight}) with same cumulative difficulty, fetching their chain`);
-          await this.fetchCompleteChain(peer);
+          await this.fetchCompleteChain(bestPeer);
           return;
         }
         
@@ -250,6 +250,10 @@ export class SyncService extends EventEmitter {
    * fetch complete chain from a peer and evaluate for reorganization
    */
   private async fetchCompleteChain(peer: any): Promise<void> {
+    if (!peer) {
+      logger.error('fetchCompleteChain called with undefined peer');
+      return;
+    }
     logger.info(`Fetching complete chain from peer ${peer.nodeId}`);
     
     try {
@@ -262,13 +266,21 @@ export class SyncService extends EventEmitter {
       
       // check if peer's chain has more work
       const ourCumulativeDifficulty = await this.config.blockchain.getCumulativeDifficulty();
+      const ourHeight = await this.config.blockchain.getHeight();
       
-      if (peerCumulativeDifficulty <= ourCumulativeDifficulty) {
-        logger.info(`Peer's chain has less work (${peerCumulativeDifficulty} <= ${ourCumulativeDifficulty}), keeping our chain`);
+      // if peer has less work, keep our chain
+      if (peerCumulativeDifficulty < ourCumulativeDifficulty) {
+        logger.info(`Peer's chain has less work (${peerCumulativeDifficulty} < ${ourCumulativeDifficulty}), keeping our chain`);
         return;
       }
       
-      logger.info(`Peer's chain has more work (${peerCumulativeDifficulty} > ${ourCumulativeDifficulty}), fetching blocks...`);
+      // if equal work but peer has fewer blocks, keep our chain
+      if (peerCumulativeDifficulty === ourCumulativeDifficulty && peerHeight <= ourHeight) {
+        logger.info(`Peer's chain has equal work but not more blocks (height ${peerHeight} <= ${ourHeight}), keeping our chain`);
+        return;
+      }
+      
+      logger.info(`Peer's chain is longer or has more work (diff: ${peerCumulativeDifficulty}, height: ${peerHeight}), fetching blocks...`);
       
       // fetch all blocks from peer
       const blocks = [];

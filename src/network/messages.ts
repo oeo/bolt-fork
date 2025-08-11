@@ -58,7 +58,6 @@ export interface NetworkMessage {
 export interface BoltVersionMessage extends NetworkMessage {
   type: MessageType.BOLT_VERSION;
   protocolVersion: number; // bolt protocol version (1)
-  chainVersionHash: string;
   network: string; // mainnet, testnet, devnet
   height: number;
   cumulativeDifficulty: bigint; // total chain work
@@ -101,7 +100,6 @@ export interface HeadersMessage extends NetworkMessage {
     timestamp: number;
     difficulty: number;
     merkleRoot: string;
-    chainVersionHash: string;
   }>;
 }
 
@@ -219,7 +217,6 @@ export class MessageFactory {
 
   static createBoltVersion(
     protocolVersion: number,
-    chainVersionHash: string,
     network: string,
     height: number,
     cumulativeDifficulty: bigint,
@@ -230,7 +227,6 @@ export class MessageFactory {
       timestamp: Date.now(),
       nonce: this.generateNonce(),
       protocolVersion,
-      chainVersionHash,
       network,
       height,
       cumulativeDifficulty,
@@ -408,16 +404,12 @@ export class MessageValidator {
   }
 
   private static validateBoltVersion(msg: BoltVersionMessage): { valid: boolean; error?: string } {
-    if (!msg.protocolVersion || !msg.chainVersionHash || !msg.network) {
+    if (!msg.protocolVersion || !msg.network) {
       return { valid: false, error: 'Missing required version fields' };
     }
 
     if (msg.protocolVersion > this.PROTOCOL_VERSION) {
       return { valid: false, error: `Unsupported protocol version ${msg.protocolVersion}` };
-    }
-
-    if (msg.chainVersionHash.length !== 64) {
-      return { valid: false, error: 'Invalid chain version hash' };
     }
 
     if (msg.height < 0) {

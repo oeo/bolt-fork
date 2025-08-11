@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # scrape prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        
+  # scrape bolt node metrics endpoint
+  - job_name: 'bolt'
+    static_configs:
+      - targets: ['bolt:7336']

@@ -7,8 +7,9 @@
 - No external dependencies
 - Mock storage and network
 - Run instantly
-- **Coverage**: All core modules, crypto, storage, services
-- **309 total tests across all suites - 100% passing**
+- **Coverage**: All core modules, crypto, storage, services, consensus
+- **320+ total tests across all suites - 100% passing**
+- **New consensus tests**: median time validation during reorganization
 
 ### Integration tests (`tests/integration/`)
 - Test component interactions
@@ -35,6 +36,8 @@
   - Concurrent miners simulation
   - Miner rewards calculation
   - Chain reorganization handling
+  - **Advanced reorganization scenarios with median time validation**
+  - **Pre-validation of competing chains before reorganization**
   - High transaction volume processing (10+ actors)
   - Nonce tracking with pending transactions
   - Mining pool GBT integration
@@ -154,7 +157,6 @@ export function createTestBlock(overrides = {}): Block {
     difficulty: 10,
     nonce: 0,
     transactions: [],
-    chainVersionHash: 'test',
     ...overrides
   };
 }

@@ -1,0 +1,14 @@
+# test environment overrides
+# use with: docker compose -f compose/redis.yml -f compose/test.yml up
+
+services:
+  redis:
+    container_name: bolt-redis-test
+    ports:
+      - "7337:6379"  # test port
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-test-data:/data  # separate test volume
+
+volumes:
+  redis-test-data:

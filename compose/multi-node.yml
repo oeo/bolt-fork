@@ -1,0 +1,308 @@
+# ultra-dry multi-node configuration with full stack
+# usage: docker compose -f compose/multi-node.yml up
+
+x-redis-template: &redis-template
+  image: redis:7-alpine
+  command: redis-server --appendonly yes
+  healthcheck:
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 2s
+    timeout: 1s
+    retries: 5
+  networks:
+    - bolt-network
+  restart: unless-stopped
+
+x-ipfs-template: &ipfs-template
+  image: ipfs/kubo:latest
+  environment:
+    IPFS_PROFILE: ${IPFS_PROFILE:-server}
+  healthcheck:
+    test: ["CMD-SHELL", "ipfs id"]
+    interval: 2s
+    timeout: 2s
+    retries: 10
+  networks:
+    - bolt-network
+  restart: unless-stopped
+
+x-node-template: &node-template
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  environment:
+    BOLT_NETWORK: ${BOLT_NETWORK:-testnet}
+    API_PORT: 7333
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    MINING_MAX_ITERATIONS: "1000000"
+    MINING_INTERVAL: "5000"
+    ENABLE_IPFS: "true"
+  networks:
+    - bolt-network
+  restart: unless-stopped
+  volumes:
+    - ../src:/app/src:ro
+    - ../logs:/app/logs
+
+x-prometheus-template: &prometheus-template
+  image: prom/prometheus:latest
+  volumes:
+    - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  command:
+    - '--config.file=/etc/prometheus/prometheus.yml'
+    - '--storage.tsdb.path=/prometheus'
+    - '--web.enable-lifecycle'
+  networks:
+    - bolt-network
+  restart: unless-stopped
+
+x-grafana-template: &grafana-template
+  image: grafana/grafana:latest
+  volumes:
+    - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
+  environment:
+    GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+    GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+    GF_AUTH_ANONYMOUS_ENABLED: ${GF_ANONYMOUS:-false}
+  networks:
+    - bolt-network
+  restart: unless-stopped
+
+x-loki-template: &loki-template
+  image: grafana/loki:2.9.0
+  volumes:
+    - ./monitoring/loki.yml:/etc/loki/local-config.yaml:ro
+  command: -config.file=/etc/loki/local-config.yaml
+  networks:
+    - bolt-network
+  restart: unless-stopped
+
+x-promtail-template: &promtail-template
+  image: grafana/promtail:latest
+  volumes:
+    - ./monitoring/promtail.yml:/etc/promtail/config.yml:ro
+    - ../logs:/var/log/bolt:ro
+  command: -config.file=/etc/promtail/config.yml
+  networks:
+    - bolt-network
+  restart: unless-stopped
+
+services:
+  # node 1 stack
+  node1-redis:
+    <<: *redis-template
+    container_name: node1-redis
+    ports: ["7337:6379"]
+    volumes: [node1-redis-data:/data]
+    
+  node1-ipfs:
+    <<: *ipfs-template
+    container_name: node1-ipfs
+    ports: ["5011:5001", "8081:8080", "4011:4001"]
+    volumes: [node1-ipfs-data:/data/ipfs]
+    
+  node1:
+    <<: *node-template
+    container_name: bolt-node1
+    environment:
+      NODE_ID: node1
+      NODE_HOST: bolt-node1
+      REDIS_URL: redis://node1-redis:6379
+      MINING_ENABLED: "true"
+      MINER_ADDRESS: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+      IPFS_URL: http://node1-ipfs:5001
+    ports: ["7333:7333", "7336:7336"]
+    volumes:
+      - node1-data:/data
+      - ../src:/app/src:ro
+      - ../logs:/app/logs
+    depends_on:
+      node1-redis: {condition: service_healthy}
+      node1-ipfs: {condition: service_healthy}
+      
+  node1-prometheus:
+    <<: *prometheus-template
+    container_name: node1-prometheus
+    ports: ["9091:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - node1-prometheus-data:/prometheus
+      
+  node1-grafana:
+    <<: *grafana-template
+    container_name: node1-grafana
+    ports: ["3001:3000"]
+    volumes:
+      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
+      - node1-grafana-data:/var/lib/grafana
+    depends_on:
+      - node1-prometheus
+      
+  node1-loki:
+    <<: *loki-template
+    container_name: node1-loki
+    ports: ["3101:3100"]
+    volumes:
+      - ./monitoring/loki.yml:/etc/loki/local-config.yaml:ro
+      - node1-loki-data:/loki
+      
+  node1-promtail:
+    <<: *promtail-template
+    container_name: node1-promtail
+    depends_on:
+      - node1-loki
+      
+  # node 2 stack  
+  node2-redis:
+    <<: *redis-template
+    container_name: node2-redis
+    ports: ["7338:6379"]
+    volumes: [node2-redis-data:/data]
+    
+  node2-ipfs:
+    <<: *ipfs-template
+    container_name: node2-ipfs
+    ports: ["5012:5001", "8082:8080", "4012:4001"]
+    volumes: [node2-ipfs-data:/data/ipfs]
+    
+  node2:
+    <<: *node-template
+    container_name: bolt-node2
+    environment:
+      NODE_ID: node2
+      NODE_HOST: bolt-node2
+      REDIS_URL: redis://node2-redis:6379
+      MINING_ENABLED: "true"
+      MINER_ADDRESS: "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+      IPFS_URL: http://node2-ipfs:5001
+    ports: ["7343:7333", "7346:7336"]
+    volumes:
+      - node2-data:/data
+      - ../src:/app/src:ro
+      - ../logs:/app/logs
+    depends_on:
+      node2-redis: {condition: service_healthy}
+      node2-ipfs: {condition: service_healthy}
+      
+  node2-prometheus:
+    <<: *prometheus-template
+    container_name: node2-prometheus
+    ports: ["9092:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - node2-prometheus-data:/prometheus
+      
+  node2-grafana:
+    <<: *grafana-template
+    container_name: node2-grafana
+    ports: ["3002:3000"]
+    volumes:
+      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
+      - node2-grafana-data:/var/lib/grafana
+    depends_on:
+      - node2-prometheus
+      
+  node2-loki:
+    <<: *loki-template
+    container_name: node2-loki
+    ports: ["3102:3100"]
+    volumes:
+      - ./monitoring/loki.yml:/etc/loki/local-config.yaml:ro
+      - node2-loki-data:/loki
+      
+  node2-promtail:
+    <<: *promtail-template
+    container_name: node2-promtail
+    depends_on:
+      - node2-loki
+      
+  # node 3 stack
+  node3-redis:
+    <<: *redis-template
+    container_name: node3-redis
+    ports: ["7339:6379"]
+    volumes: [node3-redis-data:/data]
+    
+  node3-ipfs:
+    <<: *ipfs-template
+    container_name: node3-ipfs
+    ports: ["5013:5001", "8083:8080", "4013:4001"]
+    volumes: [node3-ipfs-data:/data/ipfs]
+    
+  node3:
+    <<: *node-template
+    container_name: bolt-node3
+    environment:
+      NODE_ID: node3
+      NODE_HOST: bolt-node3
+      REDIS_URL: redis://node3-redis:6379
+      MINING_ENABLED: "false"
+      IPFS_URL: http://node3-ipfs:5001
+    ports: ["7353:7333", "7356:7336"]
+    volumes:
+      - node3-data:/data
+      - ../src:/app/src:ro
+      - ../logs:/app/logs
+    depends_on:
+      node3-redis: {condition: service_healthy}
+      node3-ipfs: {condition: service_healthy}
+      
+  node3-prometheus:
+    <<: *prometheus-template
+    container_name: node3-prometheus
+    ports: ["9093:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - node3-prometheus-data:/prometheus
+      
+  node3-grafana:
+    <<: *grafana-template
+    container_name: node3-grafana
+    ports: ["3003:3000"]
+    volumes:
+      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
+      - node3-grafana-data:/var/lib/grafana
+    depends_on:
+      - node3-prometheus
+      
+  node3-loki:
+    <<: *loki-template
+    container_name: node3-loki
+    ports: ["3103:3100"]
+    volumes:
+      - ./monitoring/loki.yml:/etc/loki/local-config.yaml:ro
+      - node3-loki-data:/loki
+      
+  node3-promtail:
+    <<: *promtail-template
+    container_name: node3-promtail
+    depends_on:
+      - node3-loki
+
+volumes:
+  # node 1
+  node1-data:
+  node1-redis-data:
+  node1-ipfs-data:
+  node1-prometheus-data:
+  node1-grafana-data:
+  node1-loki-data:
+  # node 2
+  node2-data:
+  node2-redis-data:
+  node2-ipfs-data:
+  node2-prometheus-data:
+  node2-grafana-data:
+  node2-loki-data:
+  # node 3
+  node3-data:
+  node3-redis-data:
+  node3-ipfs-data:
+  node3-prometheus-data:
+  node3-grafana-data:
+  node3-loki-data:
+
+networks:
+  bolt-network:
+    name: bolt-network
+    external: true

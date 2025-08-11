@@ -1,0 +1,45 @@
+# test override configuration
+# usage: docker-compose -f docker-compose.yml -f docker-compose.test.yml up redis
+# inherits all service definitions from docker-compose.yml
+
+services:
+  redis:
+    container_name: bolt-redis-test
+    ports:
+      - "7337:6379"  # test port mapping
+    volumes:
+      - redis-test-data:/data  # separate test data volume
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    
+  # disable main app in test mode
+  bolt:
+    profiles: ["disabled"]
+    
+  # test-specific ipfs configuration
+  ipfs:
+    image: ipfs/kubo:latest
+    container_name: bolt-ipfs-test
+    environment:
+      IPFS_PROFILE: test
+    ports:
+      - "5001:5001"
+      - "8080:8080"
+      - "4001:4001"
+    networks:
+      - bolt-network
+      
+  # disable monitoring services by default in tests
+  prometheus:
+    profiles: ["monitoring"]
+    
+  grafana:
+    profiles: ["monitoring"]
+    
+  loki:
+    profiles: ["monitoring"]
+    
+  promtail:
+    profiles: ["monitoring"]
+
+volumes:
+  redis-test-data:

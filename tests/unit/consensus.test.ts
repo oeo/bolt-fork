@@ -4,7 +4,6 @@ import { BlockClass } from '../../src/core/block';
 import { Blockchain } from '../../src/core/blockchain';
 import { MemoryAdapter } from '../../src/storage/memory';
 import { testnet } from '../../src/config/chains/testnet';
-import { calculateChainVersionHash } from '../../src/config/chain';
 import { createCoinbaseTransaction } from '../../src/core/transaction';
 import { generateAddress } from '../../src/crypto/address';
 
@@ -26,7 +25,6 @@ describe('consensus mechanism', () => {
         difficulty: 10,
         nonce: 0,
         merkleRoot: 'merkle1',
-        chainVersionHash: 'chain1',
         transactions: []
       };
       
@@ -47,7 +45,6 @@ describe('consensus mechanism', () => {
         difficulty: 10,
         nonce: 0,
         merkleRoot: 'merkle1',
-        chainVersionHash: 'chain1',
         transactions: []
       };
       
@@ -59,7 +56,6 @@ describe('consensus mechanism', () => {
         difficulty: 20,
         nonce: 0,
         merkleRoot: 'merkle2',
-        chainVersionHash: 'chain1',
         transactions: []
       };
       
@@ -81,7 +77,6 @@ describe('consensus mechanism', () => {
         difficulty: 10,
         nonce: 0,
         merkleRoot: 'merkle',
-        chainVersionHash: 'chain1',
         transactions: []
       };
       
@@ -108,7 +103,6 @@ describe('consensus mechanism', () => {
         difficulty: 10,
         nonce: 0,
         merkleRoot: 'merkle1',
-        chainVersionHash: 'chain1',
         transactions: []
       };
       
@@ -120,7 +114,6 @@ describe('consensus mechanism', () => {
         difficulty: 15,
         nonce: 0,
         merkleRoot: 'merkle2',
-        chainVersionHash: 'chain1',
         transactions: []
       };
       
@@ -146,8 +139,7 @@ describe('consensus mechanism', () => {
             difficulty: 20,
             nonce: 0,
             merkleRoot: 'merkle',
-            chainVersionHash: 'chain1',
-            transactions: []
+                transactions: []
           },
           {
             index: 12,
@@ -157,8 +149,7 @@ describe('consensus mechanism', () => {
             difficulty: 25,
             nonce: 0,
             merkleRoot: 'merkle',
-            chainVersionHash: 'chain1',
-            transactions: []
+                transactions: []
           }
         ],
         cumulativeDifficulty: 2000n,
@@ -176,7 +167,6 @@ describe('consensus mechanism', () => {
   describe('blockchain reorganization', () => {
     let blockchain: Blockchain;
     let storage: MemoryAdapter;
-    let chainVersionHash: string;
     let miner1Address: string;
     let miner2Address: string;
     
@@ -185,7 +175,6 @@ describe('consensus mechanism', () => {
       await storage.connect();
       blockchain = new Blockchain(storage, testnet);
       await blockchain.initialize();
-      chainVersionHash = calculateChainVersionHash(testnet);
       
       // generate valid addresses for miners
       const miner1Wallet = await generateAddress(testnet.addressPrefix);
@@ -207,7 +196,6 @@ describe('consensus mechanism', () => {
         genesis!.hash,
         [coinbase1],
         testnet.initialDifficulty,
-        chainVersionHash,
         'miner1'
       );
       block1.mine();
@@ -227,7 +215,6 @@ describe('consensus mechanism', () => {
         genesis!.hash,
         [coinbase2],
         testnet.initialDifficulty,
-        chainVersionHash,
         'miner2'
       );
       competingBlock.mine();
@@ -253,7 +240,6 @@ describe('consensus mechanism', () => {
         genesis!.hash,
         [coinbase1],
         testnet.initialDifficulty,
-        chainVersionHash,
         'miner1'
       );
       block1.mine();
@@ -273,7 +259,6 @@ describe('consensus mechanism', () => {
         genesis!.hash,
         [coinbase2a],
         testnet.initialDifficulty,
-        chainVersionHash,
         'miner2'
       );
       competingBlock1.mine();
@@ -286,7 +271,6 @@ describe('consensus mechanism', () => {
         competingBlock1.hash,
         [coinbase2b],
         testnet.initialDifficulty,
-        chainVersionHash,
         'miner2'
       );
       competingBlock2.mine();
@@ -311,7 +295,6 @@ describe('consensus mechanism', () => {
         'unknown_hash',
         [coinbase],
         testnet.initialDifficulty,
-        chainVersionHash,
         'miner1'
       );
       orphanBlock.mine();
@@ -326,7 +309,6 @@ describe('consensus mechanism', () => {
   describe('cumulative difficulty tracking', () => {
     let blockchain: Blockchain;
     let storage: MemoryAdapter;
-    let chainVersionHash: string;
     let miner1Address: string;
     let miner2Address: string;
     
@@ -335,7 +317,6 @@ describe('consensus mechanism', () => {
       await storage.connect();
       blockchain = new Blockchain(storage, testnet);
       await blockchain.initialize();
-      chainVersionHash = calculateChainVersionHash(testnet);
       
       // generate valid addresses for miners
       const miner1Wallet = await generateAddress(testnet.addressPrefix);
@@ -360,7 +341,6 @@ describe('consensus mechanism', () => {
         genesis!.hash,
         [coinbase1],
         testnet.initialDifficulty,
-        chainVersionHash,
         'miner1'
       );
       block1.mine();
@@ -383,7 +363,6 @@ describe('consensus mechanism', () => {
         block1.hash,
         [coinbase2],
         testnet.initialDifficulty,
-        chainVersionHash,
         'miner2'
       );
       block2.mine();
@@ -418,7 +397,6 @@ describe('consensus mechanism', () => {
   describe('median time validation during reorganization', () => {
     let blockchain: Blockchain;
     let storage: MemoryAdapter;
-    const chainVersionHash = calculateChainVersionHash(testnet);
     const miner1Address = generateAddress().address;
     const miner2Address = generateAddress().address;
     
@@ -446,8 +424,7 @@ describe('consensus mechanism', () => {
           previousHash,
           [coinbase],
           testnet.initialDifficulty,
-          chainVersionHash,
-          'miner1'
+            'miner1'
         );
         block.mine();
         
@@ -475,8 +452,7 @@ describe('consensus mechanism', () => {
           previousHash,
           [coinbase],
           testnet.initialDifficulty,
-          chainVersionHash,
-          'miner2'
+            'miner2'
         );
         block.mine();
         forkBlocks.push(block);
@@ -515,8 +491,7 @@ describe('consensus mechanism', () => {
           previousHash,
           [coinbase],
           testnet.initialDifficulty,
-          chainVersionHash,
-          'miner1'
+            'miner1'
         );
         block.mine();
         
@@ -543,7 +518,6 @@ describe('consensus mechanism', () => {
         previousHash,
         [coinbase1],
         testnet.initialDifficulty,
-        chainVersionHash,
         'miner2'
       );
       forkBlock1.mine();
@@ -557,7 +531,6 @@ describe('consensus mechanism', () => {
         forkBlock1.hash,
         [coinbase2],
         testnet.initialDifficulty,
-        chainVersionHash,
         'miner2'
       );
       forkBlock2.mine();

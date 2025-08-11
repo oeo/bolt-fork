@@ -1,23 +1,22 @@
 import * as secp256k1 from '@noble/secp256k1';
-import { sha256 } from '@noble/hashes/sha256';
-import { hmac } from '@noble/hashes/hmac';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
-import { randomBytes } from 'crypto';
-import * as crypto from 'crypto';
 import { generateAddress } from './address';
+import { hash, hexToBytes, bytesToHex } from './hash';
 
-// configure secp256k1 with crypto functions
+// configure secp256k1 with crypto functions using bun's native crypto
 secp256k1.etc.hmacSha256Sync = (k: Uint8Array, ...m: Uint8Array[]) => {
-  const h = hmac.create(sha256, k);
-  m.forEach(msg => h.update(msg));
-  return h.digest();
+  // use bun's crypto for hmac-sha256
+  const key = Buffer.from(k);
+  const hmac = new Bun.CryptoHasher('sha256', key);
+  m.forEach(msg => hmac.update(msg));
+  return new Uint8Array(hmac.digest());
 };
 
-// also need randomBytes for key generation
+// also need async version
 secp256k1.etc.hmacSha256Async = async (k: Uint8Array, ...m: Uint8Array[]) => {
-  const h = hmac.create(sha256, k);
-  m.forEach(msg => h.update(msg));
-  return h.digest();
+  const key = Buffer.from(k);
+  const hmac = new Bun.CryptoHasher('sha256', key);
+  m.forEach(msg => hmac.update(msg));
+  return new Uint8Array(hmac.digest());
 };
 
 /**
@@ -35,8 +34,8 @@ export async function sign(
     ? hexToBytes(privateKey)
     : privateKey;
   
-  // hash the message
-  const msgHash = sha256(msgBytes);
+  // hash the message using bun's native crypto
+  const msgHash = hexToBytes(hash(msgBytes, 'sha256'));
   
   // sign the hash
   const signature = await secp256k1.sign(msgHash, privKeyBytes);
@@ -65,8 +64,8 @@ export async function verify(
       ? hexToBytes(publicKey)
       : publicKey;
     
-    // hash the message
-    const msgHash = sha256(msgBytes);
+    // hash the message using bun's native crypto
+    const msgHash = hexToBytes(hash(msgBytes, 'sha256'));
     
     // verify the signature
     return await secp256k1.verify(sigBytes, msgHash, pubKeyBytes);
@@ -174,7 +173,7 @@ export function calculateTransactionHash(
     ? serializeTransactionData(txData as any) + ':' + signature
     : serializeTransactionData(txData as any);
   
-  return bytesToHex(sha256(new TextEncoder().encode(dataToHash)));
+  return hash(dataToHash, 'sha256');
 }
 
 /**
@@ -185,7 +184,9 @@ export function generatePrivateKey(): Uint8Array {
   
   // ensure we get a valid private key
   do {
-    privKey = randomBytes(32);
+    // use bun's crypto.getRandomValues for random bytes
+    privKey = new Uint8Array(32);
+    crypto.getRandomValues(privKey);
   } while (!secp256k1.utils.isValidPrivateKey(privKey));
   
   return privKey;

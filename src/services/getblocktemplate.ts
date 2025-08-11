@@ -169,7 +169,6 @@ export class GetBlockTemplateService {
       merkleRootPlaceholder: merkleRoot,
       timestamp: Date.now(),
       difficulty,
-      chainVersionHash: chainConfig.chainVersionHash,
       
       target,
       bits,
@@ -395,8 +394,7 @@ export class GetBlockTemplateService {
       submission.timestamp || template.timestamp,
       template.previousHash,
       [template.coinbaseTransaction, ...template.transactions],
-      template.difficulty,
-      template.chainVersionHash
+      template.difficulty
     );
     
     block.nonce = submission.nonce;

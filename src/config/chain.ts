@@ -47,19 +47,25 @@ const network = process.env.BOLT_NETWORK || 'mainnet';
 const configModule = require(join(__dirname, 'chains', `${network}.ts`));
 export const config: ChainConfig = configModule[network] || configModule.default;
 
-// helper function to calculate chain version hash from any config
-export function calculateChainVersionHash(chainConfig: ChainConfig): string {
-  const configString = JSON.stringify(chainConfig, (_, value) =>
-    typeof value === 'bigint' ? value.toString() : value
-  );
-  return hash(configString, 'sha256');
-}
-
-// calculate chain hash once for the global config
-export const chainVersionHash = calculateChainVersionHash(config);
-
 // get the configured hash algorithm for mining
 export const miningHashAlgorithm = config.hashAlgorithm || 'sha256';
+
+/**
+ * calculate a unique hash for the chain configuration
+ * this ensures nodes with different configs cannot connect
+ */
+export function calculateChainVersionHash(chainConfig: ChainConfig): string {
+  const versionData = JSON.stringify({
+    chainId: chainConfig.chainId,
+    name: chainConfig.name,
+    hashAlgorithm: chainConfig.hashAlgorithm,
+    genesisTimestamp: chainConfig.genesisTimestamp,
+    initialDifficulty: chainConfig.initialDifficulty,
+    maxSupply: chainConfig.maxSupply.toString()
+  });
+  
+  return hash(versionData, 'sha256').substring(0, 16);
+}
 
 // simple feature check
 export function isFeatureActive(feature: string, height: number): boolean {

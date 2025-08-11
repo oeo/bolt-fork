@@ -257,12 +257,6 @@ describe('GetBlockTemplate Service', () => {
       expect(template.sigOpsCount).toBe(6);
     });
     
-    test('should include chain version hash', async () => {
-      const template = await gbtService.getBlockTemplate();
-      const config = blockchain.getChainConfig();
-      
-      expect(template.chainVersionHash).toBe(config.chainVersionHash);
-    });
     
     test('should calculate difficulty target correctly', async () => {
       const template = await gbtService.getBlockTemplate();

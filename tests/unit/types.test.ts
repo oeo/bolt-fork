@@ -14,13 +14,11 @@ describe('Type Guards', () => {
         difficulty: 10,
         nonce: 0,
         transactions: [],
-        chainVersionHash: 'xyz789',
         miner: 'bolt1234567890'
       };
       
       expect(block.index).toBe(0);
       expect(block.difficulty).toBe(10);
-      expect(block.chainVersionHash).toBeDefined();
     });
   });
 

@@ -72,7 +72,6 @@ get paginated list of blocks (newest first)
       "nonce": 12345,
       "merkleRoot": "ghi789...",
       "transactions": [...],
-      "chainVersionHash": "xyz..."
     }
   ],
   "total": 1001,
@@ -99,7 +98,6 @@ get specific block by hash or height
   "nonce": 54321,
   "merkleRoot": "def456...",
   "transactions": [...],
-  "chainVersionHash": "mno..."
 }
 ```
 

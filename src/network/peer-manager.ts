@@ -10,7 +10,6 @@ export interface PeerInfo {
   httpUrl: string;
   capabilities?: string[];
   blockHeight?: number;
-  chainHash?: string;
   cumulativeDifficulty?: string; // stored as string for BigInt compatibility
   lastSeen: number;
   isActive: boolean;
@@ -350,7 +349,6 @@ export class PeerManager extends EventEmitter {
         nodeId: peer.nodeId,
         httpUrl: peer.httpUrl,
         blockHeight: status.blockHeight,
-        chainHash: status.chainHash,
         cumulativeDifficulty: status.cumulativeDifficulty,
         capabilities: status.capabilities,
         lastSeen: Date.now()

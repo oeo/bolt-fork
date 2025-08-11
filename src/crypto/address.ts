@@ -1,10 +1,8 @@
-import * as crypto from 'crypto';
 import * as bip39 from 'bip39';
 import * as hdkey from 'hdkey';
 import { ec as EC } from 'elliptic';
-import { sha256 } from '@noble/hashes/sha256';
 import { ripemd160 } from '@noble/hashes/ripemd160';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { hash, hexToBytes, bytesToHex } from './hash';
 import { getLogger } from '../utils/logger';
 import { BIP44_PURPOSE, BOLT_COIN_TYPE } from '../constants';
 
@@ -127,10 +125,10 @@ export function publicKeyToAddress(publicKey: Uint8Array | string, prefix: numbe
   // convert to bytes if hex string
   const pubKeyBytes = typeof publicKey === 'string' ? hexToBytes(publicKey) : publicKey;
 
-  // step 1: sha256 hash of public key
-  const sha256Hash = sha256(pubKeyBytes);
+  // step 1: sha256 hash of public key using bun's native crypto
+  const sha256Hash = hexToBytes(hash(pubKeyBytes, 'sha256'));
 
-  // step 2: ripemd160 hash of sha256 hash
+  // step 2: ripemd160 hash of sha256 hash (keeping from @noble as bun doesn't have native ripemd160)
   const pubKeyHash = ripemd160(sha256Hash);
 
   // step 3: add version byte (prefix)
@@ -138,8 +136,8 @@ export function publicKeyToAddress(publicKey: Uint8Array | string, prefix: numbe
   versionedHash[0] = prefix;
   versionedHash.set(pubKeyHash, 1);
 
-  // step 4: double sha256 for checksum
-  const checksum = sha256(sha256(versionedHash)).slice(0, 4);
+  // step 4: double sha256 for checksum using bun's native crypto
+  const checksum = hexToBytes(hash(versionedHash, 'double-sha256')).slice(0, 4);
 
   // step 5: append checksum
   const addressBytes = new Uint8Array(25);
@@ -174,7 +172,7 @@ export function validateAddress(address: string): boolean {
 
     const versionedHash = decoded.slice(0, 21);
     const checksum = decoded.slice(21);
-    const calculatedChecksum = sha256(sha256(versionedHash)).slice(0, 4);
+    const calculatedChecksum = hexToBytes(hash(versionedHash, 'double-sha256')).slice(0, 4);
 
     for (let i = 0; i < 4; i++) {
       if (checksum[i] !== calculatedChecksum[i]) {
@@ -221,17 +219,9 @@ export function generateAddress(prefix: number = 0x00): KeyInfo {
   let privateKey: Uint8Array;
 
   do {
-    // use crypto.randomBytes if available (node.js)
-    if (crypto.randomBytes) {
-      const buffer = crypto.randomBytes(32);
-      privateKey = new Uint8Array(buffer);
-    } else if (crypto.getRandomValues) {
-      // use crypto.getRandomValues for browser/bun
-      privateKey = new Uint8Array(32);
-      crypto.getRandomValues(privateKey);
-    } else {
-      throw new Error('No secure random number generator available');
-    }
+    // use bun's crypto.getRandomValues
+    privateKey = new Uint8Array(32);
+    crypto.getRandomValues(privateKey);
   } while (!isValidPrivateKey(privateKey));
 
   return generateFromPrivateKey(privateKey, prefix);
@@ -357,8 +347,8 @@ export function exportPrivateKeyWIF(privateKey: string, prefix: number = 0x80): 
   versionedKey[0] = prefix;
   versionedKey.set(keyBytes, 1);
 
-  // calculate checksum
-  const checksum = sha256(sha256(versionedKey)).slice(0, 4);
+  // calculate checksum using bun's native crypto
+  const checksum = hexToBytes(hash(versionedKey, 'double-sha256')).slice(0, 4);
 
   // append checksum
   const wifBytes = new Uint8Array(37);
@@ -381,7 +371,7 @@ export function importPrivateKeyWIF(wif: string): string {
   // verify checksum
   const versionedKey = decoded.slice(0, 33);
   const checksum = decoded.slice(33);
-  const calculatedChecksum = sha256(sha256(versionedKey)).slice(0, 4);
+  const calculatedChecksum = hexToBytes(hash(versionedKey, 'double-sha256')).slice(0, 4);
 
   for (let i = 0; i < 4; i++) {
     if (checksum[i] !== calculatedChecksum[i]) {
@@ -392,4 +382,3 @@ export function importPrivateKeyWIF(wif: string): string {
   // extract private key (skip version byte)
   return bytesToHex(versionedKey.slice(1));
 }
-

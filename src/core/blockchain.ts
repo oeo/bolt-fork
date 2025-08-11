@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { Block, Transaction, AccountState, StorageAdapter, BlockTemplate, ValidationResult } from '../types';
-import { ChainConfig, calculateChainVersionHash } from '../config/chain';
+import { ChainConfig } from '../config/chain';
 import { BlockClass, createGenesisBlock } from './block';
 import { TransactionClass, createCoinbaseTransaction, validateTransactionPool } from './transaction';
 import { getDifficultyAdjustment, shouldAdjustDifficulty, DifficultyConfig, calculateCumulativeDifficulty } from './difficulty';
@@ -17,7 +17,6 @@ export class Blockchain extends EventEmitter {
   private storage: StorageAdapter;
   private config: ChainConfig;
   private hashAlgorithm: HashAlgorithm;
-  private chainVersionHash: string;
   private difficultyConfig: DifficultyConfig;
   private currentHeight: number = -1;
   private isInitialized: boolean = false;
@@ -32,7 +31,6 @@ export class Blockchain extends EventEmitter {
     this.storage = storage;
     this.config = config;
     this.hashAlgorithm = hashAlgorithm;
-    this.chainVersionHash = calculateChainVersionHash(config);
     this.forkManager = new ForkManager();
 
     // setup difficulty config from chain config
@@ -65,12 +63,6 @@ export class Blockchain extends EventEmitter {
     const latestBlock = await this.storage.getLatestBlock();
 
     if (latestBlock) {
-      // validate chain version hash
-      if (latestBlock.chainVersionHash !== this.chainVersionHash) {
-        throw new Error(
-          `Chain version mismatch: expected ${this.chainVersionHash}, got ${latestBlock.chainVersionHash}`
-        );
-      }
 
       this.currentHeight = latestBlock.index;
       logger.info(`Blockchain loaded at height ${this.currentHeight}`);
@@ -89,7 +81,6 @@ export class Blockchain extends EventEmitter {
     logger.info('Creating genesis block');
 
     const genesis = createGenesisBlock(
-      this.chainVersionHash,
       this.config.initialDifficulty,
       this.config.genesisTimestamp || Date.now(),
       this.hashAlgorithm
@@ -118,6 +109,20 @@ export class Blockchain extends EventEmitter {
     const structureValidation = block.validate(this.hashAlgorithm);
     if (!structureValidation.valid) {
       return structureValidation;
+    }
+
+    // check if block already exists at this height
+    const existingBlock = await this.storage.getBlock(block.index);
+    if (existingBlock) {
+      // block already exists at this height - this is a fork
+      if (existingBlock.hash === block.hash) {
+        // same block, already have it
+        logger.debug(`Block ${block.index} already exists with same hash`);
+        return { valid: true };
+      }
+      // different block at same height - need to handle as competing block
+      logger.warn(`Different block at height ${block.index}, handling as competing block`);
+      return await this.handleCompetingBlock(block);
     }
 
     // get previous block
@@ -1035,8 +1040,7 @@ export class Blockchain extends EventEmitter {
       transactions: [coinbase.toObject(), ...transactions],
       difficulty,
       coinbaseValue: blockReward + totalFees,
-      timestamp: Date.now(),
-      chainVersionHash: this.chainVersionHash
+      timestamp: Date.now()
     };
   }
 

@@ -1,0 +1,22 @@
+# prometheus metrics service
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ${NODE_NAME:-bolt}-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - bolt-network
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+    name: ${NODE_NAME:-bolt}-prometheus-data

@@ -69,15 +69,3 @@ while (true) {
 }
 ```
 
-## Chain version hash
-
-The hash algorithm is included in the chain version hash:
-```typescript
-const chainHash = calculateChainVersionHash({
-  hashAlgorithm: 'scrypt',
-  network: 'testnet',
-  // ... other parameters
-});
-```
-
-This ensures nodes using different algorithms cannot connect.

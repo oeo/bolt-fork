@@ -26,7 +26,6 @@ describe('Storage Adapter', () => {
       difficulty: 10,
       nonce: 12345,
       transactions: [],
-      chainVersionHash: 'test',
       miner: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'
     };
     

@@ -18,7 +18,6 @@ export interface IPFSMessage {
   nodeId: string;
   httpUrl?: string;
   timestamp: number;
-  chainVersionHash: string;
 }
 
 interface IPFSStats {
@@ -41,7 +40,6 @@ export class IPFSService extends EventEmitter {
   private peers: Set<string> = new Set();
   private discoveredPeers: Array<{nodeId: string, httpUrl: string}> = [];
   private isStarted: boolean = false;
-  private chainVersionHash: string;
   
   private stats: IPFSStats = {
     messagesReceived: 0,
@@ -58,19 +56,8 @@ export class IPFSService extends EventEmitter {
   constructor(config: IPFSConfig) {
     super();
     this.config = config;
-    this.chainVersionHash = this.calculateChainHash(config.chainConfig);
   }
   
-  /**
-   * calculate chain version hash for network compatibility
-   */
-  private calculateChainHash(chainConfig: ChainConfig): string {
-    const { hash } = require('../crypto/hash');
-    const configString = JSON.stringify(chainConfig, (_, value) =>
-      typeof value === 'bigint' ? value.toString() : value
-    );
-    return hash(configString, 'sha256');
-  }
   
   /**
    * start the ipfs p2p service
@@ -95,13 +82,15 @@ export class IPFSService extends EventEmitter {
       // subscribe only to peer discovery topic
       await this.subscribeToTopic(IPFSService.TOPIC_PEERS);
       
+      // mark as started before announcing
+      this.isStarted = true;
+      
       // announce this node to the network
       await this.announceNode();
       
       // start peer discovery
       this.startPeerDiscovery();
       
-      this.isStarted = true;
       logger.info('IPFS P2P service started successfully');
       
     } catch (error: any) {
@@ -174,11 +163,6 @@ export class IPFSService extends EventEmitter {
       this.peers.add(senderId);
       this.stats.peersConnected = this.peers.size;
       
-      // ignore messages from incompatible chains
-      if (data.chainVersionHash && data.chainVersionHash !== this.chainVersionHash) {
-        logger.debug(`Ignoring message from incompatible chain: ${data.chainVersionHash}`);
-        return;
-      }
       
       // only handle peer announcements now
       if (topic === IPFSService.TOPIC_PEERS) {
@@ -215,7 +199,6 @@ export class IPFSService extends EventEmitter {
       nodeId: this.config.nodeId,
       httpUrl,
       timestamp: Date.now(),
-      chainVersionHash: this.chainVersionHash,
       data: {
         capabilities: ['blockchain', 'mining'],
         version: '0.1.0',

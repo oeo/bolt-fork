@@ -32,7 +32,6 @@ describe('Redis Storage Adapter', () => {
       difficulty: 1,
       nonce: 0,
       transactions: [],
-      chainVersionHash: 'test'
     };
     
     it('should save and retrieve block', async () => {

@@ -5,7 +5,6 @@ import { BlockClass } from '../core/block';
 import { createCoinbaseTransaction } from '../core/transaction';
 import { getLogger } from '../utils/logger';
 import { formatWatts } from '../utils/currency';
-import { calculateChainVersionHash } from '../config/chain';
 import { generateAddress } from '../crypto/address';
 
 const logger = getLogger(__filename);
@@ -151,8 +150,6 @@ export class MiningService extends EventEmitter {
       const blockReward = this.blockchain.getBlockReward(height);
       
       // get blockchain config
-      const config = this.blockchain.getConfig();
-      const chainVersionHash = calculateChainVersionHash(config);
       
       // get transactions from mempool
       const transactions = this.mempool.getTransactionsForBlock();
@@ -178,7 +175,6 @@ export class MiningService extends EventEmitter {
         previousBlock.hash,
         [coinbase.toObject(), ...transactions],
         difficulty,
-        chainVersionHash,
         this.minerAddress
       );
       
@@ -189,7 +185,8 @@ export class MiningService extends EventEmitter {
       });
       
       // mine with limited iterations
-      const miningResult = block.mine(config.hashAlgorithm, this.maxIterations);
+      const chainConfig = this.blockchain.getConfig();
+      const miningResult = block.mine(chainConfig.hashAlgorithm, this.maxIterations);
       
       // calculate hash rate (hashes per second)
       const hashRate = miningResult.timeMs > 0 ? 
@@ -197,15 +194,28 @@ export class MiningService extends EventEmitter {
       this.stats.lastHashRate = hashRate;
       
       if (miningResult.success) {
+        // check if chain height changed while we were mining
+        const currentChainHeight = await this.blockchain.getHeight();
+        if (currentChainHeight !== currentHeight) {
+          logger.info(`Chain height changed while mining (was ${currentHeight}, now ${currentChainHeight}), restarting`);
+          return;
+        }
+        
         // submit to blockchain
         const result = await this.blockchain.addBlock(block);
         
         if (!result.valid) {
-          logger.error('Block rejected by blockchain', { 
-            error: result.error,
-            height: block.index,
-            hash: block.hash
-          });
+          // check again if chain moved forward
+          const latestHeight = await this.blockchain.getHeight();
+          if (latestHeight !== currentHeight) {
+            logger.info(`Chain advanced to height ${latestHeight}, abandoning stale block`);
+          } else {
+            logger.error('Block rejected by blockchain', { 
+              error: result.error,
+              height: block.index,
+              hash: block.hash
+            });
+          }
           return;
         }
         

@@ -1,0 +1,24 @@
+# ipfs networking service
+
+services:
+  ipfs:
+    image: ipfs/kubo:latest
+    container_name: ${NODE_NAME:-bolt}-ipfs
+    ports:
+      - "${IPFS_SWARM_PORT:-4001}:4001"
+      - "${IPFS_API_PORT:-5001}:5001"
+      - "${IPFS_GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - ipfs-data:/data/ipfs
+    environment:
+      IPFS_PROFILE: ${IPFS_PROFILE:-server}
+    healthcheck:
+      test: ["CMD-SHELL", "ipfs id"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    networks:
+      - bolt-network
+
+volumes:
+  ipfs-data:

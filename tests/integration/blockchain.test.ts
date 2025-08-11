@@ -3,7 +3,7 @@ import { Blockchain } from '../../src/core/blockchain';
 import { BlockClass } from '../../src/core/block';
 import { TransactionClass, createSignedTransaction } from '../../src/core/transaction';
 import { MemoryAdapter } from '../../src/storage/memory';
-import { ChainConfig, calculateChainVersionHash } from '../../src/config/chain';
+import { ChainConfig } from '../../src/config/chain';
 import { generateAddress } from '../../src/crypto/address';
 import { hexToBytes } from '@noble/hashes/utils';
 
@@ -32,7 +32,6 @@ const testConfig: ChainConfig = {
 };
 
 // calculate chain version hash for test config
-const testChainVersionHash = calculateChainVersionHash(testConfig);
 
 describe('Blockchain Integration', () => {
   let blockchain: Blockchain;
@@ -86,7 +85,6 @@ describe('Blockchain Integration', () => {
       expect(genesis).toBeTruthy();
       expect(genesis!.index).toBe(0);
       expect(genesis!.previousHash).toBe('0'.repeat(64));
-      expect(genesis!.chainVersionHash).toBe(testChainVersionHash);
     });
     
     it('should set correct initial height', async () => {
@@ -120,13 +118,12 @@ describe('Blockchain Integration', () => {
         previousBlock!.hash,
         [],
         1,
-        testChainVersionHash,
         minerAddress
       );
       
       // mine the block
-      const mined = block.mine('sha256', 1000000);
-      expect(mined).toBe(true);
+      const mineResult = block.mine('sha256', 1000000);
+      expect(mineResult.success).toBe(true);
       
       // add coinbase transaction
       const blockReward = blockchain.getBlockReward(1);
@@ -164,7 +161,6 @@ describe('Blockchain Integration', () => {
         'invalid_hash',
         [],
         1,
-        testChainVersionHash
       );
       
       // need to set hash to pass initial validation
@@ -183,7 +179,6 @@ describe('Blockchain Integration', () => {
         previousBlock!.hash,
         [],
         999, // wrong difficulty
-        testChainVersionHash
       );
       
       // add coinbase transaction and mine block to pass structure validation
@@ -215,7 +210,6 @@ describe('Blockchain Integration', () => {
         previousBlock!.hash,
         [],
         1,
-        testChainVersionHash,
         minerAddress
       );
       
@@ -254,7 +248,6 @@ describe('Blockchain Integration', () => {
         previousBlock!.hash,
         [],
         1,
-        testChainVersionHash,
         minerAddress
       );
       
@@ -296,7 +289,6 @@ describe('Blockchain Integration', () => {
         previousBlock!.hash,
         [],
         1,
-        testChainVersionHash,
         miner.address
       );
       
@@ -339,7 +331,6 @@ describe('Blockchain Integration', () => {
         block1.hash,
         [tx1.toObject()],
         1,
-        testChainVersionHash,
         bob.address
       );
       
@@ -387,8 +378,7 @@ describe('Blockchain Integration', () => {
           previousBlock!.hash,
           [],
           1,
-          testChainVersionHash,
-          '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' // valid base58 address
+            '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' // valid base58 address
         );
         
         const blockReward = blockchain.getBlockReward(i);
@@ -450,8 +440,7 @@ describe('Blockchain Integration', () => {
           previousBlock!.hash,
           [],
           1,
-          testChainVersionHash,
-          '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' // valid base58 address
+            '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' // valid base58 address
         );
         
         const blockReward = blockchain.getBlockReward(i);
@@ -497,8 +486,7 @@ describe('Blockchain Integration', () => {
           previousBlock!.hash,
           [],
           1,
-          testChainVersionHash,
-          minerAddress
+            minerAddress
         );
         
         const blockReward = blockchain.getBlockReward(i);
@@ -540,7 +528,6 @@ describe('Blockchain Integration', () => {
         previousBlock!.hash,
         [],
         1,
-        testChainVersionHash,
         '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' // valid base58 address
       );
       
@@ -577,7 +564,6 @@ describe('Blockchain Integration', () => {
         previousBlock!.hash,
         [],
         1,
-        testChainVersionHash,
         '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' // valid base58 address
       );
       

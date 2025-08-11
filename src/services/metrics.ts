@@ -23,6 +23,9 @@ export class MetricsService {
   private blockSize: Histogram;
   private transactionsPerBlock: Histogram;
   private blockValidationErrors: Counter;
+  private blockchainBlockSize: Gauge;
+  private blockchainBlockTime: Gauge;
+  private blockchainTransactionsTotal: Counter;
   
   // mempool metrics
   private mempoolSize: Gauge;
@@ -147,6 +150,24 @@ export class MetricsService {
       name: 'bolt_block_validation_errors_total',
       help: 'Total number of block validation errors',
       labelNames: ['error_type'],
+      registers: [this.registry]
+    });
+    
+    this.blockchainBlockSize = new Gauge({
+      name: 'bolt_blockchain_block_size',
+      help: 'Average size of recent blocks in bytes',
+      registers: [this.registry]
+    });
+    
+    this.blockchainBlockTime = new Gauge({
+      name: 'bolt_blockchain_block_time',
+      help: 'Average time between recent blocks in seconds',
+      registers: [this.registry]
+    });
+    
+    this.blockchainTransactionsTotal = new Counter({
+      name: 'bolt_blockchain_transactions_total',
+      help: 'Total number of transactions processed',
       registers: [this.registry]
     });
     
@@ -541,6 +562,15 @@ export class MetricsService {
     this.blockProcessingTime.observe(processingTime);
     this.blockSize.observe(blockSize);
     this.transactionsPerBlock.observe(transactionCount);
+    
+    // update average metrics
+    this.blockchainBlockSize.set(blockSize);
+    this.blockchainBlockTime.set(processingTime);
+    
+    // increment transaction counter
+    if (transactionCount > 0) {
+      this.blockchainTransactionsTotal.inc(transactionCount);
+    }
   }
   
   /**
@@ -714,8 +744,24 @@ export class MetricsService {
    * Record API request
    */
   recordApiRequest(method: string, endpoint: string, status: number, duration: number): void {
-    this.apiRequestsTotal.inc({ method, endpoint, status: status.toString() });
-    this.apiRequestDuration.observe({ method, endpoint }, duration);
+    try {
+      // simplify endpoint to avoid cardinality issues
+      const simplifiedEndpoint = endpoint.replace(/\/[a-f0-9]{64}/i, '/:hash')
+        .replace(/\/\d+/g, '/:id')
+        .replace(/\/0x[a-f0-9]+/i, '/:address');
+      
+      this.apiRequestsTotal.inc({ 
+        method, 
+        endpoint: simplifiedEndpoint, 
+        status: status.toString() 
+      });
+      this.apiRequestDuration.observe({ 
+        method, 
+        endpoint: simplifiedEndpoint 
+      }, duration);
+    } catch (error) {
+      console.error('Failed to record API metrics:', error);
+    }
   }
   
   /**

@@ -4,7 +4,6 @@ import {
   calculateMerkleRoot, 
   difficultyToTarget,
   hashMeetsDifficulty,
-  calculateChainVersionHash,
   getHashSize
 } from '../../src/crypto/hash';
 
@@ -122,47 +121,6 @@ describe('Hash Functions', () => {
     });
   });
   
-  describe('calculateChainVersionHash()', () => {
-    it('should produce consistent hash for same parameters', () => {
-      const params = {
-        version: '0.1.0',
-        network: 'testnet',
-        hashAlgorithm: 'sha256' as const,
-        initialDifficulty: 10,
-        difficultyAdjustmentInterval: 2016,
-        targetBlockTime: 300,
-        maxSupply: 2100000000000000n,
-        initialBlockReward: 5000000000n,
-        halvingInterval: 210000
-      };
-      
-      const hash1 = calculateChainVersionHash(params);
-      const hash2 = calculateChainVersionHash(params);
-      
-      expect(hash1).toBe(hash2);
-    });
-    
-    it('should produce different hash for different parameters', () => {
-      const params1 = {
-        version: '0.1.0',
-        network: 'testnet',
-        hashAlgorithm: 'sha256' as const,
-        initialDifficulty: 10,
-        difficultyAdjustmentInterval: 2016,
-        targetBlockTime: 300,
-        maxSupply: 2100000000000000n,
-        initialBlockReward: 5000000000n,
-        halvingInterval: 210000
-      };
-      
-      const params2 = { ...params1, hashAlgorithm: 'sha512' as const };
-      
-      const hash1 = calculateChainVersionHash(params1);
-      const hash2 = calculateChainVersionHash(params2);
-      
-      expect(hash1).not.toBe(hash2);
-    });
-  });
   
   describe('getHashSize()', () => {
     it('should return correct sizes', () => {

@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 
 import * as bip39 from 'bip39';
-import { 
-  createHDKey, 
-  deriveAddresses, 
-  deriveKey 
+import {
+  createHDKey,
+  deriveAddresses,
+  deriveKey
 } from '../src/crypto/address';
 
 // parse command line arguments

@@ -1,0 +1,18 @@
+# bun configuration
+
+[test]
+preload = ["./tests/setup.ts"]
+timeout = 30000
+
+[install]
+peer = false
+dev = true
+
+[install.cache]
+dir = "~/.bun/cache"
+
+[install.lockfile]
+save = true
+
+[run]
+silent = false

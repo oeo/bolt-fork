@@ -16,7 +16,6 @@ export class BlockClass {
   public difficulty: number;
   public nonce: number;
   public transactions: Transaction[];
-  public chainVersionHash: string;
   public miner?: string;
   
   constructor(
@@ -25,7 +24,6 @@ export class BlockClass {
     previousHash: string,
     transactions: Transaction[],
     difficulty: number,
-    chainVersionHash: string,
     miner?: string
   ) {
     this.index = index;
@@ -33,7 +31,6 @@ export class BlockClass {
     this.previousHash = previousHash;
     this.transactions = transactions;
     this.difficulty = difficulty;
-    this.chainVersionHash = chainVersionHash;
     this.miner = miner;
     this.nonce = 0;
     
@@ -54,7 +51,6 @@ export class BlockClass {
       obj.previousHash,
       obj.transactions,
       obj.difficulty,
-      obj.chainVersionHash,
       obj.miner
     );
     
@@ -78,7 +74,6 @@ export class BlockClass {
       difficulty: this.difficulty,
       nonce: this.nonce,
       transactions: this.transactions,
-      chainVersionHash: this.chainVersionHash,
       miner: this.miner
     };
   }
@@ -105,8 +100,7 @@ export class BlockClass {
       this.previousHash,
       this.merkleRoot,
       this.difficulty.toString(),
-      this.nonce.toString(),
-      this.chainVersionHash
+      this.nonce.toString()
     ].join(':');
     
     return hash(data, algorithm);
@@ -176,11 +170,6 @@ export class BlockClass {
       return { valid: false, error: 'Block does not meet difficulty target' };
     }
     
-    // check chain version hash
-    if (!this.chainVersionHash || this.chainVersionHash.length !== 64) {
-      return { valid: false, error: 'Invalid chain version hash' };
-    }
-    
     return { valid: true };
   }
   
@@ -201,11 +190,6 @@ export class BlockClass {
     // check timestamp (must be after previous block)
     if (this.timestamp <= previousBlock.timestamp) {
       return { valid: false, error: 'Block timestamp not after previous block' };
-    }
-    
-    // check chain version consistency
-    if (this.chainVersionHash !== previousBlock.chainVersionHash) {
-      return { valid: false, error: 'Chain version hash mismatch' };
     }
     
     return { valid: true };
@@ -332,7 +316,6 @@ export class BlockClass {
  * create genesis block
  */
 export function createGenesisBlock(
-  chainVersionHash: string,
   difficulty: number = 1,
   timestamp: number = Date.now(),
   algorithm: HashAlgorithm = 'sha256'
@@ -342,8 +325,7 @@ export function createGenesisBlock(
     timestamp,
     '0'.repeat(64),
     [],
-    difficulty,
-    chainVersionHash
+    difficulty
   );
   
   // genesis block has special nonce

@@ -9,7 +9,6 @@ export interface Block {
   difficulty: number;
   nonce: number;
   transactions: Transaction[];
-  chainVersionHash: string;
   miner?: string;
 }
 
@@ -69,7 +68,6 @@ export interface StorageAdapter {
 // network message types
 export interface VersionMessage {
   version: string;
-  chainVersionHash: string;
   nodeId: string;
   timestamp: number;
   height: number;
@@ -96,7 +94,6 @@ export interface PeerInfo {
   multiaddrs: string[];
   protocols: string[];
   chainHeight: number;
-  chainVersionHash: string;
   connectedAt: number;
   latency?: number;
   score: number;
@@ -116,7 +113,6 @@ export interface BlockTemplate {
   merkleRootPlaceholder: string;
   timestamp: number;
   difficulty: number;
-  chainVersionHash: string;
   
   // mining data
   target: string;

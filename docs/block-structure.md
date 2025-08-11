@@ -11,7 +11,6 @@
   merkleRoot: string,        // Root of transaction merkle tree (64 hex chars)
   difficulty: number,        // Mining difficulty target
   nonce: number,             // Proof-of-work nonce
-  chainVersionHash: string,  // Chain configuration hash (64 hex chars)
   miner?: string            // Miner's address (optional)
 }
 ```

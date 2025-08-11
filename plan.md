@@ -1,6 +1,6 @@
 # bolt blockchain implementation plan
 
-current focus: consensus and network improvements
+current focus: peer discovery and state management improvements
 
 ## completed infrastructure fixes
 
@@ -26,13 +26,21 @@ current focus: consensus and network improvements
 - [x] fixed loki log aggregation with promtail
 - [x] increased mining difficulty to 100,000 for realistic performance metrics
 
-## immediate priorities
+## completed major improvements ✅
 
-### consensus improvements
+### consensus and reorganization system ✅
 - [x] fix reorganization failing due to median time validation
 - [x] ensure reorganized blocks maintain proper timestamp ordering
-- [x] add tie-breaker (using hash-based ordering for determinism)
+- [x] add tie-breaker (using hash-based ordering for determinism)  
 - [x] validate entire competing chain before reorg
+- [x] implement pre-validation of reorganization chains
+- [x] add specialized block validation during reorganization
+- [x] create comprehensive reorganization tests
+- [x] fix median time calculation using correct past blocks during reorg
+
+## immediate priorities
+
+### remaining consensus work
 - [ ] handle partial chain downloads efficiently
 
 ### peer discovery and network

@@ -34,7 +34,6 @@ interface BlockTemplate {
   merkleRootPlaceholder: string;
   timestamp: number;
   difficulty: number;
-  chainVersionHash: string;
   
   // mining data
   target: string;  // 64-char hex string

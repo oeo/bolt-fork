@@ -7,7 +7,7 @@ import { PeerManager } from './network/peer-manager';
 import { ApiServer } from './api/server';
 import { MiningService } from './services/mining';
 import { SyncService } from './services/sync';
-import { MetricsService } from './services/metrics';
+import { getMetricsService } from './services/metrics';
 import { createStorage } from './storage';
 import { config as chainConfig } from './config/chain';
 import { generateAddress } from './crypto/address';
@@ -51,7 +51,7 @@ class BoltIPFSNode {
   private api!: ApiServer;
   private miner?: MiningService;
   private syncService!: SyncService;
-  private metrics!: MetricsService;
+  private metrics: any; // will use singleton
   private metricsServer: any;
   private running: boolean = false;
   
@@ -161,8 +161,8 @@ class BoltIPFSNode {
       syncService: this.syncService
     });
     
-    // create metrics service
-    this.metrics = new MetricsService();
+    // get metrics service singleton
+    this.metrics = getMetricsService();
     this.metrics.setBlockchain(this.blockchain);
     this.metrics.setMempool(this.mempool);
     logger.info('Metrics service initialized');
@@ -282,7 +282,6 @@ class BoltIPFSNode {
           httpUrl: message.httpUrl,
           capabilities: message.data?.capabilities,
           blockHeight: message.data?.blockHeight,
-          chainHash: message.chainVersionHash,
           lastSeen: Date.now()
         });
       }

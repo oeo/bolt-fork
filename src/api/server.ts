@@ -6,6 +6,7 @@ import { StorageAdapter } from '../types';
 import { getLogger } from '../utils/logger';
 import { formatWatts } from '../utils/currency';
 import { serialize, deserialize } from '../utils/bigint';
+import { getMetricsService } from '../services/metrics';
 
 const logger = getLogger(__filename);
 
@@ -26,6 +27,7 @@ export class ApiServer {
   private server: any;
   private config: ApiServerConfig;
   private started: boolean = false;
+  private startTime: number = 0;
 
   constructor(config: ApiServerConfig) {
     this.config = config;
@@ -50,6 +52,7 @@ export class ApiServer {
     });
 
     this.started = true;
+    this.startTime = Date.now();
     logger.info(`API server started on http://${host}:${port}`);
   }
 
@@ -60,6 +63,7 @@ export class ApiServer {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method;
+    const startTime = Date.now();
 
     // cors headers
     const headers = {
@@ -150,13 +154,19 @@ export class ApiServer {
 
       // not found
       else {
+        const duration = (Date.now() - startTime) / 1000;
+        const metrics = getMetricsService();
+        metrics.recordApiRequest(method, path, 404, duration);
         return new Response(
           JSON.stringify({ error: 'Endpoint not found' }),
           { status: 404, headers }
         );
       }
 
-      // return result
+      // return result - record successful request
+      const duration = (Date.now() - startTime) / 1000;
+      const metrics = getMetricsService();
+      metrics.recordApiRequest(method, path, 200, duration);
       return new Response(
         serialize(result),
         { status: 200, headers }
@@ -164,6 +174,10 @@ export class ApiServer {
 
     } catch (error: any) {
       logger.error('API request failed', error);
+      const duration = (Date.now() - startTime) / 1000;
+      const metrics = getMetricsService();
+      metrics.recordApiRequest(method, path, 500, duration);
+      metrics.recordApiError(method, path, error.name || 'UnknownError');
       return new Response(
         JSON.stringify({ error: error.message || 'Internal server error' }),
         { status: 500, headers }
@@ -440,7 +454,6 @@ export class ApiServer {
       nodeId: process.env.NODE_ID || 'unknown',
       blockHeight: height,
       latestBlockHash: latestBlock?.hash || null,
-      chainHash: latestBlock?.chainVersionHash || null,
       capabilities: [
         process.env.NODE_ROLE === 'miner' ? 'mining' : 'full_node'
       ],
@@ -477,6 +490,29 @@ export class ApiServer {
       const { BlockClass } = await import('../core/block');
       const blockInstance = BlockClass.fromObject(block);
       
+      // check if we're far behind and should sync instead of trying to process individual blocks
+      const currentHeight = await this.config.blockchain.getHeight();
+      
+      // if block is more than 10 blocks ahead, we should sync instead
+      if (block.index > currentHeight + 10) {
+        logger.info(`Received block ${block.index} but current height is ${currentHeight}, triggering sync`);
+        
+        // trigger sync to catch up
+        if (this.config.syncService) {
+          setImmediate(() => {
+            this.config.syncService.syncNow().catch(err => 
+              logger.error('Failed to trigger sync:', err)
+            );
+          });
+        }
+        
+        return { 
+          success: false, 
+          error: 'Too far behind, sync in progress',
+          shouldSync: true 
+        };
+      }
+      
       // first try to add normally
       const result = await this.config.blockchain.addBlock(blockInstance);
       
@@ -490,8 +526,28 @@ export class ApiServer {
         
         logger.info(`Received and added block ${block.index} from peer`);
         return { success: true, height: block.index };
-      } else if (result.error?.includes('Invalid previous hash')) {
-        // this is a block from a competing chain
+      } else if (result.error?.includes('Invalid previous hash') && block.index <= currentHeight + 1) {
+        // only consider reorganization if block is at or near our height
+        // AND we've been running for at least 30 seconds (to allow initial sync)
+        const uptime = Date.now() - this.startTime;
+        if (uptime < 30000) {
+          logger.info(`Block ${block.index} from peer has different previous hash, but ignoring reorg (uptime: ${uptime}ms)`);
+          
+          // trigger sync instead
+          if (this.config.syncService) {
+            setImmediate(() => {
+              this.config.syncService.syncNow().catch(err => 
+                logger.error('Failed to trigger sync:', err)
+              );
+            });
+          }
+          
+          return { 
+            success: false, 
+            error: 'Node still syncing, reorganization deferred' 
+          };
+        }
+        
         logger.info(`Block ${block.index} from peer has different previous hash, checking for reorganization`);
         
         // handle as competing block

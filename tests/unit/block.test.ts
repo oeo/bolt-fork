@@ -5,10 +5,9 @@ import { calculateTransactionHash } from '../../src/crypto/signature';
 
 describe('Block Class', () => {
   let genesis: BlockClass;
-  const chainVersionHash = 'test'.padEnd(64, '0');
   
   beforeAll(() => {
-    genesis = createGenesisBlock(chainVersionHash, 1, 1234567890);
+    genesis = createGenesisBlock(1, 1234567890);
   });
   
   describe('Genesis block', () => {
@@ -17,7 +16,6 @@ describe('Block Class', () => {
       expect(genesis.previousHash).toBe('0'.repeat(64));
       expect(genesis.transactions.length).toBe(0);
       expect(genesis.difficulty).toBe(1);
-      expect(genesis.chainVersionHash).toBe(chainVersionHash);
       expect(genesis.hash).toBeTruthy();
     });
     
@@ -54,8 +52,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [tx1, tx2],
-        10,
-        chainVersionHash
+        10
       );
       
       expect(block.index).toBe(1);
@@ -70,8 +67,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        10,
-        chainVersionHash
+        10
       );
       
       block.nonce = 12345;
@@ -94,12 +90,11 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1, // very low difficulty
-        chainVersionHash
+        1 // very low difficulty
       );
       
-      const mined = block.mine('sha256', 100000);
-      expect(mined).toBe(true);
+      const result = block.mine('sha256', 100000);
+      expect(result.success).toBe(true);
       expect(block.hash).toBeTruthy();
       expect(block.nonce).toBeGreaterThan(0);
     });
@@ -110,12 +105,11 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1000000000, // very high difficulty
-        chainVersionHash
+        1000000000 // very high difficulty
       );
       
-      const mined = block.mine('sha256', 10); // only 10 iterations
-      expect(mined).toBe(false);
+      const result = block.mine('sha256', 10); // only 10 iterations
+      expect(result.success).toBe(false);
     });
   });
   
@@ -126,8 +120,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       block.mine('sha256', 100000);
@@ -141,8 +134,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       const result = block.validate();
@@ -156,8 +148,7 @@ describe('Block Class', () => {
         Date.now() + (3 * 60 * 60 * 1000), // 3 hours in future
         genesis.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       const result = block.validate();
@@ -171,8 +162,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       block.hash = 'invalid';
@@ -187,8 +177,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1000, // high difficulty
-        chainVersionHash
+        1000 // high difficulty
       );
       
       block.nonce = 1;
@@ -207,8 +196,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       block1.mine();
       
@@ -217,8 +205,7 @@ describe('Block Class', () => {
         Date.now() + 1000,
         block1.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       const result = block2.validatePreviousBlock(block1);
@@ -231,8 +218,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       const block2 = new BlockClass(
@@ -240,8 +226,7 @@ describe('Block Class', () => {
         Date.now(),
         block1.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       const result = block2.validatePreviousBlock(block1);
@@ -255,8 +240,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       const block2 = new BlockClass(
@@ -264,8 +248,7 @@ describe('Block Class', () => {
         Date.now(),
         'wrong_hash',
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       const result = block2.validatePreviousBlock(block1);
@@ -279,8 +262,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       block1.mine();
       
@@ -289,8 +271,7 @@ describe('Block Class', () => {
         Date.now() - 10000, // before block1
         block1.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       const result = block2.validatePreviousBlock(block1);
@@ -302,28 +283,28 @@ describe('Block Class', () => {
   describe('Median time validation', () => {
     it('should validate against median time', () => {
       const pastBlocks = [
-        new BlockClass(1, 1000, '', [], 1, chainVersionHash),
-        new BlockClass(2, 2000, '', [], 1, chainVersionHash),
-        new BlockClass(3, 3000, '', [], 1, chainVersionHash),
-        new BlockClass(4, 4000, '', [], 1, chainVersionHash),
-        new BlockClass(5, 5000, '', [], 1, chainVersionHash)
+        new BlockClass(1, 1000, '', [], 1),
+        new BlockClass(2, 2000, '', [], 1),
+        new BlockClass(3, 3000, '', [], 1),
+        new BlockClass(4, 4000, '', [], 1),
+        new BlockClass(5, 5000, '', [], 1)
       ];
       
       // median is 3000
-      const block = new BlockClass(6, 3001, '', [], 1, chainVersionHash);
+      const block = new BlockClass(6, 3001, '', [], 1);
       const result = block.validateMedianTime(pastBlocks);
       expect(result.valid).toBe(true);
     });
     
     it('should reject timestamp not greater than median', () => {
       const pastBlocks = [
-        new BlockClass(1, 1000, '', [], 1, chainVersionHash),
-        new BlockClass(2, 2000, '', [], 1, chainVersionHash),
-        new BlockClass(3, 3000, '', [], 1, chainVersionHash)
+        new BlockClass(1, 1000, '', [], 1),
+        new BlockClass(2, 2000, '', [], 1),
+        new BlockClass(3, 3000, '', [], 1)
       ];
       
       // median is 2000
-      const block = new BlockClass(4, 2000, '', [], 1, chainVersionHash);
+      const block = new BlockClass(4, 2000, '', [], 1);
       const result = block.validateMedianTime(pastBlocks);
       expect(result.valid).toBe(false);
     });
@@ -356,8 +337,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [coinbase, regularTx],
-        1,
-        chainVersionHash
+        1
       );
       
       const result = block.validateCoinbase(5000000000n); // 50 BOLT
@@ -380,8 +360,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [coinbase],
-        1,
-        chainVersionHash
+        1
       );
       
       const result = block.validateCoinbase(5000000000n);
@@ -415,8 +394,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [tx1, tx2],
-        1,
-        chainVersionHash
+        1
       );
       
       const fees = block.calculateTotalFees();
@@ -441,8 +419,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [tx],
-        1,
-        chainVersionHash
+        1
       );
       
       expect(block.hasTransaction('tx123')).toBe(true);
@@ -455,8 +432,7 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [],
-        1,
-        chainVersionHash
+        1
       );
       
       const size = block.getSize();
