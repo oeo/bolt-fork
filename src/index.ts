@@ -4,6 +4,7 @@ import { Blockchain } from './core/blockchain';
 import { Mempool } from './core/mempool';
 import { IPFSService } from './network/ipfs';
 import { PeerManager } from './network/peer-manager';
+import { NetworkOrchestrator, NetworkMode } from './network/network-orchestrator';
 import { ApiServer } from './api/server';
 import { MiningService } from './services/mining';
 import { SyncService } from './services/sync';
@@ -25,6 +26,8 @@ interface NodeConfig {
   // network
   apiPort: number;
   metricsPort: number;
+  networkMode?: 'ipfs' | 'tcp' | 'hybrid';
+  tcpPort?: number;
   
   // node identity
   nodeId: string;
@@ -49,8 +52,9 @@ class BoltIPFSNode {
   private storage: any;
   private blockchain!: Blockchain;
   private mempool!: Mempool;
-  private ipfs!: IPFSService;
-  private peerManager!: PeerManager;
+  private ipfs?: IPFSService;
+  private peerManager?: PeerManager;
+  private networkOrchestrator?: NetworkOrchestrator;
   private api!: ApiServer;
   private miner?: MiningService;
   private syncService!: SyncService;
@@ -145,29 +149,54 @@ class BoltIPFSNode {
     this.mempool = new Mempool(this.storage, chainConfig);
     logger.info('Mempool initialized');
     
-    // create ipfs service with identity address
-    this.ipfs = new IPFSService({
+    // determine network mode
+    const networkMode = this.config.networkMode || 'ipfs';
+    const mode = networkMode === 'tcp' ? NetworkMode.TCP : 
+                  networkMode === 'hybrid' ? NetworkMode.HYBRID : 
+                  NetworkMode.IPFS;
+    
+    // create network orchestrator
+    this.networkOrchestrator = new NetworkOrchestrator({
+      mode,
       nodeId: this.identity.getNodeId(),
-      chainConfig,
-      apiUrl: this.config.ipfsApi
-    });
-    
-    // create peer manager with identity address
-    const nodeHost = process.env.NODE_HOST || 'bolt-node';
-    const httpUrl = `http://${nodeHost}:${this.config.apiPort}`;
-    this.peerManager = new PeerManager({
-      ownNodeId: this.identity.getNodeId(),
-      ownHttpUrl: httpUrl
-    });
-    
-    // setup ipfs event handlers
-    this.setupIPFSHandlers();
-    
-    // create sync service first
-    this.syncService = new SyncService({
       blockchain: this.blockchain,
-      peerManager: this.peerManager
+      mempool: this.mempool,
+      chainConfig,
+      tcpPort: this.config.tcpPort || 8333,
+      ipfsApi: this.config.ipfsApi,
+      externalHost: process.env.NODE_HOST || 'localhost'
     });
+    
+    // for backward compatibility, expose ipfs and peerManager if in IPFS mode
+    if (mode === NetworkMode.IPFS) {
+      // create legacy services for compatibility
+      this.ipfs = new IPFSService({
+        nodeId: this.identity.getNodeId(),
+        chainConfig,
+        apiUrl: this.config.ipfsApi
+      });
+      
+      const nodeHost = process.env.NODE_HOST || 'bolt-node';
+      const httpUrl = `http://${nodeHost}:${this.config.apiPort}`;
+      this.peerManager = new PeerManager({
+        ownNodeId: this.identity.getNodeId(),
+        ownHttpUrl: httpUrl
+      });
+      
+      // setup ipfs event handlers
+      this.setupIPFSHandlers();
+    } else {
+      // setup network orchestrator event handlers
+      this.setupNetworkHandlers();
+    }
+    
+    // create sync service (only for legacy IPFS mode)
+    if (this.peerManager) {
+      this.syncService = new SyncService({
+        blockchain: this.blockchain,
+        peerManager: this.peerManager
+      });
+    }
     
     // create api server with storage and sync service
     this.api = new ApiServer({
@@ -253,7 +282,39 @@ class BoltIPFSNode {
     });
   }
   
+  private setupNetworkHandlers(): void {
+    // handle blocks received from network
+    this.networkOrchestrator!.on('block:received', async (block: any) => {
+      try {
+        logger.debug(`received block ${block.index} via network`);
+        const added = await this.blockchain.addBlock(block);
+        if (added) {
+          logger.info(`added block ${block.index} to chain`);
+        }
+      } catch (error: any) {
+        logger.error('error handling block:', error);
+      }
+    });
+    
+    // handle transactions received from network
+    this.networkOrchestrator!.on('transaction:received', async (tx: any) => {
+      try {
+        logger.debug(`received transaction ${tx.hash} via network`);
+        await this.mempool.addTransaction(tx);
+      } catch (error: any) {
+        logger.error('error handling transaction:', error);
+      }
+    });
+    
+    // handle sync completion
+    this.networkOrchestrator!.on('sync:complete', () => {
+      logger.info('blockchain sync complete');
+    });
+  }
+  
   private setupIPFSHandlers(): void {
+    if (!this.ipfs || !this.peerManager) return;
+    
     // handle incoming blocks
     this.ipfs.on('block', async (message: any) => {
       try {
@@ -295,7 +356,7 @@ class BoltIPFSNode {
       
       // add discovered peer to peer manager (filter by identity address)
       if (message.httpUrl && message.nodeId !== this.identity.getNodeId()) {
-        this.peerManager.addPeer({
+        this.peerManager!.addPeer({
           nodeId: message.nodeId,
           httpUrl: message.httpUrl,
           capabilities: message.data?.capabilities,
@@ -318,11 +379,17 @@ class BoltIPFSNode {
       return;
     }
     
-    logger.info('Starting bolt IPFS node...');
+    logger.info('starting bolt node...');
     
-    // start ipfs service
-    await this.ipfs.start();
-    logger.info('IPFS service started');
+    // start network services
+    if (this.networkOrchestrator) {
+      await this.networkOrchestrator.start();
+      logger.info(`network services started in ${this.config.networkMode || 'ipfs'} mode`);
+    } else if (this.ipfs) {
+      // legacy ipfs mode
+      await this.ipfs.start();
+      logger.info('ipfs service started');
+    }
     
     // start api server
     await this.api.start();
@@ -337,15 +404,31 @@ class BoltIPFSNode {
         if (url.pathname === '/metrics') {
           try {
             // update node health metrics before serving
-            const isSyncing = this.syncService.isSyncing();
+            let isSyncing = false;
+            if (this.networkOrchestrator) {
+              const stats = this.networkOrchestrator.getNetworkStats();
+              isSyncing = stats.sync?.isSyncing || false;
+            } else if (this.syncService) {
+              isSyncing = this.syncService.isSyncing();
+            }
             this.metrics.updateNodeHealth(true, isSyncing, this.config.role);
             
             // update storage metrics
             await this.metrics.updateStorageMetrics(this.storage);
             
             // update network metrics
-            const peerStats = this.peerManager.getStats();
-            this.metrics.updateNetworkMetrics(peerStats.activePeers, peerStats.totalPeers);
+            let activePeers = 0;
+            let totalPeers = 0;
+            if (this.networkOrchestrator) {
+              const peerCount = this.networkOrchestrator.getPeerCount();
+              activePeers = peerCount;
+              totalPeers = peerCount;
+            } else if (this.peerManager) {
+              const peerStats = this.peerManager.getStats();
+              activePeers = peerStats.activePeers;
+              totalPeers = peerStats.totalPeers;
+            }
+            this.metrics.updateNetworkMetrics(activePeers, totalPeers);
             
             const metricsData = await this.metrics.getMetrics();
             return new Response(metricsData, {
@@ -375,9 +458,11 @@ class BoltIPFSNode {
     });
     logger.info(`Metrics server started on port ${this.config.metricsPort}`);
     
-    // start sync service
-    this.syncService.start();
-    logger.info('Sync service started');
+    // start sync service (only for legacy IPFS mode)
+    if (this.syncService) {
+      this.syncService.start();
+      logger.info('Sync service started');
+    }
     
     // start mining if enabled
     if (this.miner) {
@@ -398,7 +483,11 @@ class BoltIPFSNode {
           // note: block metrics are recorded in blockchain event handler
           // this ensures all blocks (local and remote) are tracked
           
-          await this.peerManager.broadcastBlock(block.toObject());
+          if (this.networkOrchestrator) {
+            await this.networkOrchestrator.broadcastBlock(block);
+          } else if (this.peerManager) {
+            await this.peerManager.broadcastBlock(block.toObject());
+          }
         } catch (error: any) {
           logger.error('Failed to broadcast block:', { 
             error: error.message
@@ -416,7 +505,11 @@ class BoltIPFSNode {
         // note: transaction processing metrics are recorded when the tx is included in a block
         // this avoids double-counting for transactions that enter mempool then get mined
         
-        await this.peerManager.broadcastTransaction(tx);
+        if (this.networkOrchestrator) {
+          await this.networkOrchestrator.broadcastTransaction(tx);
+        } else if (this.peerManager) {
+          await this.peerManager.broadcastTransaction(tx);
+        }
       } catch (error: any) {
         logger.error('Failed to broadcast transaction:', error.message);
       }
@@ -444,12 +537,23 @@ class BoltIPFSNode {
   
   private async logStatus(): Promise<void> {
     try {
-      const ipfsStats = this.ipfs.getStats();
-      const peerStats = this.peerManager.getStats();
       const height = await this.blockchain.getHeight();
-      const syncing = this.syncService.isSyncing();
+      const tip = await this.blockchain.getLatestBlock();
+      const tipHash = tip ? tip.hash.substring(0, 8) : 'genesis';
+      let activePeers = 0;
+      let syncing = false;
       
-      logger.info(`node status: id=${this.identity.getDisplayName()}, role=${this.config.role}, activePeers=${peerStats.activePeers}, height=${height}, syncing=${syncing}`);
+      if (this.networkOrchestrator) {
+        activePeers = this.networkOrchestrator.getPeerCount();
+        const stats = this.networkOrchestrator.getNetworkStats();
+        syncing = stats.sync?.isSyncing || false;
+      } else if (this.ipfs && this.peerManager) {
+        const peerStats = this.peerManager.getStats();
+        activePeers = peerStats.activePeers;
+        syncing = this.syncService?.isSyncing() || false;
+      }
+      
+      logger.info(`[CHAIN TIP] node=${this.identity.getDisplayName()} height=${height} tip=${tipHash} peers=${activePeers} syncing=${syncing}`);
     } catch (error) {
       logger.error('Error logging status:', error);
     }
@@ -469,8 +573,10 @@ class BoltIPFSNode {
     }
     
     // stop sync service
-    this.syncService.stop();
-    logger.info('Sync service stopped');
+    if (this.syncService) {
+      this.syncService.stop();
+      logger.info('Sync service stopped');
+    }
     
     // stop api
     await this.api.stop();
@@ -516,7 +622,11 @@ function parseConfig(): NodeConfig {
     miningEnabled: process.env.MINING_ENABLED === 'true',
     
     // ipfs
-    ipfsApi: process.env.IPFS_API || 'http://localhost:5001'
+    ipfsApi: process.env.IPFS_API || 'http://localhost:5001',
+    
+    // network mode (default to tcp)
+    networkMode: (process.env.NETWORK_MODE as 'ipfs' | 'tcp') || 'tcp',
+    tcpPort: parseInt(process.env.TCP_PORT || '8333')
   };
   
   return config;

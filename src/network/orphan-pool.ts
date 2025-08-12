@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import { getLogger } from '../utils/logger';
+import { serialize } from '../utils/bigint';
 import type { Block } from '../core/block';
 import type { Blockchain } from '../core/blockchain';
 
@@ -75,7 +76,7 @@ export class OrphanPool extends EventEmitter {
     }
     
     // estimate block size (rough approximation)
-    const blockSize = JSON.stringify(block).length;
+    const blockSize = serialize(block).length;
     
     // check size limits
     if (this.totalSize + blockSize > this.config.maxOrphanSize!) {
@@ -176,7 +177,7 @@ export class OrphanPool extends EventEmitter {
     }
     
     // update size
-    const blockSize = JSON.stringify(orphan.block).length;
+    const blockSize = serialize(orphan.block).length;
     this.totalSize = Math.max(0, this.totalSize - blockSize);
     
     logger.debug(`removed orphan ${hash.substring(0, 8)}... from pool`);
@@ -229,9 +230,10 @@ export class OrphanPool extends EventEmitter {
   /**
    * request parent block from peer
    */
-  private requestParent(parentHash: string, peerId: string): void {
+  private async requestParent(parentHash: string, peerId: string): Promise<void> {
     // check if we already have the parent
-    if (this.config.blockchain.hasBlock(parentHash)) {
+    const parentBlock = await this.config.blockchain.getBlockByHash(parentHash);
+    if (parentBlock) {
       return;
     }
     

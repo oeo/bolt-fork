@@ -218,20 +218,24 @@ export class ConnectionManager extends EventEmitter {
     let offset = 0;
     const buffer = connection.messageBuffer;
     
-    // minimum message size is 24 bytes (header)
-    while (offset + 24 <= buffer.length) {
-      // peek at message length (bytes 16-19)
-      const view = new DataView(buffer.buffer, buffer.byteOffset + offset + 16, 4);
+    // minimum message size is 16 bytes (header)
+    while (offset + 16 <= buffer.length) {
+      // peek at message length (bytes 8-11)
+      const view = new DataView(buffer.buffer, buffer.byteOffset + offset + 8, 4);
       const payloadLength = view.getUint32(0, false); // big-endian
       
-      const messageLength = 24 + payloadLength;
+      const messageLength = 16 + payloadLength;
       
       // check if we have complete message
       if (offset + messageLength <= buffer.length) {
         // extract message
         const message = buffer.slice(offset, offset + messageLength);
         
+        console.log(`[CONNECTION] Message extracted from ${connection.id}, size=${messageLength}`);
+        logger.debug(`[MSG EXTRACTED] from ${connection.id}, size=${messageLength}`);
+        
         // emit for protocol handler
+        console.log(`[CONNECTION] Emitting message:received event`);
         this.emit('message:received', connection.id, message);
         
         offset += messageLength;
@@ -251,20 +255,33 @@ export class ConnectionManager extends EventEmitter {
    * send message to peer
    */
   sendMessage(nodeId: string, data: Uint8Array): boolean {
+    console.log(`[CONNECTION] sendMessage called for ${nodeId}, data size: ${data.length}`);
     const connection = this.connections.get(nodeId);
-    if (!connection || !connection.connected) {
+    if (!connection) {
+      console.log(`[CONNECTION] No connection found for ${nodeId}`);
+      console.log(`[CONNECTION] Available connections: ${Array.from(this.connections.keys()).join(', ')}`);
+      logger.warn(`cannot send to ${nodeId}: not connected`);
+      return false;
+    }
+    if (!connection.connected) {
+      console.log(`[CONNECTION] Connection to ${nodeId} is not active`);
       logger.warn(`cannot send to ${nodeId}: not connected`);
       return false;
     }
     
     try {
+      console.log(`[CONNECTION] Writing ${data.length} bytes to ${nodeId}`);
       const written = connection.socket.write(data);
       if (written < data.length) {
+        console.log(`[CONNECTION] Partial write to ${nodeId}: ${written}/${data.length} bytes`);
         logger.warn(`partial write to ${nodeId}: ${written}/${data.length} bytes`);
         // bun will buffer the rest
+      } else {
+        console.log(`[CONNECTION] Successfully wrote ${written} bytes to ${nodeId}`);
       }
       return true;
     } catch (error) {
+      console.log(`[CONNECTION] ERROR sending to ${nodeId}:`, error);
       logger.error(`failed to send to ${nodeId}:`, error);
       this.handleDisconnection(connection.socket);
       return false;
@@ -382,7 +399,9 @@ export class ConnectionManager extends EventEmitter {
    * get all connected peers
    */
   getConnectedPeers(): string[] {
-    return Array.from(this.connections.keys());
+    const peers = Array.from(this.connections.keys());
+    console.log(`[CONNECTION] getConnectedPeers returning ${peers.length} peers: ${peers.join(', ')}`);
+    return peers;
   }
   
   /**

@@ -45,11 +45,18 @@ export class BlockClass {
    * create block from plain object
    */
   static fromObject(obj: Block): BlockClass {
+    const { TransactionClass } = require('./transaction');
+    
+    // convert transactions to TransactionClass instances if they aren't already
+    const transactions = obj.transactions.map(tx => 
+      tx instanceof TransactionClass ? tx : TransactionClass.fromObject(tx)
+    );
+    
     const block = new BlockClass(
       obj.index,
       obj.timestamp,
       obj.previousHash,
-      obj.transactions,
+      transactions,
       obj.difficulty,
       obj.miner
     );
@@ -301,7 +308,8 @@ export class BlockClass {
    * get block size in bytes (approximate)
    */
   getSize(): number {
-    return JSON.stringify(this.toObject()).length;
+    const { serialize } = require('../utils/bigint');
+    return serialize(this.toObject()).length;
   }
   
   /**

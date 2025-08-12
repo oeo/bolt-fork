@@ -4,6 +4,7 @@ services:
   ipfs:
     image: ipfs/kubo:latest
     container_name: ${NODE_NAME:-bolt}-ipfs
+    command: ["daemon", "--migrate=true", "--enable-pubsub-experiment", "--agent-version-suffix=docker"]
     ports:
       - "${IPFS_SWARM_PORT:-4001}:4001"
       - "${IPFS_API_PORT:-5001}:5001"

@@ -310,9 +310,9 @@ export class Protocol {
       view.setUint32(offset, item.type, false);
       offset += 4;
       
-      // store hash as 32 bytes
-      const hashBytes = encoder.encode(item.hash.padEnd(32, '\0'));
-      new Uint8Array(buffer, offset, 32).set(hashBytes.slice(0, 32));
+      // store hash as 32 bytes (convert hex to binary)
+      const hashBuffer = Buffer.from(item.hash, 'hex');
+      new Uint8Array(buffer, offset, 32).set(hashBuffer);
       offset += 32;
     }
     
@@ -339,7 +339,7 @@ export class Protocol {
       offset += 4;
       
       const hashBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
-      const hash = decoder.decode(hashBytes).replace(/\0+$/, '');
+      const hash = Buffer.from(hashBytes).toString('hex');
       offset += 32;
       
       items.push({ type, hash });
@@ -479,27 +479,31 @@ export class Protocol {
    */
   serializeHeaders(headers: any[]): Uint8Array {
     const encoder = new TextEncoder();
-    // each header: hash(32) + prevHash(32) + merkleRoot(32) + timestamp(8) + difficulty(4) + nonce(8) = 116 bytes
-    const buffer = new ArrayBuffer(4 + headers.length * 116);
+    // each header: height(4) + hash(32) + prevHash(32) + merkleRoot(32) + timestamp(8) + difficulty(4) + nonce(8) = 120 bytes
+    const buffer = new ArrayBuffer(4 + headers.length * 120);
     const view = new DataView(buffer);
     
     view.setUint32(0, headers.length, false);
     let offset = 4;
     
     for (const header of headers) {
-      // hash
-      const hashBytes = encoder.encode(header.hash.padEnd(32, '\0'));
-      new Uint8Array(buffer, offset, 32).set(hashBytes.slice(0, 32));
+      // height
+      view.setUint32(offset, header.height, false);
+      offset += 4;
+      
+      // hash (as hex string)
+      const hashBytes = Buffer.from(header.hash, 'hex');
+      new Uint8Array(buffer, offset, 32).set(hashBytes);
       offset += 32;
       
-      // previous hash
-      const prevBytes = encoder.encode(header.previousHash.padEnd(32, '\0'));
-      new Uint8Array(buffer, offset, 32).set(prevBytes.slice(0, 32));
+      // previous hash (as hex string)
+      const prevBytes = Buffer.from(header.previousHash, 'hex');
+      new Uint8Array(buffer, offset, 32).set(prevBytes);
       offset += 32;
       
-      // merkle root
-      const merkleBytes = encoder.encode(header.merkleRoot.padEnd(32, '\0'));
-      new Uint8Array(buffer, offset, 32).set(merkleBytes.slice(0, 32));
+      // merkle root (as hex string)
+      const merkleBytes = Buffer.from(header.merkleRoot, 'hex');
+      new Uint8Array(buffer, offset, 32).set(merkleBytes);
       offset += 32;
       
       // timestamp
@@ -528,22 +532,25 @@ export class Protocol {
     const decoder = new TextDecoder();
     
     const count = view.getUint32(0, false);
-    if (data.length < 4 + count * 116) return null;
+    if (data.length < 4 + count * 120) return null;
     
     const headers: any[] = [];
     let offset = 4;
     
     for (let i = 0; i < count; i++) {
+      const height = view.getUint32(offset, false);
+      offset += 4;
+      
       const hashBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
-      const hash = decoder.decode(hashBytes).replace(/\0+$/, '');
+      const hash = Buffer.from(hashBytes).toString('hex');
       offset += 32;
       
       const prevBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
-      const previousHash = decoder.decode(prevBytes).replace(/\0+$/, '');
+      const previousHash = Buffer.from(prevBytes).toString('hex');
       offset += 32;
       
       const merkleBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
-      const merkleRoot = decoder.decode(merkleBytes).replace(/\0+$/, '');
+      const merkleRoot = Buffer.from(merkleBytes).toString('hex');
       offset += 32;
       
       const timestamp = Number(view.getBigUint64(offset, false));
@@ -556,6 +563,7 @@ export class Protocol {
       offset += 8;
       
       headers.push({
+        height,
         hash,
         previousHash,
         merkleRoot,
@@ -569,10 +577,54 @@ export class Protocol {
   }
 
   /**
+   * serialize block message
+   */
+  serializeBlock(block: any): Uint8Array {
+    // use our bigint serializer
+    const { serialize } = require('../utils/bigint');
+    const json = serialize(block);
+    return new TextEncoder().encode(json);
+  }
+
+  /**
    * serialize getdata message
    */
   serializeGetData(items: InvItem[]): Uint8Array {
     return this.serializeInv(items); // same format as inv
+  }
+
+  /**
+   * deserialize block message
+   */
+  deserializeBlock(data: Uint8Array): any {
+    // use our bigint deserializer
+    const { deserialize } = require('../utils/bigint');
+    const { BlockClass } = require('../core/block');
+    const { TransactionClass } = require('../core/transaction');
+    const json = new TextDecoder().decode(data);
+    const blockData = deserialize(json);
+    
+    // convert transactions back to TransactionClass instances
+    const transactions = (blockData.transactions || []).map((txData: any) => {
+      return TransactionClass.fromObject(txData);
+    });
+    
+    // convert to BlockClass instance with correct parameter order
+    const block = new BlockClass(
+      blockData.index,
+      blockData.timestamp,
+      blockData.previousHash,
+      transactions,           // correct: transactions as 4th parameter
+      blockData.difficulty,
+      blockData.miner
+    );
+    
+    // set the calculated fields
+    block.hash = blockData.hash;
+    block.merkleRoot = blockData.merkleRoot;
+    block.nonce = blockData.nonce;
+    
+    return block;
   }
 
   /**
@@ -631,6 +683,9 @@ export class Protocol {
         break;
       case MessageType.HEADERS:
         payloadBytes = this.serializeHeaders(payload);
+        break;
+      case MessageType.BLOCK:
+        payloadBytes = this.serializeBlock(payload);
         break;
       default:
         throw new Error(`serialization not implemented for ${command}`);
@@ -694,6 +749,9 @@ export class Protocol {
         break;
       case MessageType.HEADERS:
         decodedPayload = this.deserializeHeaders(payload);
+        break;
+      case MessageType.BLOCK:
+        decodedPayload = this.deserializeBlock(payload);
         break;
       default:
         logger.warn(`deserialization not implemented for ${command}`);

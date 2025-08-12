@@ -39,6 +39,14 @@ export class PeerDiscoveryService extends EventEmitter {
   // ipfs topic for peer discovery only
   private static readonly DISCOVERY_TOPIC = '/bolt/peers';
   
+  // ipfs bootstrap nodes for network connectivity
+  private static readonly BOOTSTRAP_NODES = [
+    '/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN',
+    '/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa',
+    '/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb',
+    '/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt'
+  ];
+  
   constructor(config: PeerDiscoveryConfig) {
     super();
     this.config = {
@@ -64,6 +72,9 @@ export class PeerDiscoveryService extends EventEmitter {
       this.ipfs = create({ url: this.config.ipfsApi });
       const id = await this.ipfs.id();
       logger.info(`connected to ipfs node: ${id.id}`);
+      
+      // connect to bootstrap nodes for network connectivity
+      await this.connectToBootstrapNodes();
       
       // subscribe to peer discovery topic
       await this.subscribeToPeers();
@@ -119,17 +130,45 @@ export class PeerDiscoveryService extends EventEmitter {
   }
   
   /**
+   * connect to bootstrap nodes for network connectivity
+   */
+  private async connectToBootstrapNodes(): Promise<void> {
+    if (!this.ipfs) return;
+    
+    logger.info('connecting to ipfs bootstrap nodes');
+    let connected = 0;
+    
+    for (const addr of PeerDiscoveryService.BOOTSTRAP_NODES) {
+      try {
+        await this.ipfs.swarm.connect(addr);
+        connected++;
+        logger.debug(`connected to bootstrap: ${addr.split('/').pop()}`);
+      } catch (error) {
+        // ignore connection errors, some nodes may be offline
+        logger.debug(`failed to connect to bootstrap: ${addr}`);
+      }
+    }
+    
+    logger.info(`connected to ${connected} bootstrap nodes`);
+  }
+  
+  /**
    * subscribe to peer announcements
    */
   private async subscribeToPeers(): Promise<void> {
     if (!this.ipfs) return;
     
     const handler = (msg: any) => {
+      console.log(`[DISCOVERY] Received message on topic`);
       try {
         const data = JSON.parse(new TextDecoder().decode(msg.data));
+        console.log(`[DISCOVERY] Decoded announcement from ${data.nodeId}`);
         
         // ignore our own announcements
-        if (data.nodeId === this.config.nodeId) return;
+        if (data.nodeId === this.config.nodeId) {
+          console.log(`[DISCOVERY] Ignoring own announcement`);
+          return;
+        }
         
         // validate peer endpoint
         if (!this.validatePeerEndpoint(data)) {
@@ -167,7 +206,9 @@ export class PeerDiscoveryService extends EventEmitter {
       }
     };
     
+    console.log(`[DISCOVERY] Subscribing to topic: ${PeerDiscoveryService.DISCOVERY_TOPIC}`);
     await this.ipfs.pubsub.subscribe(PeerDiscoveryService.DISCOVERY_TOPIC, handler);
+    console.log(`[DISCOVERY] Successfully subscribed to ${PeerDiscoveryService.DISCOVERY_TOPIC}`);
     logger.info(`subscribed to ${PeerDiscoveryService.DISCOVERY_TOPIC}`);
   }
   
@@ -175,6 +216,8 @@ export class PeerDiscoveryService extends EventEmitter {
    * start announcing our tcp endpoint
    */
   private startAnnouncing(initialHeight: number, initialHash: string): void {
+    logger.info(`starting announcements for tcp endpoint ${this.config.tcpHost}:${this.config.tcpPort}`);
+    
     let currentHeight = initialHeight;
     let currentHash = initialHash;
     
@@ -185,7 +228,10 @@ export class PeerDiscoveryService extends EventEmitter {
     });
     
     const announce = async () => {
-      if (!this.ipfs || !this.isRunning) return;
+      if (!this.ipfs || !this.isRunning) {
+        logger.warn('cannot announce: ipfs not ready or service not running');
+        return;
+      }
       
       const announcement = {
         nodeId: this.config.nodeId,
@@ -198,18 +244,23 @@ export class PeerDiscoveryService extends EventEmitter {
       };
       
       try {
+        console.log(`[DISCOVERY] Publishing announcement: ${JSON.stringify(announcement)}`);
         const data = new TextEncoder().encode(JSON.stringify(announcement));
         await this.ipfs.pubsub.publish(PeerDiscoveryService.DISCOVERY_TOPIC, data);
-        logger.debug(`announced: height=${currentHeight} tcp=${announcement.tcp}`);
+        console.log(`[DISCOVERY] Announcement published successfully`);
+        logger.info(`announced tcp endpoint: ${announcement.tcp} (height=${currentHeight})`);
       } catch (error) {
+        console.log(`[DISCOVERY] Failed to publish announcement:`, error);
         logger.error('failed to announce:', error);
       }
     };
     
     // announce immediately
+    logger.info('sending initial announcement');
     announce();
     
     // then periodically
+    logger.info(`setting up periodic announcements every ${this.config.announceInterval}ms`);
     this.announceTimer = setInterval(announce, this.config.announceInterval);
   }
   

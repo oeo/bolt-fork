@@ -130,9 +130,13 @@ export class InventoryManager extends EventEmitter {
    * announce our inventory to peers
    */
   broadcastInventory(items: InvItem[]): void {
-    if (items.length === 0) return;
+    if (items.length === 0) {
+      console.log('[INVENTORY] No items to broadcast');
+      return;
+    }
     
     const peers = this.config.connectionManager.getConnectedPeers();
+    console.log(`[INVENTORY] Broadcasting ${items.length} items to ${peers.length} peers: ${peers.join(', ')}`);
     logger.info(`broadcasting ${items.length} items to ${peers.length} peers`);
     
     for (const peerId of peers) {
@@ -151,8 +155,19 @@ export class InventoryManager extends EventEmitter {
       });
       
       if (filtered.length > 0) {
+        console.log(`[INVENTORY] Sending inv with ${filtered.length} items to ${peerId}`);
+        logger.debug(`sending inv with ${filtered.length} items to ${peerId}`);
         const message = this.config.protocol.encodeMessage('inv', filtered);
-        this.config.connectionManager.sendMessage(peerId, message);
+        console.log(`[INVENTORY] Encoded message size: ${message.length} bytes`);
+        const sent = this.config.connectionManager.sendMessage(peerId, message);
+        if (!sent) {
+          console.log(`[INVENTORY] FAILED to send inv to ${peerId}`);
+          logger.warn(`failed to send inv to ${peerId}`);
+        } else {
+          console.log(`[INVENTORY] Successfully sent inv to ${peerId}`);
+        }
+      } else {
+        console.log(`[INVENTORY] No items to send to ${peerId} after filtering`);
       }
     }
   }
@@ -161,9 +176,11 @@ export class InventoryManager extends EventEmitter {
    * announce new block to network
    */
   announceBlock(blockHash: string): void {
+    console.log(`[INVENTORY] announceBlock called for ${blockHash}`);
     // avoid duplicate announcements
     const key = `block:${blockHash}`;
     if (this.recentAnnouncements.has(key)) {
+      console.log(`[INVENTORY] Block ${blockHash} already announced recently`);
       return;
     }
     

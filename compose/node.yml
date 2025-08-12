@@ -2,7 +2,6 @@
 # usage: docker compose -f compose/node.yml up
 
 include:
-  - redis.yml
   - ipfs.yml
   - prometheus.yml
   - grafana.yml
@@ -18,12 +17,13 @@ services:
     environment:
       NODE_ID: ${NODE_NAME:-bolt-node}
       NODE_HOST: ${NODE_NAME:-bolt-node}
-      REDIS_URL: redis://${NODE_NAME:-bolt-node}-redis:6379
       MINING_ENABLED: ${MINING_ENABLED:-true}
       MINER_ADDRESS: ${MINER_ADDRESS:-1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa}
       MINING_MAX_ITERATIONS: ${MINING_MAX_ITERATIONS:-1000000}
       MINING_INTERVAL: ${MINING_INTERVAL:-10000}
       ENABLE_IPFS: ${ENABLE_IPFS:-true}
+      NETWORK_MODE: ${NETWORK_MODE:-tcp}
+      TCP_PORT: ${TCP_PORT:-8333}
     ports:
       - "${API_PORT:-7333}:7333"
       - "${METRICS_PORT:-7336}:7336"
@@ -32,8 +32,6 @@ services:
       - ../logs:/app/logs
       - ../src:/app/src:ro
     depends_on:
-      redis:
-        condition: service_healthy
       ipfs:
         condition: service_healthy
 
