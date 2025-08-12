@@ -124,9 +124,9 @@ describe('network protocol', () => {
   describe('inventory message', () => {
     it('should serialize and deserialize inventory message', () => {
       const items = [
-        { type: InvType.TX, hash: 'tx1234567890' },
-        { type: InvType.BLOCK, hash: 'block9876543210' },
-        { type: InvType.FILTERED_BLOCK, hash: 'filtered123' },
+        { type: InvType.TX, hash: '1234567890abcdef' + '0'.repeat(48) },
+        { type: InvType.BLOCK, hash: 'fedcba0987654321' + '0'.repeat(48) },
+        { type: InvType.FILTERED_BLOCK, hash: 'abcdef1234567890' + '0'.repeat(48) },
       ];
 
       const serialized = protocol.serializeInv(items);

@@ -8,8 +8,6 @@ import { BlockDownloader } from './block-downloader';
 import { InventoryManager } from './inventory-manager';
 import { OrphanPool } from './orphan-pool';
 import { TransactionRelay } from './transaction-relay';
-import { IPFSService } from './ipfs';
-import { PeerManager } from './peer-manager';
 import type { Blockchain } from '../core/blockchain';
 import type { Mempool } from '../core/mempool';
 import type { ChainConfig } from '../config/chain';
@@ -19,8 +17,8 @@ import type { Transaction } from '../core/transaction';
 const logger = getLogger(__filename);
 
 export enum NetworkMode {
-  IPFS = 'ipfs',      // legacy ipfs-based networking (deprecated)
-  TCP = 'tcp'         // new tcp-based networking with ipfs discovery
+  TCP = 'tcp',        // tcp-based networking with ipfs discovery
+  IPFS = 'ipfs'       // legacy mode (not implemented)
 }
 
 export interface NetworkOrchestratorConfig {
@@ -40,10 +38,6 @@ export interface NetworkOrchestratorConfig {
 export class NetworkOrchestrator extends EventEmitter {
   private config: NetworkOrchestratorConfig;
   private mode: NetworkMode;
-  
-  // ipfs mode services
-  private ipfsService?: IPFSService;
-  private peerManager?: PeerManager;
   
   // tcp mode services
   private discoveryService?: PeerDiscoveryService;
@@ -97,11 +91,6 @@ export class NetworkOrchestrator extends EventEmitter {
     
     logger.info('stopping network orchestrator');
     
-    // stop ipfs services
-    if (this.ipfsService) {
-      await this.ipfsService.stop();
-    }
-    
     // stop tcp services
     if (this.syncManager) await this.syncManager.stop();
     if (this.txRelay) this.txRelay.stop();
@@ -119,46 +108,9 @@ export class NetworkOrchestrator extends EventEmitter {
    * start ipfs-based networking (legacy)
    */
   private async startIPFSMode(): Promise<void> {
-    logger.info('starting ipfs mode networking');
-    
-    // create ipfs service
-    this.ipfsService = new IPFSService({
-      apiUrl: this.config.ipfsApi,
-      nodeId: this.config.nodeId,
-      chainConfig: this.config.chainConfig
-    });
-    
-    // create peer manager
-    const httpUrl = `http://${this.config.externalHost || 'localhost'}:${this.config.tcpPort || 7333}`;
-    this.peerManager = new PeerManager({
-      ownNodeId: this.config.nodeId,
-      ownHttpUrl: httpUrl
-    });
-    
-    // setup ipfs event handlers
-    this.ipfsService.on('peer', (data: any) => {
-      if (data.httpUrl && data.nodeId !== this.config.nodeId) {
-        this.peerManager!.addPeer({
-          nodeId: data.nodeId,
-          httpUrl: data.httpUrl,
-          lastSeen: Date.now()
-        });
-      }
-    });
-    
-    // forward events
-    this.ipfsService.on('block', (block: Block) => {
-      this.emit('block:received', block);
-    });
-    
-    this.ipfsService.on('transaction', (tx: Transaction) => {
-      this.emit('transaction:received', tx);
-    });
-    
-    // start ipfs service
-    await this.ipfsService.start();
-    
-    logger.info('ipfs mode networking started');
+    logger.error('ipfs mode is no longer supported - using tcp mode instead');
+    this.mode = NetworkMode.TCP;
+    await this.startTCPMode();
   }
   
   /**
@@ -320,9 +272,6 @@ export class NetworkOrchestrator extends EventEmitter {
     switch (this.mode) {
       case NetworkMode.IPFS:
         console.log(`[ORCHESTRATOR] Using IPFS mode`);
-        if (this.peerManager) {
-          await this.peerManager.broadcastBlock(block);
-        }
         break;
       case NetworkMode.TCP:
         console.log(`[ORCHESTRATOR] Using TCP mode`);
@@ -344,9 +293,6 @@ export class NetworkOrchestrator extends EventEmitter {
     
     switch (this.mode) {
       case NetworkMode.IPFS:
-        if (this.peerManager) {
-          await this.peerManager.broadcastTransaction(tx);
-        }
         break;
       case NetworkMode.TCP:
         if (this.txRelay) {
@@ -366,8 +312,6 @@ export class NetworkOrchestrator extends EventEmitter {
     };
     
     if (this.mode === NetworkMode.IPFS) {
-      stats.ipfs = this.ipfsService?.getStats();
-      stats.peers = this.peerManager?.getStats();
     } else {
       stats.discovery = this.discoveryService?.getStats();
       stats.connections = this.connectionManager?.getStats();
@@ -385,7 +329,7 @@ export class NetworkOrchestrator extends EventEmitter {
    */
   getPeerCount(): number {
     if (this.mode === NetworkMode.IPFS) {
-      return this.peerManager?.getActivePeers().length || 0;
+      return 0;
     } else {
       return this.connectionManager?.getConnectedPeers().length || 0;
     }

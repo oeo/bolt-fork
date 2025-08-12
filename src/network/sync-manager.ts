@@ -2,55 +2,49 @@ import { EventEmitter } from 'events';
 import { getLogger } from '../utils/logger';
 import type { Blockchain } from '../core/blockchain';
 import type { Block } from '../core/block';
+import { BlockClass } from '../core/block';
 import type { ConnectionManager } from './connection-manager';
 import type { Protocol } from './protocol';
 import type { PeerDiscoveryService, PeerEndpoint } from './peer-discovery';
 
 const logger = getLogger(__filename);
 
-export interface BlockHeader {
-  hash: string;
-  previousHash: string;
-  merkleRoot: string;
-  timestamp: number;
-  difficulty: number;
-  nonce: number;
-  height: number;
-}
-
 export interface SyncManagerConfig {
   blockchain: Blockchain;
   connectionManager: ConnectionManager;
   protocol: Protocol;
   discoveryService: PeerDiscoveryService;
-  maxHeadersPerRequest?: number;
+  batchSize?: number;
   syncTimeout?: number;
+  maxRetries?: number;
 }
 
 export enum SyncState {
   IDLE = 'idle',
-  SYNCING_HEADERS = 'syncing_headers',
-  SYNCING_BLOCKS = 'syncing_blocks',
+  SYNCING = 'syncing',
   SYNCED = 'synced'
 }
 
 /**
- * manages blockchain synchronization using headers-first approach
+ * manages blockchain synchronization using sequential block downloads
  */
 export class SyncManager extends EventEmitter {
   private config: SyncManagerConfig;
   private syncState: SyncState = SyncState.IDLE;
-  private headerChain: Map<number, BlockHeader> = new Map();
   private syncTarget: PeerEndpoint | null = null;
-  private missingBlocks: Set<string> = new Set();
-  private missingBlocksByHeight: Map<number, string> = new Map();
+  private currentSyncHeight: number = 0;
+  private targetHeight: number = 0;
   private syncTimer: any;
+  private retryCount: number = 0;
+  private requestedBlocks: Set<number> = new Set();
+  private blockTimeout: any;
   
   constructor(config: SyncManagerConfig) {
     super();
     this.config = {
-      maxHeadersPerRequest: 2000,
+      batchSize: 10,
       syncTimeout: 30000,
+      maxRetries: 3,
       ...config
     };
     
@@ -72,20 +66,15 @@ export class SyncManager extends EventEmitter {
     
     // handle incoming messages
     this.config.connectionManager.on('message:received', (peerId: string, data: Uint8Array) => {
-      console.log(`[SYNC] message:received event fired for peer ${peerId}, data size: ${data.length}`);
       const message = this.config.protocol.decodeMessage(data);
       if (message) {
-        console.log(`[SYNC] Decoded message: ${message.command}`);
         this.handleMessage(peerId, message.command, message.payload);
-      } else {
-        console.log(`[SYNC] Failed to decode message from ${peerId}`);
       }
     });
     
     // handle peer connections
     this.config.connectionManager.on('peer:connected', (peerId: string) => {
       logger.info(`peer connected: ${peerId}`);
-      // send version handshake
       this.sendVersion(peerId);
     });
   }
@@ -116,10 +105,15 @@ export class SyncManager extends EventEmitter {
       this.syncTimer = null;
     }
     
+    if (this.blockTimeout) {
+      clearTimeout(this.blockTimeout);
+      this.blockTimeout = null;
+    }
+    
     this.syncState = SyncState.IDLE;
-    this.headerChain.clear();
-    this.missingBlocks.clear();
-    this.missingBlocksByHeight.clear();
+    this.syncTarget = null;
+    this.requestedBlocks.clear();
+    this.retryCount = 0;
   }
   
   /**
@@ -127,18 +121,18 @@ export class SyncManager extends EventEmitter {
    */
   private async checkIfSyncNeeded(peer: PeerEndpoint): Promise<void> {
     const ourHeight = await this.config.blockchain.getHeight();
-    logger.info(`[SYNC CHECK] our height: ${ourHeight}, peer ${peer.nodeId} height: ${peer.height}`);
+    logger.info(`sync check: our height=${ourHeight}, peer ${peer.nodeId} height=${peer.height}`);
     
     if (peer.height > ourHeight) {
-      logger.info(`peer ${peer.nodeId} has higher chain (${peer.height} vs ${ourHeight})`);
+      logger.info(`peer has higher chain (${peer.height} vs ${ourHeight})`);
       
       // if not syncing or this peer is better than current target
       if (this.syncState === SyncState.IDLE || 
           (this.syncTarget && peer.height > this.syncTarget.height)) {
-        logger.info(`[SYNC START] initiating sync with ${peer.nodeId}`);
+        logger.info(`starting sync with ${peer.nodeId}`);
         this.startSyncWithPeer(peer);
       } else {
-        logger.info(`[SYNC SKIP] already syncing, state: ${this.syncState}`);
+        logger.debug(`already syncing, state: ${this.syncState}`);
       }
     }
   }
@@ -147,17 +141,20 @@ export class SyncManager extends EventEmitter {
    * start syncing with a specific peer
    */
   private async startSyncWithPeer(peer: PeerEndpoint): Promise<void> {
-    logger.info(`starting sync with ${peer.nodeId} at height ${peer.height}`);
+    logger.info(`starting sync with ${peer.nodeId} from height ${await this.config.blockchain.getHeight()} to ${peer.height}`);
     
     this.syncTarget = peer;
-    this.syncState = SyncState.SYNCING_HEADERS;
+    this.syncState = SyncState.SYNCING;
+    this.currentSyncHeight = await this.config.blockchain.getHeight();
+    this.targetHeight = peer.height;
+    this.retryCount = 0;
+    this.requestedBlocks.clear();
     
     // connect to peer if not already connected
     const isConnected = this.config.connectionManager.isConnected(peer.nodeId);
-    logger.info(`[SYNC] peer ${peer.nodeId} connected: ${isConnected}`);
     
     if (!isConnected) {
-      logger.info(`[SYNC] connecting to peer ${peer.nodeId}`);
+      logger.info(`connecting to sync peer ${peer.nodeId}`);
       const connected = await this.config.connectionManager.connectToPeer(peer);
       if (!connected) {
         logger.error(`failed to connect to sync target ${peer.nodeId}`);
@@ -165,65 +162,84 @@ export class SyncManager extends EventEmitter {
         this.syncTarget = null;
         return;
       }
-      logger.info(`[SYNC] connected to peer ${peer.nodeId}`);
     }
     
-    // request headers
-    logger.info(`[SYNC] about to request headers from ${peer.nodeId}`);
-    await this.requestHeaders(peer.nodeId);
-    logger.info(`[SYNC] headers request sent to ${peer.nodeId}`);
+    // start requesting blocks sequentially
+    this.requestNextBatch();
   }
   
   /**
-   * request headers from peer
+   * request next batch of blocks sequentially
    */
-  private async requestHeaders(peerId: string): Promise<void> {
+  private requestNextBatch(): void {
+    if (this.syncState !== SyncState.SYNCING || !this.syncTarget) {
+      return;
+    }
+    
+    const startHeight = this.currentSyncHeight + 1;
+    const endHeight = Math.min(startHeight + this.config.batchSize! - 1, this.targetHeight);
+    
+    if (startHeight > this.targetHeight) {
+      // sync complete
+      logger.info(`sync complete at height ${this.currentSyncHeight}`);
+      this.syncState = SyncState.SYNCED;
+      this.emit('sync:complete');
+      return;
+    }
+    
+    logger.info(`requesting blocks ${startHeight} to ${endHeight} from ${this.syncTarget.nodeId}`);
+    
+    // request blocks by height
+    const items = [];
+    for (let height = startHeight; height <= endHeight; height++) {
+      this.requestedBlocks.add(height);
+      // we need to request by height, but protocol expects hash
+      // for now, request sequential blocks starting from our current tip
+      items.push({ type: 3, height }); // type 3 = block by height (custom extension)
+    }
+    
+    // fallback: if protocol doesn't support height-based requests,
+    // we'll need to use getblocks with locator
+    this.requestBlocksWithLocator(startHeight, endHeight);
+    
+    // set timeout for batch
+    this.blockTimeout = setTimeout(() => {
+      this.handleBatchTimeout();
+    }, this.config.syncTimeout);
+  }
+  
+  /**
+   * request blocks using block locator (standard bitcoin protocol)
+   */
+  private async requestBlocksWithLocator(startHeight: number, endHeight: number): Promise<void> {
+    if (!this.syncTarget) return;
+    
     const locator = await this.buildBlockLocator();
-    const stopHash = '0'.repeat(64); // request all headers
     
-    logger.info(`[HEADERS REQUEST] requesting headers from ${peerId}, locator size: ${locator.length}`);
-    logger.info(`[HEADERS REQUEST] locator: ${JSON.stringify(locator.slice(0, 3))}...`);
-    
-    const message = this.config.protocol.encodeMessage('getheaders', {
+    const message = this.config.protocol.encodeMessage('getblocks', {
       locator: locator,
-      stopHash: stopHash
+      stopHash: '0'.repeat(64)
     });
     
-    const sent = this.config.connectionManager.sendMessage(peerId, message);
-    logger.info(`[HEADERS REQUEST] message sent to ${peerId}: ${sent}`);
+    this.config.connectionManager.sendMessage(this.syncTarget.nodeId, message);
   }
   
   /**
-   * build block locator for finding common ancestor
+   * build simple block locator starting from our current height
    */
   private async buildBlockLocator(): Promise<string[]> {
     const locator: string[] = [];
-    let height = await this.config.blockchain.getHeight();
-    let step = 1;
+    const currentHeight = await this.config.blockchain.getHeight();
     
-    // exponential backoff through chain
-    while (height > 0) {
-      const block = await this.config.blockchain.getBlock(height);
-      if (block) {
-        locator.push(block.hash);
-      }
-      
-      height -= step;
-      
-      // exponentially increase step after first 10 blocks
-      if (locator.length > 10) {
-        step *= 2;
-      }
-      
-      // limit locator size
-      if (locator.length >= 32) {
-        break;
-      }
+    // add current tip
+    const tipBlock = await this.config.blockchain.getBlock(currentHeight);
+    if (tipBlock) {
+      locator.push(tipBlock.hash);
     }
     
-    // always include genesis
+    // add genesis
     const genesis = await this.config.blockchain.getBlock(0);
-    if (genesis && !locator.includes(genesis.hash)) {
+    if (genesis && genesis.hash !== tipBlock?.hash) {
       locator.push(genesis.hash);
     }
     
@@ -231,11 +247,28 @@ export class SyncManager extends EventEmitter {
   }
   
   /**
+   * handle batch timeout - retry or give up
+   */
+  private handleBatchTimeout(): void {
+    if (this.retryCount < this.config.maxRetries!) {
+      this.retryCount++;
+      logger.warn(`batch timeout, retrying (${this.retryCount}/${this.config.maxRetries})`);
+      this.requestedBlocks.clear();
+      this.requestNextBatch();
+    } else {
+      logger.error(`sync failed after ${this.config.maxRetries} retries, giving up`);
+      this.syncState = SyncState.IDLE;
+      this.syncTarget = null;
+      this.retryCount = 0;
+      this.requestedBlocks.clear();
+    }
+  }
+  
+  /**
    * handle incoming message from peer
    */
   private handleMessage(peerId: string, command: string, payload: any): void {
-    console.log(`[SYNC] Received ${command} from ${peerId}`)
-    logger.info(`[MESSAGE] received ${command} from ${peerId}`);
+    logger.debug(`received ${command} from ${peerId}`);
     
     switch (command) {
       case 'version':
@@ -243,9 +276,6 @@ export class SyncManager extends EventEmitter {
         break;
       case 'verack':
         this.handleVerack(peerId);
-        break;
-      case 'headers':
-        this.handleHeaders(peerId, payload);
         break;
       case 'block':
         this.handleBlock(peerId, payload);
@@ -261,6 +291,9 @@ export class SyncManager extends EventEmitter {
         break;
       case 'getheaders':
         this.handleGetHeaders(peerId, payload);
+        break;
+      case 'getblocks':
+        this.handleGetBlocks(peerId, payload);
         break;
       default:
         logger.debug(`unhandled message type: ${command}`);
@@ -300,99 +333,61 @@ export class SyncManager extends EventEmitter {
   }
   
   /**
-   * handle headers message
-   */
-  private async handleHeaders(peerId: string, headers: BlockHeader[]): Promise<void> {
-    if (headers.length === 0) {
-      logger.info('received empty headers, sync complete');
-      this.syncState = SyncState.SYNCING_BLOCKS;
-      this.downloadMissingBlocks();
-      return;
-    }
-    
-    logger.info(`received ${headers.length} headers from ${peerId}`);
-    
-    if (headers.length === 0) {
-      return;
-    }
-    
-    // validate first header connects to something we know
-    const firstHeader = headers[0];
-    const parentBlock = await this.config.blockchain.getBlockByHash(firstHeader.previousHash);
-    if (!parentBlock && firstHeader.height > 0) {
-      logger.error(`first header at height ${firstHeader.height} doesn't connect to known chain`);
-      // we might be missing earlier blocks, request from genesis
-      this.missingBlocks.clear();
-      this.missingBlocksByHeight.clear();
-      this.headerChain.clear();
-      await this.requestHeaders(peerId);
-      return;
-    }
-    
-    // validate header chain
-    let prevHash = firstHeader.previousHash;
-    for (const header of headers) {
-      // validate header connects to previous
-      if (header.previousHash !== prevHash) {
-        logger.error(`received invalid header chain: header at height ${header.height} has previousHash ${header.previousHash} but expected ${prevHash}`);
-        this.syncState = SyncState.IDLE;
-        return;
-      }
-      
-      // add to header chain
-      this.headerChain.set(header.height, header);
-      
-      // check if we have this block
-      const existingBlock = await this.config.blockchain.getBlockByHash(header.hash);
-      if (!existingBlock) {
-        this.missingBlocks.add(header.hash);
-        this.missingBlocksByHeight.set(header.height, header.hash);
-      }
-      
-      prevHash = header.hash;
-    }
-    
-    // request more headers if needed
-    const lastHeader = headers[headers.length - 1];
-    if (this.syncTarget && lastHeader.height < this.syncTarget.height) {
-      this.requestHeaders(peerId);
-    } else {
-      // headers sync complete, start downloading blocks
-      logger.info(`headers sync complete, need ${this.missingBlocks.size} blocks`);
-      this.syncState = SyncState.SYNCING_BLOCKS;
-      this.downloadMissingBlocks();
-    }
-  }
-  
-  /**
-   * handle block message
+   * handle block message - the core of our simple sync
    */
   private async handleBlock(peerId: string, block: Block): Promise<void> {
-    logger.info(`[BLOCK RECEIVED] block ${block.index} hash=${block.hash.substring(0, 8)} from ${peerId}`);
+    logger.info(`received block ${block.index} (${block.hash.substring(0, 8)}...) from ${peerId}`);
     
-    // remove from missing blocks
-    this.missingBlocks.delete(block.hash);
-    this.missingBlocksByHeight.delete(block.index);
+    // ignore blocks if we're not syncing or from wrong peer
+    if (this.syncState !== SyncState.SYNCING || !this.syncTarget || peerId !== this.syncTarget.nodeId) {
+      logger.debug(`ignoring block from ${peerId}, not syncing with this peer`);
+      return;
+    }
     
-    // add block to blockchain
+    // check if this block is the next one we expect
+    const expectedHeight = this.currentSyncHeight + 1;
+    if (block.index !== expectedHeight) {
+      logger.warn(`received block ${block.index} but expected ${expectedHeight}, ignoring out-of-order block`);
+      return;
+    }
+    
+    // try to add block to blockchain
     try {
-      await this.config.blockchain.addBlock(block);
-      const height = await this.config.blockchain.getHeight();
-      logger.info(`[CHAIN UPDATED] added block ${block.index} to chain, new height=${height}`);
-      
-      // check if sync is complete
-      if (this.missingBlocksByHeight.size === 0) {
-        logger.info('[SYNC COMPLETE] blockchain synchronized');
-        this.syncState = SyncState.SYNCED;
-        this.emit('sync:complete');
-      } else if (this.syncState === SyncState.SYNCING_BLOCKS) {
-        // continue downloading next blocks
-        await this.downloadMissingBlocks();
+      const blockClass = BlockClass.fromObject(block);
+      const result = await this.config.blockchain.addBlock(blockClass);
+      if (result.valid) {
+        this.currentSyncHeight = block.index;
+        this.requestedBlocks.delete(block.index);
+        
+        logger.info(`added block ${block.index} to chain, progress: ${block.index}/${this.targetHeight}`);
+        
+        // clear timeout since we received a valid block
+        if (this.blockTimeout) {
+          clearTimeout(this.blockTimeout);
+          this.blockTimeout = null;
+        }
+        
+        // reset retry count on successful block
+        this.retryCount = 0;
+        
+        // request next batch if we haven't reached target
+        if (this.currentSyncHeight < this.targetHeight) {
+          this.requestNextBatch();
+        } else {
+          // sync complete!
+          logger.info(`sync complete! reached height ${this.currentSyncHeight}`);
+          this.syncState = SyncState.SYNCED;
+          this.emit('sync:complete');
+        }
+      } else {
+        logger.error(`failed to add block ${block.index}: ${result.error}`);
+        // this might be an orphan - emit event for orphan pool
+        this.emit('block:orphaned', block);
       }
     } catch (error) {
-      logger.error(`failed to add block ${block.index}:`, error);
-      // block might be orphaned, will handle later
-      this.emit('block:orphaned', block);
+      logger.error(`error processing block ${block.index}:`, error);
+      // continue with next block request on error
+      this.requestNextBatch();
     }
   }
   
@@ -400,26 +395,27 @@ export class SyncManager extends EventEmitter {
    * handle inventory message
    */
   private async handleInv(peerId: string, items: any[]): Promise<void> {
-    logger.info(`received inv with ${items.length} items from ${peerId}`);
+    logger.debug(`received inv with ${items.length} items from ${peerId}`);
     
-    // request items we don't have
+    // during sync, only process blocks from our sync target
+    if (this.syncState === SyncState.SYNCING && (!this.syncTarget || peerId !== this.syncTarget.nodeId)) {
+      return;
+    }
+    
+    // request blocks we don't have
     const needed: any[] = [];
     for (const item of items) {
-      console.log(`[SYNC] Checking inv item type=${item.type} hash=${item.hash}`);
-      // type 2 = block, type 1 = transaction
+      // type 2 = block
       if (item.type === 2) {
         const hasBlock = await this.config.blockchain.getBlockByHash(item.hash);
-        console.log(`[SYNC] Has block ${item.hash}? ${!!hasBlock}`);
         if (!hasBlock) {
-          logger.info(`requesting block ${item.hash} from ${peerId}`);
           needed.push(item);
         }
       }
-      // ignore transactions for now
     }
     
     if (needed.length > 0) {
-      logger.info(`requesting ${needed.length} blocks via getdata`);
+      logger.debug(`requesting ${needed.length} blocks via getdata`);
       const getdata = this.config.protocol.encodeMessage('getdata', needed);
       this.config.connectionManager.sendMessage(peerId, getdata);
     }
@@ -429,7 +425,7 @@ export class SyncManager extends EventEmitter {
    * handle getheaders message
    */
   private async handleGetHeaders(peerId: string, payload: any): Promise<void> {
-    logger.info(`[GETHEADERS] received request from ${peerId}`);
+    logger.debug(`getheaders request from ${peerId}`);
     
     if (!payload || !payload.locator) {
       logger.warn(`invalid getheaders payload from ${peerId}`);
@@ -446,14 +442,12 @@ export class SyncManager extends EventEmitter {
       const block = await this.config.blockchain.getBlockByHash(hash);
       if (block) {
         startHeight = block.index + 1;
-        logger.info(`[GETHEADERS] found common ancestor at height ${block.index}`);
         break;
       }
     }
     
     // get headers from startHeight
     const currentHeight = await this.config.blockchain.getHeight();
-    logger.info(`[GETHEADERS] sending headers from ${startHeight} to ${currentHeight}`);
     
     for (let height = startHeight; height <= currentHeight && headers.length < maxHeaders; height++) {
       const block = await this.config.blockchain.getBlock(height);
@@ -475,11 +469,61 @@ export class SyncManager extends EventEmitter {
       }
     }
     
-    logger.info(`[GETHEADERS] sending ${headers.length} headers to ${peerId}`);
+    logger.debug(`sending ${headers.length} headers to ${peerId}`);
     
     // send headers response
     const message = this.config.protocol.encodeMessage('headers', headers);
     this.config.connectionManager.sendMessage(peerId, message);
+  }
+  
+  /**
+   * handle getblocks message
+   */
+  private async handleGetBlocks(peerId: string, payload: any): Promise<void> {
+    logger.debug(`getblocks request from ${peerId}`);
+    
+    if (!payload || !payload.locator) {
+      logger.warn(`invalid getblocks payload from ${peerId}`);
+      return;
+    }
+    
+    const { locator, stopHash } = payload;
+    const inventory: any[] = [];
+    const maxBlocks = 500; // reasonable limit
+    
+    // find common ancestor from locator
+    let startHeight = 0;
+    for (const hash of locator) {
+      const block = await this.config.blockchain.getBlockByHash(hash);
+      if (block) {
+        startHeight = block.index + 1;
+        break;
+      }
+    }
+    
+    // get block hashes from startHeight
+    const currentHeight = await this.config.blockchain.getHeight();
+    
+    for (let height = startHeight; height <= currentHeight && inventory.length < maxBlocks; height++) {
+      const block = await this.config.blockchain.getBlock(height);
+      if (block) {
+        inventory.push({
+          type: 2, // block type
+          hash: block.hash
+        });
+        
+        // stop if we reach stopHash
+        if (stopHash && block.hash === stopHash) {
+          break;
+        }
+      }
+    }
+    
+    if (inventory.length > 0) {
+      logger.debug(`sending inventory of ${inventory.length} blocks to ${peerId}`);
+      const message = this.config.protocol.encodeMessage('inv', inventory);
+      this.config.connectionManager.sendMessage(peerId, message);
+    }
   }
   
   /**
@@ -535,72 +579,6 @@ export class SyncManager extends EventEmitter {
   }
   
   /**
-   * download missing blocks
-   */
-  private async downloadMissingBlocks(): Promise<void> {
-    if (this.missingBlocksByHeight.size === 0) {
-      logger.info('no blocks to download');
-      this.syncState = SyncState.SYNCED;
-      return;
-    }
-    
-    logger.info(`downloading ${this.missingBlocksByHeight.size} blocks`);
-    
-    // get sorted heights
-    const heights = Array.from(this.missingBlocksByHeight.keys()).sort((a, b) => a - b);
-    
-    // request blocks in order, starting from lowest height
-    const currentHeight = await this.config.blockchain.getHeight();
-    const nextHeight = currentHeight + 1;
-    
-    // find blocks we can request (must be sequential from current height)
-    const blocksToRequest: string[] = [];
-    for (let h = nextHeight; h < nextHeight + 16 && h <= heights[heights.length - 1]; h++) {
-      const hash = this.missingBlocksByHeight.get(h);
-      if (hash) {
-        blocksToRequest.push(hash);
-      } else {
-        // missing a block in sequence, stop here
-        break;
-      }
-    }
-    
-    if (blocksToRequest.length === 0) {
-      logger.warn(`cannot download blocks: missing block at height ${nextHeight}`);
-      // might need to re-request headers
-      return;
-    }
-    
-    logger.info(`requesting blocks ${nextHeight} to ${nextHeight + blocksToRequest.length - 1}`);
-    
-    const items = blocksToRequest.map(hash => ({ type: 2, hash })); // type 2 = block
-    
-    // prefer sync target if still connected, otherwise use any peer
-    let targetPeer: string | null = null;
-    
-    if (this.syncTarget && this.config.connectionManager.isConnected(this.syncTarget.nodeId)) {
-      targetPeer = this.syncTarget.nodeId;
-    } else {
-      const peers = this.config.connectionManager.getConnectedPeers();
-      if (peers.length > 0) {
-        targetPeer = peers[0];
-      }
-    }
-    
-    if (targetPeer) {
-      const getdata = this.config.protocol.encodeMessage('getdata', items);
-      this.config.connectionManager.sendMessage(targetPeer, getdata);
-    } else {
-      logger.warn('no connected peers to download blocks from');
-      // try to reconnect to sync target
-      if (this.syncTarget) {
-        logger.info(`attempting to reconnect to sync target ${this.syncTarget.nodeId}`);
-        await this.config.connectionManager.connectToPeer(this.syncTarget);
-      }
-    }
-  }
-  
-  /**
    * periodic sync check
    */
   private async checkSync(): Promise<void> {
@@ -622,15 +600,18 @@ export class SyncManager extends EventEmitter {
     state: SyncState;
     targetHeight: number | null;
     currentHeight: number;
-    headersReceived: number;
-    blocksToDownload: number;
+    syncProgress: number;
+    syncPeer: string | null;
   }> {
+    const currentHeight = await this.config.blockchain.getHeight();
+    const progress = this.targetHeight > 0 ? (currentHeight / this.targetHeight) * 100 : 100;
+    
     return {
       state: this.syncState,
-      targetHeight: this.syncTarget?.height || null,
-      currentHeight: await this.config.blockchain.getHeight(),
-      headersReceived: this.headerChain.size,
-      blocksToDownload: this.missingBlocks.size
+      targetHeight: this.targetHeight || null,
+      currentHeight,
+      syncProgress: Math.min(100, Math.max(0, progress)),
+      syncPeer: this.syncTarget?.nodeId || null
     };
   }
 }

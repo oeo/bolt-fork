@@ -183,7 +183,7 @@ export class Blockchain extends EventEmitter {
     logger.info(`Block ${block.index} added successfully`);
 
     // emit event with block details for metrics recording
-    this.emit('blockAdded', block);
+    this.emit('block:added', block);
 
     return { valid: true };
   }
@@ -905,7 +905,7 @@ export class Blockchain extends EventEmitter {
     logger.info(`Block ${block.index} added successfully during reorganization`);
     
     // emit event with block details for metrics recording
-    this.emit('blockAdded', block);
+    this.emit('block:added', block);
     
     return { valid: true };
   }

@@ -1,6 +1,6 @@
 # bolt blockchain implementation plan
 
-current focus: tcp networking components built but not integrated - ipfs discovery working in production
+current focus: cleaned up codebase - removed redis, worker pool, and unused network files for better maintainability
 
 ## phase 1: storage foundation
 
@@ -215,18 +215,19 @@ peer discovery (ipfs pubsub) → tcp connection manager (bun.listen/connect)
   - [x] update metrics collection
   - [x] test with docker cluster
 
-### current status - tcp networking operational, sync needs fixes
-- tcp mode is running with all networking components functional
+### current status - tcp networking functional, sync broken
+- tcp mode is running with networking components mostly functional
 - ipfs used only for peer discovery (as designed)
 - peer discovery working - nodes find and connect to each other
 - tcp connections established between all nodes
 - blocks being mined and broadcast to connected peers
 - inventory management working (broadcasting to 4+ peers)
-- **critical issue**: headers-first sync not working correctly
-  - nodes only sync latest blocks via inv/getdata
-  - historical blocks (1 to N) not being requested
+- **critical sync issues remain**:
+  - sync manager requests blocks but protocol doesn't handle getblocks correctly
+  - blocks arrive out of order (e.g., block 351 when expecting block 1)
   - all received blocks become orphans without parents
-  - nodes stuck at height 0 despite receiving new blocks
+  - nodes permanently stuck at height 0
+  - complete rewrite attempt created more bugs than it fixed
 
 ### completed implementation
 - [x] created network orchestrator to manage network modes
@@ -246,36 +247,46 @@ peer discovery (ipfs pubsub) → tcp connection manager (bun.listen/connect)
 - all blockchain data flows through tcp, not ipfs
 - multiple redundant connections between nodes
 
-### sync implementation issues and fixes needed
+### sync implementation - critical protocol bugs preventing any sync
 
-#### root cause analysis
-1. **missing header sync trigger**: when nodes connect to peers with higher chains, they should request headers but currently don't
-2. **broken block locator**: the buildBlockLocator function needs to properly build a locator from genesis to current tip
-3. **premature sync completion**: sync completes after receiving any block, not after syncing full chain
-4. **no historical block fetching**: only new blocks via inv are processed, not blocks 1 to N
+#### root cause analysis - protocol layer is incomplete
+1. **getblocks deserialization not implemented**: nodes can send getblocks requests but receiving nodes can't decode them
+2. **getblocks serialization uses wrong method**: incorrectly reuses getheaders serialization
+3. **no mechanism to request historical blocks**: only latest blocks propagate via inv/getdata
+4. **sync manager can't receive block batches**: protocol doesn't support the responses it needs
 
-#### required fixes for headers-first sync
-- [ ] fix sync trigger logic
-  - [ ] ensure checkIfSyncNeeded is called when peers are discovered
-  - [ ] trigger headers request when peer height > our height
-  - [ ] properly await async blockchain.getHeight() calls (partially done)
+#### attempted fixes and remaining issues
+- [x] fixed async/await for blockchain.getHeight() calls
+- [x] implemented headers-first sync with getheaders/headers exchange
+- [x] added sequential block download logic
+- [x] fixed BigInt serialization throughout codebase
+- [x] proper block/transaction deserialization from network
+
+#### critical remaining problems - protocol implementation incomplete
+- [x] **getblocks message has no deserialization** (CRITICAL BUG - FIXED)
+  - protocol warns: "deserialization not implemented for getblocks"
+  - sync manager receives null payload and warns "invalid getblocks payload"
+  - this completely breaks the sync mechanism
+  - nodes can request blocks but never receive responses
+  - **fixed**: added deserializeGetBlocks method and proper hex conversion
   
-- [ ] fix headers request/response handling
-  - [ ] ensure getheaders message is actually sent to peers
-  - [ ] verify peers respond with headers messages
-  - [ ] process headers to identify missing blocks
-  - [ ] add missing blocks to download queue
+- [x] getblocks serialization incorrectly reuses getheaders (FIXED)
+  - `case MessageType.GETBLOCKS: payloadBytes = this.serializeGetHeaders(...)`
+  - should have its own serializeGetBlocks/deserializeGetBlocks methods
+  - current implementation creates protocol mismatch
+  - **fixed**: now uses proper serializeGetBlocks with version field
   
-- [ ] fix block download logic
-  - [ ] after receiving headers, request all missing blocks
-  - [ ] handle blocks arriving out of order (orphan pool)
-  - [ ] connect orphaned blocks when parents arrive
-  - [ ] only mark sync complete when all blocks downloaded
-
-- [ ] fix height reporting
-  - [ ] ensure blockchain.getHeight() returns correct value
-  - [ ] verify blocks are actually persisted to storage
-  - [ ] update chain tip after adding blocks
+- [ ] blocks arrive only via inv/getdata (latest blocks only)
+  - only newly mined blocks propagate via inventory
+  - historical blocks (1 through N-1) never transmitted
+  - orphan pool fills with blocks that can't connect to chain
+  - nodes receive block 351 when they need blocks 1-350 first
+  
+- [ ] fundamental sync architecture issues
+  - headers-first sync implemented but overly complex
+  - sequential block sync implemented but protocol doesn't support it
+  - missing protocol methods make any sync approach fail
+  - need to implement missing protocol methods first
 
 #### testing requirements
 - [ ] verify node2-5 sync full chain from node1

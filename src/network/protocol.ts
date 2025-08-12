@@ -371,7 +371,6 @@ export class Protocol {
    * serialize getblocks message
    */
   serializeGetBlocks(version: number, hashes: string[], stopHash: string): Uint8Array {
-    const encoder = new TextEncoder();
     const buffer = new ArrayBuffer(8 + hashes.length * 32 + 32);
     const view = new DataView(buffer);
     
@@ -380,13 +379,15 @@ export class Protocol {
     
     let offset = 8;
     for (const hash of hashes) {
-      const hashBytes = encoder.encode(hash.padEnd(32, '\0'));
-      new Uint8Array(buffer, offset, 32).set(hashBytes.slice(0, 32));
+      // convert hex string to bytes
+      const hashBuffer = Buffer.from(hash, 'hex');
+      new Uint8Array(buffer, offset, 32).set(hashBuffer.slice(0, 32));
       offset += 32;
     }
     
-    const stopBytes = encoder.encode(stopHash.padEnd(32, '\0'));
-    new Uint8Array(buffer, offset, 32).set(stopBytes.slice(0, 32));
+    // convert stopHash hex string to bytes
+    const stopBuffer = Buffer.from(stopHash, 'hex');
+    new Uint8Array(buffer, offset, 32).set(stopBuffer.slice(0, 32));
     
     return new Uint8Array(buffer);
   }
@@ -427,7 +428,6 @@ export class Protocol {
    * serialize getheaders message
    */
   serializeGetHeaders(locator: string[], stopHash: string): Uint8Array {
-    const encoder = new TextEncoder();
     const buffer = new ArrayBuffer(4 + locator.length * 32 + 32);
     const view = new DataView(buffer);
     
@@ -435,13 +435,15 @@ export class Protocol {
     
     let offset = 4;
     for (const hash of locator) {
-      const hashBytes = encoder.encode(hash.padEnd(32, '\0'));
-      new Uint8Array(buffer, offset, 32).set(hashBytes.slice(0, 32));
+      // convert hex string to bytes
+      const hashBuffer = Buffer.from(hash, 'hex');
+      new Uint8Array(buffer, offset, 32).set(hashBuffer.slice(0, 32));
       offset += 32;
     }
     
-    const stopBytes = encoder.encode(stopHash.padEnd(32, '\0'));
-    new Uint8Array(buffer, offset, 32).set(stopBytes.slice(0, 32));
+    // convert stopHash hex string to bytes
+    const stopBuffer = Buffer.from(stopHash, 'hex');
+    new Uint8Array(buffer, offset, 32).set(stopBuffer.slice(0, 32));
     
     return new Uint8Array(buffer);
   }
@@ -453,7 +455,6 @@ export class Protocol {
     if (data.length < 36) return null;
     
     const view = new DataView(data.buffer, data.byteOffset);
-    const decoder = new TextDecoder();
     
     const count = view.getUint32(0, false);
     if (data.length < 4 + count * 32 + 32) return null;
@@ -463,13 +464,45 @@ export class Protocol {
     
     for (let i = 0; i < count; i++) {
       const hashBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
-      const hash = decoder.decode(hashBytes).replace(/\0+$/, '');
+      // convert bytes to hex string
+      const hash = Buffer.from(hashBytes).toString('hex');
       locator.push(hash);
       offset += 32;
     }
     
     const stopBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
-    const stopHash = decoder.decode(stopBytes).replace(/\0+$/, '');
+    // convert bytes to hex string
+    const stopHash = Buffer.from(stopBytes).toString('hex');
+    
+    return { locator, stopHash };
+  }
+
+  /**
+   * deserialize getblocks message
+   */
+  deserializeGetBlocks(data: Uint8Array): { locator: string[], stopHash: string } | null {
+    if (data.length < 40) return null; // 8 (version+count) + 32 (at least one hash)
+    
+    const view = new DataView(data.buffer, data.byteOffset);
+    
+    // skip version (4 bytes)
+    const count = view.getUint32(4, false);
+    if (data.length < 8 + count * 32 + 32) return null;
+    
+    const locator: string[] = [];
+    let offset = 8;
+    
+    for (let i = 0; i < count; i++) {
+      const hashBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
+      // convert bytes to hex string  
+      const hash = Buffer.from(hashBytes).toString('hex');
+      locator.push(hash);
+      offset += 32;
+    }
+    
+    const stopBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
+    // convert bytes to hex string
+    const stopHash = Buffer.from(stopBytes).toString('hex');
     
     return { locator, stopHash };
   }
@@ -678,6 +711,9 @@ export class Protocol {
       case MessageType.GETDATA:
         payloadBytes = this.serializeGetData(payload);
         break;
+      case MessageType.GETBLOCKS:
+        payloadBytes = this.serializeGetBlocks(PROTOCOL_VERSION, payload.locator, payload.stopHash);
+        break;
       case MessageType.GETHEADERS:
         payloadBytes = this.serializeGetHeaders(payload.locator, payload.stopHash);
         break;
@@ -743,6 +779,9 @@ export class Protocol {
         break;
       case MessageType.GETDATA:
         decodedPayload = this.deserializeGetData(payload);
+        break;
+      case MessageType.GETBLOCKS:
+        decodedPayload = this.deserializeGetBlocks(payload);
         break;
       case MessageType.GETHEADERS:
         decodedPayload = this.deserializeGetHeaders(payload);

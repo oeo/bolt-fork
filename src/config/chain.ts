@@ -65,3 +65,8 @@ export function getActiveFeatures(height: number): string[] {
     .filter(([_, activationHeight]) => height >= activationHeight)
     .map(([feature]) => feature);
 }
+
+// get chain config
+export function getChainConfig(): ChainConfig {
+  return config;
+}
