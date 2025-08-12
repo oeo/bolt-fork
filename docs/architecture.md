@@ -1,205 +1,277 @@
 # bolt architecture
 
-## Overview
+## overview
 
-bolt is a proof-of-work blockchain using an account model (not UTXO) with a simplified two-layer networking architecture:
+bolt is a proof-of-work blockchain using an account model (not utxo) with a clean separation between peer discovery and data exchange:
 
-1. **IPFS Layer**: Used exclusively for peer discovery and endpoint announcements
-2. **HTTP Layer**: Handles all blockchain data exchange between discovered peers
+1. **ipfs layer**: used exclusively for peer discovery via pubsub
+2. **tcp layer**: handles all blockchain data exchange using binary protocol
 
-This architecture provides the reliability and simplicity of HTTP while maintaining decentralized peer discovery through IPFS.
+this architecture provides high performance binary communication while maintaining decentralized peer discovery through ipfs.
 
-## Consensus Mechanism
+## consensus mechanism
 
 bolt implements nakamoto consensus with proof-of-work:
 - **cumulative difficulty**: follows chain with most total work
 - **automatic reorganization**: switches to better chain when found
 - **fork tolerance**: handles temporary forks with eventual convergence
 - **orphan management**: stores blocks awaiting parents
+- **median time validation**: ensures proper timestamp ordering
 
-### key consensus components
-- `ForkManager`: tracks competing chains and their cumulative work
-- `handleCompetingBlock()`: processes blocks from different forks
-- `reorganize()`: performs chain reorganization to better fork
-- storage layer tracks cumulative difficulty for chain selection
+### key consensus features
+- pre-validation of entire competing chains before reorganization
+- deterministic fork resolution using cumulative work
+- proper median time calculation during reorganization
+- comprehensive test coverage for edge cases
 
-## Networking Architecture
+## networking architecture
 
-### Two-Layer Design
+### two-layer design
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                 Application Layer                   │
-│           (Blockchain, Mining, Mempool)             │
+│                 application layer                   │
+│           (blockchain, mining, mempool)             │
 └─────────────────────────────────────────────────────┘
                           ▲
                           │
 ┌─────────────────────────────────────────────────────┐
-│              HTTP Communication Layer               │
-│   • Block synchronization                           │
-│   • Transaction propagation                         │
-│   • Peer status exchange                            │
-│   • Direct peer-to-peer data transfer               │
+│              tcp communication layer                │
+│   • binary protocol with magic bytes                │
+│   • headers-first synchronization                   │
+│   • parallel block downloads                        │
+│   • inventory management                            │
+│   • transaction relay                               │
 └─────────────────────────────────────────────────────┘
                           ▲
                           │
 ┌─────────────────────────────────────────────────────┐
-│             IPFS Peer Discovery Layer               │
-│   • Peer endpoint announcements                     │
-│   • Node capability advertisement                   │
-│   • Network topology discovery                      │
-│   • Bootstrap node connections                      │
+│             ipfs peer discovery layer               │
+│   • peer endpoint announcements                     │
+│   • pubsub topic: /bolt/peers                       │
+│   • automatic peer connection                       │
+│   • bootstrap node fallback                         │
 └─────────────────────────────────────────────────────┘
 ```
 
-### IPFS Discovery Protocol
+### tcp protocol
 
-Nodes use IPFS pubsub to announce their capabilities:
-```json
-{
-  "nodeId": "node-1",
-  "httpUrl": "http://node-1:7333", 
-  "capabilities": ["mining", "full_node"],
-  "chainHash": "abc123...",
-  "blockHeight": 1250,
-  "timestamp": 1704067200
-}
+binary message format:
+```
+[magic(4)][type(4)][length(4)][checksum(4)][payload]
 ```
 
-### HTTP Data Exchange
+message types:
+- `version` - handshake and capability exchange
+- `verack` - version acknowledgement
+- `ping/pong` - connection keepalive
+- `inv` - inventory announcements
+- `getdata` - request specific items
+- `getblocks` - request block inventory
+- `getheaders` - request header chain
+- `headers` - header chain response
+- `block` - full block data
+- `tx` - transaction data
 
-All blockchain data flows over HTTP:
-- `GET /peer/status` - Node status and chain info
-- `GET /peer/blocks?height=X` - Block synchronization
-- `POST /peer/blocks` - Block propagation
-- `GET /peer/transactions` - Mempool sync
-- `POST /peer/transactions` - Transaction broadcast
+### synchronization strategy
 
-**Current status**: HTTP endpoints implemented and working. Nodes successfully sync blocks via HTTP.
+headers-first sync with parallel downloads:
+1. request headers from peers (getheaders)
+2. validate header chain before downloading blocks
+3. queue blocks for parallel download (max 16 concurrent)
+4. handle out-of-order blocks via orphan pool
+5. connect orphans when parents arrive
 
-## Consensus Mechanism (In Development)
+## storage layer
 
-### Cumulative Proof-of-Work
+### lmdb backend
 
-bolt will follow the standard proof-of-work consensus rule: **follow the chain with the most cumulative work**.
+primary storage using lightning memory-mapped database:
+- single environment for all databases
+- atomic transactions across operations
+- 100gb default capacity
+- native bun integration for performance
 
-**Current Issue**: When multiple miners create blocks simultaneously, they form competing chains (forks). Each miner continues on its own fork, preventing network consensus.
+databases:
+- `blocks` - full block data by height and hash
+- `headers` - block headers for fast sync
+- `transactions` - indexed transaction storage
+- `state` - account balances and nonces
+- `mempool` - unconfirmed transactions with indexes
+- `metadata` - chain tips and configuration
 
-**Planned Solution**:
-1. **Cumulative Difficulty Tracking**: Each block will track the total cumulative difficulty of its chain
-2. **Chain Selection**: Nodes will follow the chain with highest cumulative work, not just the longest
-3. **Automatic Reorganization**: When a better chain is discovered, nodes will reorganize to follow it
-4. **Fork Tolerance**: Temporary forks are expected and will resolve naturally as one chain accumulates more work
+### storage abstraction
 
-### Chain Reorganization Process
-
-When a node discovers a chain with more cumulative work:
-1. Find the common ancestor block between chains
-2. Revert local chain back to the ancestor
-3. Apply blocks from the better chain
-4. Update all state (accounts, mempool, etc.)
-5. Continue mining on the new chain tip
-
-### Safety Mechanisms
-
-- **Maximum Reorg Depth**: Limit reorganizations to prevent deep chain attacks (e.g., 100 blocks)
-- **Checkpoint System**: Finalize blocks after certain depth
-- **Fork Monitoring**: Track and log all reorganization attempts
-
-## Key design decisions
-
-### Dynamic hashing algorithm
-
-Unlike Bitcoin's hardcoded SHA-256, bolt supports multiple hashing algorithms:
-- SHA-256
-- SHA-512
-- Scrypt
-- Double-SHA-256
-
-The algorithm is part of the chain configuration and included in the chain version hash, ensuring nodes on different algorithms cannot accidentally sync.
-
-### Chain version hash
-
-Every node calculates a deterministic hash of its configuration parameters:
-- Network (mainnet/testnet/local)
-- Hash algorithm
-- Difficulty parameters
-- Economic parameters (supply, rewards, halving)
-
-This hash acts as a unique chain identifier, preventing cross-chain contamination.
-
-### Storage abstraction
-
-The storage layer uses an adapter pattern:
+adapter pattern for flexibility:
 ```typescript
 interface StorageAdapter {
   saveBlock(block: Block): Promise<void>;
   getBlock(height: number): Promise<Block | null>;
+  getAccountState(address: string): Promise<AccountState | null>;
   // ... other methods
 }
 ```
 
-This allows swapping between:
-- Redis (development, fast)
-- Memory (testing)
-- LevelDB (production, scalable)
+implementations:
+- `LMDBAdapter` - production storage with persistence
+- `MemoryAdapter` - in-memory for testing
 
-### Account model
+## account model
 
-Instead of Bitcoin's UTXO model, bolt uses accounts with:
-- Address
-- Balance (in watts, 1 BOLT = 100,000,000 watts)
-- Nonce (for replay protection)
+instead of bitcoin's utxo model, bolt uses accounts with:
+- address (bitcoin-style base58)
+- balance (in watts, 1 bolt = 100,000,000 watts)
+- nonce (for replay protection)
 
-State is event-sourced from the transaction history.
+state is derived from the transaction history and cached in storage.
 
-### Logging
+## key design decisions
 
-Dynamic domain-based logging using `getLogger()`:
-```typescript
-// Automatically gets 'core' logger
-const logger = getLogger(__filename);
-```
+### dynamic hashing algorithm
 
-## Directory structure
+supports multiple proof-of-work algorithms:
+- sha-256 (default)
+- sha-512
+- scrypt
+- double-sha-256
+
+the algorithm is part of chain configuration and included in the chain version hash.
+
+### chain version hash
+
+deterministic hash of configuration parameters:
+- network (mainnet/testnet/devnet)
+- hash algorithm
+- difficulty parameters
+- economic parameters (supply, rewards, halving)
+
+prevents cross-chain contamination.
+
+### hd wallet support
+
+hierarchical deterministic wallets using bip44:
+- derivation path: `m/44'/1057'/account'/change/index`
+- coin type 1057 (bolt's registered type)
+- mnemonic seed phrases (bip39)
+- extended keys (bip32)
+
+## directory structure
 
 ```
 src/
 ├── core/           # blockchain, blocks, transactions, mempool
-├── crypto/         # hashing, addresses, signatures
-├── storage/        # storage adapters (redis, memory)
-├── services/       # mining, getblocktemplate, metrics, sync
-├── network/        # p2p networking, peer management
-├── api/           # REST API server
-├── config/        # chain configs and constants
-│   └── chains/    # network-specific configurations
-├── utils/         # logger, currency, bigint serialization
-└── types.ts       # all TypeScript interfaces
+├── crypto/         # hashing, addresses, signatures, hd wallets
+├── storage/        # lmdb and memory adapters
+├── network/        # tcp protocol, sync, peer discovery
+├── services/       # mining, metrics, sync
+├── api/            # rest api server
+├── config/         # chain configurations
+│   └── chains/     # network-specific configs
+├── utils/          # logger, bigint, identity
+└── constants.ts    # protocol constants
 ```
 
-## Key components
+## key components
 
-### Services
-- **GetBlockTemplate** (`services/getblocktemplate.ts`): Mining pool protocol implementation
-- **Mining** (`services/mining.ts`): Internal mining service
-- **Metrics** (`services/metrics.ts`): Comprehensive Prometheus metrics collection
-- **Sync** (`services/sync.ts`): Blockchain synchronization and chain reorganization
+### core
+- `Blockchain` - chain management and validation
+- `Mempool` - transaction pool with fee sorting
+- `Block` - block structure and validation
+- `Transaction` - transaction signing and verification
 
-### Network layer
-- **IPFSService** (`network/ipfs.ts`): IPFS client for peer discovery only
-- **PeerManager** (`network/peer-manager.ts`): HTTP peer connection management
-- **Messages** (`network/messages.ts`): HTTP message types with bigint support
+### network
+- `Protocol` - binary message serialization/deserialization
+- `ConnectionManager` - tcp connection handling
+- `SyncManager` - blockchain synchronization
+- `PeerDiscoveryService` - ipfs-based peer discovery
+- `InventoryManager` - track peer inventory
+- `TransactionRelay` - transaction propagation
+- `OrphanPool` - out-of-order block handling
+- `BlockDownloader` - parallel block fetching
 
-### API layer
-- **ApiServer** (`api/server.ts`): REST API with blockchain endpoints + peer-to-peer HTTP endpoints
+### services
+- `GetBlockTemplate` - mining pool protocol (gbt)
+- `MiningService` - internal mining with workers
+- `MetricsService` - prometheus metrics collection
 
-### Storage adapters
-- **Redis** (`storage/redis.ts`): Production storage with persistence
-- **Memory** (`storage/memory.ts`): In-memory storage for testing
-- **Abstract** (`storage/adapter.ts`): Base class defining storage interface
+### api
+- `ApiServer` - rest api with full blockchain access
 
-### Monitoring and observability
-- **Metrics service**: 60+ Prometheus metrics covering all aspects
-- **Metrics server**: HTTP endpoint for Prometheus scraping
-- **Helper utilities**: Timing and recording utilities
-- **Integration ready**: Hooks for blockchain, mempool, mining, and API metrics
+## performance optimizations
+
+### bun-specific enhancements
+- `Bun.CryptoHasher` for 2x faster hashing
+- `Bun.listen` for high-performance tcp server
+- native `Uint8Array` operations
+- zero dependencies where possible
+
+### protocol optimizations
+- binary protocol reduces bandwidth
+- headers-first sync minimizes downloads
+- parallel block fetching (16 concurrent)
+- inventory deduplication
+- connection pooling (125 max peers)
+
+### storage optimizations
+- memory-mapped i/o via lmdb
+- atomic batch operations
+- indexed queries for fast lookups
+- composite keys for complex queries
+
+## monitoring and observability
+
+### prometheus metrics (60+)
+- blockchain: height, difficulty, reorganizations
+- network: peers, messages, bandwidth
+- mempool: size, fees, transaction flow
+- storage: operations, latency, size
+- mining: hashrate, blocks found, revenue
+
+### logging
+domain-based logging with automatic context:
+```typescript
+const logger = getLogger(__filename);
+logger.info('block added', { height, hash });
+```
+
+### grafana dashboards
+pre-configured dashboards for:
+- node health and performance
+- network topology and sync status
+- mining statistics
+- mempool analysis
+
+## security considerations
+
+### network security
+- message checksums prevent corruption
+- magic bytes prevent cross-chain messages
+- connection limits prevent dos
+- peer banning for misbehavior (planned)
+
+### consensus security
+- cumulative proof-of-work prevents attacks
+- median time validation prevents timestamp manipulation
+- reorganization depth limits (planned)
+- checkpoint system (planned)
+
+### storage security
+- atomic transactions prevent corruption
+- backup/recovery mechanisms
+- integrity checks on startup
+
+## future enhancements
+
+### planned features
+- peer reputation scoring
+- partial chain validation
+- state snapshots for fast sync
+- bloom filters for spv clients
+- compact block relay
+- tor/i2p support
+
+### scalability improvements
+- block pruning for light clients
+- sharding for horizontal scaling
+- layer 2 solutions
+- zero-knowledge proofs
