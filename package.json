@@ -1,7 +1,7 @@
 {
-  "name": "bolt-blockchain",
-  "version": "0.1.0",
-  "description": "Bolt - proof-of-work blockchain with account model",
+  "name": "bolt-fork",
+  "version": "0.1.1",
+  "description": "a proof of work blockchain",
   "main": "src/index.ts",
   "type": "module",
   "scripts": {
