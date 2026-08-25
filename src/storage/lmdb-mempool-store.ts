@@ -1,5 +1,5 @@
 import { LMDBManager } from './lmdb-manager';
-import { Transaction } from '../core/transaction';
+import type { Transaction } from '../types';
 import { getLogger } from '../utils/logger';
 import { serializeBigInt, deserializeBigInt } from '../utils/serialization';
 
@@ -51,8 +51,10 @@ export class LMDBMempoolStore {
       this.lmdb.mempoolByTime.put(timeKey, tx.hash);
       
       // add to address indexes with composite keys
-      const fromKey = this.createAddressKey(tx.from, tx.hash);
-      this.lmdb.mempoolByAddress.put(fromKey, tx.hash);
+      if (tx.from) {
+        const fromKey = this.createAddressKey(tx.from, tx.hash);
+        this.lmdb.mempoolByAddress.put(fromKey, tx.hash);
+      }
       if (tx.to) {
         const toKey = this.createAddressKey(tx.to, tx.hash);
         this.lmdb.mempoolByAddress.put(toKey, tx.hash);
@@ -89,8 +91,10 @@ export class LMDBMempoolStore {
       }
       
       // remove from address indexes
-      const fromKey = this.createAddressKey(tx.from, txHash);
-      await this.lmdb.mempoolByAddress.remove(fromKey);
+      if (tx.from) {
+        const fromKey = this.createAddressKey(tx.from, txHash);
+        await this.lmdb.mempoolByAddress.remove(fromKey);
+      }
       if (tx.to) {
         const toKey = this.createAddressKey(tx.to, txHash);
         await this.lmdb.mempoolByAddress.remove(toKey);
@@ -119,8 +123,10 @@ export class LMDBMempoolStore {
         const feeKey = this.createFeeKey(tx.fee, hash);
         await this.lmdb.mempoolByFee.remove(feeKey);
         
-        const fromKey = this.createAddressKey(tx.from, hash);
-        await this.lmdb.mempoolByAddress.remove(fromKey);
+        if (tx.from) {
+          const fromKey = this.createAddressKey(tx.from, hash);
+          await this.lmdb.mempoolByAddress.remove(fromKey);
+        }
         if (tx.to) {
           const toKey = this.createAddressKey(tx.to, hash);
           await this.lmdb.mempoolByAddress.remove(toKey);
@@ -220,7 +226,7 @@ export class LMDBMempoolStore {
     // find old transactions by iterating time index
     for await (const { key, value } of this.lmdb.mempoolByTime.getRange()) {
       // extract timestamp from composite key
-      const timestampHex = key.split(':')[0];
+      const timestampHex = String(key).split(':')[0];
       const timestamp = parseInt(timestampHex, 16);
       if (timestamp <= cutoff) {
         const txHash = typeof value === 'string' ? value : value.toString();

@@ -1,5 +1,5 @@
 import * as bip39 from 'bip39';
-import * as hdkey from 'hdkey';
+import HDNode from 'hdkey';
 import { ec as EC } from 'elliptic';
 import { ripemd160 } from '@noble/hashes/ripemd160';
 import { hash, hexToBytes, bytesToHex } from './hash';
@@ -48,7 +48,7 @@ export interface KeyInfo {
 export interface HDKey {
   mnemonic: string;
   seed: Buffer;
-  masterKey: hdkey.HDKey;
+  masterKey: HDNode;
   derivationPath: DerivationPath;
 }
 
@@ -146,6 +146,27 @@ export function publicKeyToAddress(publicKey: Uint8Array | string, prefix: numbe
 
   // step 6: base58 encode
   return base58Encode(addressBytes);
+}
+
+/**
+ * check whether public key controls address
+ */
+export function publicKeyMatchesAddress(
+  publicKey: Uint8Array | string,
+  address: string
+): boolean {
+  try {
+    const decoded = base58Decode(address);
+    if (decoded.length !== 25) return false;
+
+    const key = secp256k1.keyFromPublic(
+      typeof publicKey === 'string' ? hexToBytes(publicKey) : publicKey
+    );
+    const uncompressedKey = key.getPublic(false, 'hex');
+    return publicKeyToAddress(uncompressedKey, decoded[0]) === address;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -257,7 +278,7 @@ export function createHDKey(
   const seed = bip39.mnemonicToSeedSync(seedPhrase);
 
   // create master key from seed
-  const masterKey = hdkey.fromMasterSeed(seed);
+  const masterKey = HDNode.fromMasterSeed(seed);
 
   // merge with default derivation path
   const fullPath = { ...DEFAULT_DERIVATION_PATH, ...derivationPath };

@@ -39,32 +39,6 @@ export interface DifficultyAdjustment {
   timestamp: number;
 }
 
-// storage adapter interface
-export interface StorageAdapter {
-  // block operations
-  saveBlock(block: Block): Promise<void>;
-  getBlock(height: number): Promise<Block | null>;
-  getBlockByHash(hash: string): Promise<Block | null>;
-  getLatestBlock(): Promise<Block | null>;
-  getBlockRange(start: number, end: number): Promise<Block[]>;
-  
-  // wallet operations
-  getWalletState(address: string): Promise<WalletState | null>;
-  updateWalletState(address: string, state: WalletState): Promise<void>;
-  
-  // chain operations
-  getCumulativeDifficulty(): Promise<bigint>;
-  updateCumulativeDifficulty(difficulty: bigint): Promise<void>;
-  
-  // transaction operations
-  getTransaction(hash: string): Promise<Transaction | null>;
-  saveTransaction(tx: Transaction): Promise<void>;
-  
-  // utility
-  close(): Promise<void>;
-  clear(): Promise<void>;
-}
-
 // network message types
 export interface VersionMessage {
   version: string;

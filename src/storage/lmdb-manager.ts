@@ -1,7 +1,6 @@
 import { open, RootDatabase, Database } from 'lmdb';
 import { getLogger } from '../utils/logger';
-import type { Block } from '../core/block';
-import type { Transaction } from '../core/transaction';
+import type { Block, Transaction } from '../types';
 
 const logger = getLogger(__filename);
 
@@ -21,22 +20,22 @@ export class LMDBManager {
   private env: RootDatabase;
   
   // blockchain databases
-  public blocks: Database;
-  public blockIndex: Database;
-  public blockHeaders: Database;
+  public blocks!: Database;
+  public blockIndex!: Database;
+  public blockHeaders!: Database;
   
   // state databases
-  public accounts: Database;
-  public accountIndex: Database;
+  public accounts!: Database;
+  public accountIndex!: Database;
   
   // mempool databases
-  public mempool: Database;
-  public mempoolByFee: Database;
-  public mempoolByTime: Database;
-  public mempoolByAddress: Database;
+  public mempool!: Database;
+  public mempoolByFee!: Database;
+  public mempoolByTime!: Database;
+  public mempoolByAddress!: Database;
   
   // metadata database
-  public metadata: Database;
+  public metadata!: Database;
   
   private isOpen: boolean = false;
 
@@ -54,7 +53,6 @@ export class LMDBManager {
       
       // performance optimizations
       overlappingSync: true,  // allows readers during sync
-      mapAsync: true,         // async memory mapping
       useWritemap: true,      // direct memory writes
       noMetaSync: true,       // don't sync metadata immediately
       
@@ -69,38 +67,38 @@ export class LMDBManager {
 
   private setupDatabases(): void {
     // blockchain data (append-heavy, permanent)
-    this.blocks = this.env.openDB('blocks', {
+    this.blocks = this.env.openDB({ name: 'blocks',
       compression: true,             // compress old blocks
     });
     
     // block index for hash lookups
-    this.blockIndex = this.env.openDB('block_index');
+    this.blockIndex = this.env.openDB({ name: 'block_index' });
     
     // headers only for fast sync
-    this.blockHeaders = this.env.openDB('headers', {
+    this.blockHeaders = this.env.openDB({ name: 'headers',
       compression: false,            // headers are small
     });
     
     // account state
-    this.accounts = this.env.openDB('accounts');
+    this.accounts = this.env.openDB({ name: 'accounts' });
     
     // account index for fast queries
-    this.accountIndex = this.env.openDB('account_index', {
+    this.accountIndex = this.env.openDB({ name: 'account_index',
       dupSort: true,                // multiple values per key
     });
     
     // mempool storage
-    this.mempool = this.env.openDB('mempool');
+    this.mempool = this.env.openDB({ name: 'mempool' });
     
     // mempool indexes (using composite keys instead of dupSort)
-    this.mempoolByFee = this.env.openDB('mempool_by_fee');
+    this.mempoolByFee = this.env.openDB({ name: 'mempool_by_fee' });
     
-    this.mempoolByTime = this.env.openDB('mempool_by_time');
+    this.mempoolByTime = this.env.openDB({ name: 'mempool_by_time' });
     
-    this.mempoolByAddress = this.env.openDB('mempool_by_addr');
+    this.mempoolByAddress = this.env.openDB({ name: 'mempool_by_addr' });
     
     // metadata storage
-    this.metadata = this.env.openDB('metadata');
+    this.metadata = this.env.openDB({ name: 'metadata' });
     
     logger.info('lmdb databases initialized');
   }
@@ -152,7 +150,7 @@ export class LMDBManager {
    */
   async backup(backupPath: string): Promise<void> {
     logger.info(`backing up database to ${backupPath}`);
-    await this.env.backup(backupPath);
+    await this.env.backup(backupPath, false);
     logger.info('backup completed');
   }
 
@@ -161,7 +159,7 @@ export class LMDBManager {
    */
   async compact(): Promise<void> {
     logger.info('compacting database');
-    await this.env.sync();
+    await this.env.flushed;
     logger.info('database compacted');
   }
 

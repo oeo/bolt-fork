@@ -5,8 +5,10 @@ import {
   verifyTransaction,
   serializeTransactionData
 } from '../crypto/signature';
-import { validateAddress } from '../crypto/address';
+import { publicKeyMatchesAddress, validateAddress } from '../crypto/address';
 import { getLogger } from '../utils/logger';
+
+export type { Transaction } from '../types';
 
 const logger = getLogger(__filename);
 
@@ -142,6 +144,10 @@ export class TransactionClass {
       return false;
     }
 
+    if (!publicKeyMatchesAddress(this.publicKey, this.from)) {
+      return false;
+    }
+
     return verifyTransaction(
       {
         from: this.from,
@@ -178,6 +184,10 @@ export class TransactionClass {
 
     if (this.from !== null && !validateAddress(this.from)) {
       return { valid: false, error: 'Invalid sender address' };
+    }
+
+    if (this.from !== null && this.publicKey && !publicKeyMatchesAddress(this.publicKey, this.from)) {
+      return { valid: false, error: 'Public key does not match sender address' };
     }
 
     // check amounts

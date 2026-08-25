@@ -7,12 +7,12 @@ import {
   validateTransactionPool
 } from '../../src/core/transaction';
 import { generatePrivateKey, derivePublicKey } from '../../src/crypto/signature';
-import { generateAddress } from '../../src/crypto/address';
+import { generateFromPrivateKey } from '../../src/crypto/address';
 
 describe('Transaction Class', () => {
   const privateKey = generatePrivateKey();
   const publicKey = derivePublicKey(privateKey);
-  const { address: senderAddress } = generateAddress(privateKey);
+  const { address: senderAddress } = generateFromPrivateKey(privateKey);
   const recipientAddress = '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2';
   
   describe('Regular transaction', () => {
@@ -64,6 +64,23 @@ describe('Transaction Class', () => {
       
       const isValid = await tx.verify();
       expect(isValid).toBe(false);
+    });
+
+    it('should reject a signature from a key that does not own sender address', async () => {
+      const otherPrivateKey = generatePrivateKey();
+      const tx = new TransactionClass(
+        senderAddress,
+        recipientAddress,
+        1000000n,
+        1,
+        1000n,
+        Date.now()
+      );
+
+      await tx.sign(otherPrivateKey);
+
+      expect(await tx.verify()).toBe(false);
+      expect(tx.validate().valid).toBe(false);
     });
     
     it('should validate correct transaction', async () => {

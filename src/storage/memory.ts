@@ -1,4 +1,4 @@
-import { StorageAdapter } from './adapter';
+import { StorageAdapter, BlockCommit, ChainRewind } from './adapter';
 import { Block, Transaction, AccountState } from '../types';
 import { getLogger } from '../utils/logger';
 
@@ -85,6 +85,32 @@ export class MemoryAdapter extends StorageAdapter {
     }
     
     logger.debug(`Saved block ${block.index} with hash ${block.hash}`);
+  }
+
+  async commitBlock({ block, accountStates, cumulativeDifficulty }: BlockCommit): Promise<void> {
+    this.checkConnection();
+    await this.saveBlock(block);
+    for (const tx of block.transactions) await this.saveTransaction(tx);
+    for (const { address, state } of accountStates) {
+      await this.updateAccountState(address, state);
+    }
+    await this.updateCumulativeDifficulty(cumulativeDifficulty);
+  }
+
+  async rewindChain({ height, cumulativeDifficulty, accountStates }: ChainRewind): Promise<void> {
+    this.checkConnection();
+    for (const [index, block] of this.blocks) {
+      if (index <= height) continue;
+      this.blocks.delete(index);
+      this.blockHashes.delete(block.hash);
+    }
+    this.chainHeight = height;
+    this.latestBlock = this.blocks.get(height) || null;
+    this.accounts.clear();
+    for (const { address, state } of accountStates) {
+      this.accounts.set(address, state);
+    }
+    this.cumulativeDifficulty = cumulativeDifficulty;
   }
   
   async getBlock(height: number): Promise<Block | null> {

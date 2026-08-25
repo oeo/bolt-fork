@@ -2,6 +2,8 @@ import { Block, Transaction, ValidationResult } from '../types';
 import { hash, calculateMerkleRoot, hashMeetsDifficulty, HashAlgorithm } from '../crypto/hash';
 import { getLogger } from '../utils/logger';
 
+export type { Block } from '../types';
+
 const logger = getLogger(__filename);
 
 /**
@@ -240,6 +242,18 @@ export class BlockClass {
     
     return { valid: true };
   }
+
+  /**
+   * validate serialized block size
+   */
+  validateSize(maxSize: number): ValidationResult {
+    const size = this.getSize();
+    if (size > maxSize) {
+      return { valid: false, error: `Block too large: ${size} > ${maxSize}` };
+    }
+
+    return { valid: true };
+  }
   
   /**
    * calculate total fees from transactions
@@ -274,6 +288,10 @@ export class BlockClass {
     
     if (!coinbase) {
       return { valid: false, error: 'No coinbase transaction found' };
+    }
+
+    if (this.transactions.slice(1).some(tx => tx.from === null)) {
+      return { valid: false, error: 'Only first transaction may be coinbase' };
     }
     
     // calculate total fees from other transactions

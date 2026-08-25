@@ -1,5 +1,5 @@
 import { LMDBManager } from './lmdb-manager';
-import { Transaction } from '../core/transaction';
+import type { Transaction } from '../types';
 import { getLogger } from '../utils/logger';
 
 const logger = getLogger(__filename);
@@ -85,14 +85,18 @@ export class LMDBStateStore {
    */
   async updateAccounts(accounts: Account[]): Promise<void> {
     await this.lmdb.transaction(() => {
-      for (const account of accounts) {
-        const serialized = this.serializeAccount(account);
-        this.lmdb.accounts.put(account.address, serialized);
-        this.updateCache(account);
-      }
+      this.writeAccounts(accounts);
     });
     
     logger.debug(`updated ${accounts.length} accounts`);
+  }
+
+  writeAccounts(accounts: Account[]): void {
+    for (const account of accounts) {
+      const serialized = this.serializeAccount(account);
+      this.lmdb.accounts.put(account.address, serialized);
+      this.updateCache(account);
+    }
   }
 
   /**
@@ -172,13 +176,24 @@ export class LMDBStateStore {
     return balances;
   }
 
+  async getAllAccountAddresses(): Promise<string[]> {
+    const addresses: string[] = [];
+    for await (const { key } of this.lmdb.accounts.getRange()) {
+      addresses.push(String(key));
+    }
+    return addresses;
+  }
+
   /**
    * apply a transaction to the state
    */
   async applyTransaction(tx: Transaction, blockIndex: number): Promise<void> {
+    if (tx.from === null) throw new Error('Cannot apply coinbase as regular transaction');
+    const senderAddress = tx.from;
+
     await this.lmdb.transaction(async () => {
       // get or create sender account
-      const sender = await this.getOrCreateAccount(tx.from);
+      const sender = await this.getOrCreateAccount(senderAddress);
       
       // update sender
       sender.balance -= tx.amount + tx.fee;
@@ -293,7 +308,7 @@ export class LMDBStateStore {
     const accounts = new Map<string, Account>();
     
     for await (const { key, value } of this.lmdb.accounts.getRange()) {
-      accounts.set(key, this.deserializeAccount(value));
+      accounts.set(String(key), this.deserializeAccount(value));
     }
     
     return {
@@ -337,6 +352,11 @@ export class LMDBStateStore {
     logger.info('state cleared');
   }
 
+  clearAccounts(): void {
+    this.lmdb.accounts.clearSync();
+    this.accountCache.clear();
+  }
+
   // helper methods
   
   private serializeAccount(account: Account): Uint8Array {
@@ -374,7 +394,7 @@ export class LMDBStateStore {
     // remove oldest if cache is full
     if (this.accountCache.size > this.cacheSize) {
       const firstKey = this.accountCache.keys().next().value;
-      this.accountCache.delete(firstKey);
+      if (firstKey) this.accountCache.delete(firstKey);
     }
   }
 }

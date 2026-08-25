@@ -1,5 +1,5 @@
 import { LMDBManager } from './lmdb-manager';
-import { Block } from '../core/block';
+import type { Block } from '../types';
 import { getLogger } from '../utils/logger';
 import { serializeBigInt, deserializeBigInt } from '../utils/serialization';
 
@@ -38,6 +38,16 @@ export class LMDBBlockchainStore {
     const header = this.extractHeader(block);
     
     await this.lmdb.transaction(() => {
+      this.writeBlock(block, serialized, header);
+    });
+    
+    // update cache
+    this.updateCache(block);
+    
+    logger.debug(`block ${block.index} stored with hash ${block.hash}`);
+  }
+
+  writeBlock(block: Block, serialized = this.serializeBlock(block), header = this.extractHeader(block)): void {
       // store full block (convert index to buffer for key)
       const indexBuffer = Buffer.allocUnsafe(4);
       indexBuffer.writeUInt32BE(block.index, 0);
@@ -64,12 +74,6 @@ export class LMDBBlockchainStore {
         this.lmdb.metadata.put('chainHeight', block.index.toString());
         this.lmdb.metadata.put('chainTip', block.hash);
       }
-    });
-    
-    // update cache
-    this.updateCache(block);
-    
-    logger.debug(`block ${block.index} stored with hash ${block.hash}`);
   }
 
   /**
@@ -182,40 +186,39 @@ export class LMDBBlockchainStore {
    */
   async removeBlocksAbove(height: number): Promise<void> {
     await this.lmdb.transaction(() => {
-      // get all blocks to remove
-      const blocksToRemove: Block[] = [];
-      
-      // convert height to buffer key
-      const startKey = Buffer.allocUnsafe(4);
-      startKey.writeUInt32BE(height + 1, 0);
-      
-      for (const { key, value } of this.lmdb.blocks.getRange({
-        start: startKey,
-      })) {
-        blocksToRemove.push(this.deserializeBlock(value));
-      }
-      
-      // remove blocks and indexes
-      for (const block of blocksToRemove) {
-        const indexBuffer = Buffer.allocUnsafe(4);
-        indexBuffer.writeUInt32BE(block.index, 0);
-        
-        this.lmdb.blocks.remove(indexBuffer);
-        this.lmdb.blockIndex.remove(Buffer.from(block.hash, 'hex'));
-        this.lmdb.blockHeaders.remove(indexBuffer);
-        
-        // remove from cache
-        this.recentBlocks.delete(block.index);
-      }
-      
-      // update metadata
-      if (blocksToRemove.length > 0) {
-        this.lmdb.metadata.put('chainHeight', height.toString());
-        // note: can't call getBlock inside transaction, will handle after
-      }
+      this.writeRemoveBlocksAbove(height);
     });
     
     logger.info(`removed ${await this.getHeight() - height} blocks above height ${height}`);
+  }
+
+  writeRemoveBlocksAbove(height: number): void {
+    const blocksToRemove: Block[] = [];
+    const startKey = Buffer.allocUnsafe(4);
+    startKey.writeUInt32BE(height + 1, 0);
+
+    for (const { value } of this.lmdb.blocks.getRange({ start: startKey })) {
+      blocksToRemove.push(this.deserializeBlock(value));
+    }
+
+    for (const block of blocksToRemove) {
+      const indexBuffer = Buffer.allocUnsafe(4);
+      indexBuffer.writeUInt32BE(block.index, 0);
+      this.lmdb.blocks.remove(indexBuffer);
+      this.lmdb.blockIndex.remove(Buffer.from(block.hash, 'hex'));
+      this.lmdb.blockHeaders.remove(indexBuffer);
+      this.recentBlocks.delete(block.index);
+    }
+
+    this.lmdb.metadata.put('chainHeight', height.toString());
+    const tipKey = Buffer.allocUnsafe(4);
+    tipKey.writeUInt32BE(height, 0);
+    const tipData = this.lmdb.blocks.get(tipKey);
+    if (tipData) {
+      this.lmdb.metadata.put('chainTip', this.deserializeBlock(tipData).hash);
+    } else {
+      this.lmdb.metadata.remove('chainTip');
+    }
   }
 
   /**
@@ -240,13 +243,12 @@ export class LMDBBlockchainStore {
   private serializeBlock(block: Block): Buffer {
     const json = JSON.stringify({
       ...block,
-      coinbaseAmount: block.coinbaseAmount ? serializeBigInt(block.coinbaseAmount) : undefined,
       transactions: block.transactions.map(tx => ({
         ...tx,
         amount: serializeBigInt(tx.amount),
         fee: serializeBigInt(tx.fee),
       })),
-    });
+    }, (_, value) => typeof value === 'bigint' ? value.toString() : value);
     return Buffer.from(json);
   }
 
@@ -254,7 +256,6 @@ export class LMDBBlockchainStore {
     const json = JSON.parse(data.toString());
     return {
       ...json,
-      coinbaseAmount: json.coinbaseAmount ? deserializeBigInt(json.coinbaseAmount) : undefined,
       transactions: json.transactions.map((tx: any) => ({
         ...tx,
         amount: deserializeBigInt(tx.amount),

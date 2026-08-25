@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
-import { Block, Transaction, AccountState, StorageAdapter, BlockTemplate, ValidationResult } from '../types';
+import { Block, Transaction, AccountState, BlockTemplate, ValidationResult } from '../types';
+import { StorageAdapter } from '../storage/adapter';
 import { ChainConfig } from '../config/chain';
 import { BlockClass, createGenesisBlock } from './block';
 import { TransactionClass, createCoinbaseTransaction, validateTransactionPool } from './transaction';
@@ -53,11 +54,7 @@ export class Blockchain extends EventEmitter {
 
     logger.info(`Initializing blockchain for network: ${this.config.name}`);
 
-    // ensure storage is connected
-    // @ts-ignore - accessing protected property for connection check
-    if (!this.storage['isConnected']) {
-      await this.storage.connect();
-    }
+    await this.storage.connect();
 
     // check for existing blockchain
     const latestBlock = await this.storage.getLatestBlock();
@@ -109,6 +106,11 @@ export class Blockchain extends EventEmitter {
     const structureValidation = block.validate(this.hashAlgorithm);
     if (!structureValidation.valid) {
       return structureValidation;
+    }
+
+    const sizeValidation = block.validateSize(this.config.maxBlockSize);
+    if (!sizeValidation.valid) {
+      return sizeValidation;
     }
 
     // check if block already exists at this height
@@ -166,16 +168,15 @@ export class Blockchain extends EventEmitter {
       return txValidation;
     }
 
-    // process transactions and update state
-    await this.processBlockTransactions(block);
-
-    // save block to storage
-    await this.storage.saveBlock(block.toObject());
-
     // update cumulative difficulty
     const currentCumulative = await this.storage.getCumulativeDifficulty();
     const newCumulative = currentCumulative + BigInt(block.difficulty);
-    await this.storage.updateCumulativeDifficulty(newCumulative);
+    const accountStates = await this.calculateBlockStateChanges(block);
+    await this.storage.commitBlock({
+      block: block.toObject(),
+      accountStates: Array.from(accountStates, ([address, state]) => ({ address, state })),
+      cumulativeDifficulty: newCumulative,
+    });
 
     // update current height
     this.currentHeight = block.index;
@@ -250,49 +251,36 @@ export class Blockchain extends EventEmitter {
   /**
    * process transactions and update account states
    */
-  private async processBlockTransactions(block: BlockClass): Promise<void> {
-    logger.debug(`Processing ${block.transactions.length} transactions in block ${block.index}`);
+  private async calculateBlockStateChanges(
+    block: BlockClass
+  ): Promise<Map<string, AccountState>> {
+    const changes = new Map<string, AccountState>();
+    const getState = async (address: string): Promise<AccountState> => {
+      const changed = changes.get(address);
+      if (changed) return changed;
+
+      const stored = await this.storage.getAccountState(address);
+      const state = stored ? { ...stored } : { balance: 0n, nonce: 0 };
+      changes.set(address, state);
+      return state;
+    };
 
     for (const txData of block.transactions) {
       const tx = TransactionClass.fromObject(txData);
-
-      // save transaction
-      await this.storage.saveTransaction(txData);
-
       if (tx.isCoinbase()) {
-        // credit miner
-        const minerState = await this.storage.getAccountState(tx.to) || {
-          balance: 0n,
-          nonce: 0
-        };
-
+        const minerState = await getState(tx.to);
         minerState.balance += tx.amount;
-        await this.storage.updateAccountState(tx.to, minerState);
-
-        logger.debug(`Credited miner ${tx.to} with ${tx.amount} satoshis`);
-      } else {
-        // debit sender
-        const senderState = await this.storage.getAccountState(tx.from!);
-        if (!senderState) {
-          throw new Error(`Sender account ${tx.from} not found`);
-        }
-
-        senderState.balance -= (tx.amount + tx.fee);
-        senderState.nonce++;
-        await this.storage.updateAccountState(tx.from!, senderState);
-
-        // credit recipient
-        const recipientState = await this.storage.getAccountState(tx.to) || {
-          balance: 0n,
-          nonce: 0
-        };
-
-        recipientState.balance += tx.amount;
-        await this.storage.updateAccountState(tx.to, recipientState);
-
-        logger.debug(`Transferred ${tx.amount} satoshis from ${tx.from} to ${tx.to}`);
+        continue;
       }
+
+      const senderState = await getState(tx.from!);
+      const recipientState = await getState(tx.to);
+      senderState.balance -= tx.amount + tx.fee;
+      senderState.nonce++;
+      recipientState.balance += tx.amount;
     }
+
+    return changes;
   }
 
   /**
@@ -415,6 +403,10 @@ export class Blockchain extends EventEmitter {
    */
   async getBlockByHash(hash: string): Promise<Block | null> {
     return this.storage.getBlockByHash(hash);
+  }
+
+  async hasBlock(hash: string): Promise<boolean> {
+    return (await this.storage.getBlockByHash(hash)) !== null;
   }
 
   /**
@@ -680,11 +672,20 @@ export class Blockchain extends EventEmitter {
         }
       }
       
-      // reset chain height
-      this.currentHeight = commonAncestorHeight;
-      
       // recalculate account states up to common ancestor
-      await this.recalculateStateFromHeight(0, commonAncestorHeight);
+      const ancestorStates = await this.recalculateStateFromHeight(0, commonAncestorHeight);
+      let ancestorCumulativeDifficulty = 0n;
+      for (let height = 0; height <= commonAncestorHeight; height++) {
+        const block = await this.storage.getBlock(height);
+        if (block) ancestorCumulativeDifficulty += BigInt(block.difficulty);
+      }
+
+      await this.storage.rewindChain({
+        height: commonAncestorHeight,
+        cumulativeDifficulty: ancestorCumulativeDifficulty,
+        accountStates: Array.from(ancestorStates, ([address, state]) => ({ address, state })),
+      });
+      this.currentHeight = commonAncestorHeight;
       
       // apply new blocks using special reorg mode
       logger.info(`Applying ${newBlocks.length} new blocks`);
@@ -888,16 +889,15 @@ export class Blockchain extends EventEmitter {
       return txValidation;
     }
     
-    // process transactions and update state
-    await this.processBlockTransactions(block);
-    
-    // save block to storage
-    await this.storage.saveBlock(block.toObject());
-    
     // update cumulative difficulty
     const currentCumulative = await this.storage.getCumulativeDifficulty();
     const newCumulative = currentCumulative + BigInt(block.difficulty);
-    await this.storage.updateCumulativeDifficulty(newCumulative);
+    const accountStates = await this.calculateBlockStateChanges(block);
+    await this.storage.commitBlock({
+      block: block.toObject(),
+      accountStates: Array.from(accountStates, ([address, state]) => ({ address, state })),
+      cumulativeDifficulty: newCumulative,
+    });
     
     // update current height
     this.currentHeight = block.index;
@@ -943,7 +943,10 @@ export class Blockchain extends EventEmitter {
   /**
    * recalculate account states from a specific height
    */
-  private async recalculateStateFromHeight(startHeight: number, endHeight: number): Promise<void> {
+  private async recalculateStateFromHeight(
+    startHeight: number,
+    endHeight: number
+  ): Promise<Map<string, AccountState>> {
     logger.info(`Recalculating state from height ${startHeight} to ${endHeight}`);
     
     // reset all account states
@@ -976,10 +979,7 @@ export class Blockchain extends EventEmitter {
       }
     }
     
-    // update storage with recalculated states
-    for (const [address, state] of accounts) {
-      await this.storage.updateAccountState(address, state);
-    }
+    return accounts;
   }
 
   /**
@@ -1005,7 +1005,14 @@ export class Blockchain extends EventEmitter {
   async createBlockTemplate(
     transactions: Transaction[],
     minerAddress: string
-  ): Promise<BlockTemplate> {
+  ): Promise<{
+    previousHash: string;
+    height: number;
+    transactions: Transaction[];
+    difficulty: number;
+    coinbaseValue: bigint;
+    timestamp: number;
+  }> {
     if (!this.isInitialized) {
       throw new Error('Blockchain not initialized');
     }
@@ -1076,9 +1083,7 @@ export class Blockchain extends EventEmitter {
    * cleanup and close storage connection
    */
   async close(): Promise<void> {
-    if (this.storage.isConnected) {
-      await this.storage.close();
-    }
+    await this.storage.close();
     this.isInitialized = false;
   }
 }

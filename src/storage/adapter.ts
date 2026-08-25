@@ -1,5 +1,17 @@
 import { Block, Transaction, AccountState } from '../types';
 
+export interface BlockCommit {
+  block: Block;
+  accountStates: Array<{ address: string; state: AccountState }>;
+  cumulativeDifficulty: bigint;
+}
+
+export interface ChainRewind {
+  height: number;
+  cumulativeDifficulty: bigint;
+  accountStates: Array<{ address: string; state: AccountState }>;
+}
+
 /**
  * abstract storage adapter interface
  * all storage implementations must extend this class
@@ -37,6 +49,10 @@ export abstract class StorageAdapter {
    * save a block to storage
    */
   abstract saveBlock(block: Block): Promise<void>;
+
+  abstract commitBlock(commit: BlockCommit): Promise<void>;
+
+  abstract rewindChain(rewind: ChainRewind): Promise<void>;
   
   /**
    * get a block by its height/index

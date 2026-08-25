@@ -187,6 +187,21 @@ describe('Block Class', () => {
       expect(result.valid).toBe(false);
       expect(result.error).toContain('difficulty');
     });
+
+    it('should reject blocks larger than configured limit', () => {
+      const block = new BlockClass(
+        1,
+        Date.now(),
+        genesis.hash,
+        [],
+        1,
+        'm'.repeat(100)
+      );
+
+      const result = block.validateSize(99);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('too large');
+    });
   });
   
   describe('Previous block validation', () => {
@@ -366,6 +381,52 @@ describe('Block Class', () => {
       const result = block.validateCoinbase(5000000000n);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('value');
+    });
+
+    it('should reject a block without a first coinbase', () => {
+      const block = new BlockClass(
+        1,
+        Date.now(),
+        genesis.hash,
+        [{
+          hash: 'tx1',
+          from: 'addr1',
+          to: 'addr2',
+          amount: 1000000n,
+          nonce: 1,
+          fee: 1000n,
+          timestamp: Date.now()
+        }],
+        1
+      );
+
+      const result = block.validateCoinbase(5000000000n);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('coinbase');
+    });
+
+    it('should reject a second coinbase transaction', () => {
+      const first = {
+        hash: 'coinbase1',
+        from: null,
+        to: 'miner_address',
+        amount: 5000000000n,
+        nonce: 0,
+        fee: 0n,
+        timestamp: Date.now()
+      };
+      const second = { ...first, hash: 'coinbase2' };
+      const block = new BlockClass(
+        1,
+        Date.now(),
+        genesis.hash,
+        [first, second],
+        1
+      );
+
+      const result = block.validateCoinbase(5000000000n);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('first');
     });
     
     it('should calculate total fees', () => {

@@ -19,7 +19,9 @@ interface StorageConfig {
  * create a storage adapter based on configuration
  * accepts either a string type or full config object
  */
-export function createStorage(typeOrConfig: StorageType | StorageConfig | any): StorageAdapter {
+export function createStorage(
+  typeOrConfig: StorageType | (StorageConfig & { path?: string; mapSize?: number })
+): StorageAdapter {
   // handle both old and new config formats
   let config: StorageConfig;
   
@@ -38,10 +40,12 @@ export function createStorage(typeOrConfig: StorageType | StorageConfig | any): 
       
     case 'lmdb':
       const lmdbConfig = config.lmdb || {};
-      const lmdbPath = lmdbConfig.path || typeOrConfig.path || './data/lmdb';
+      const legacyConfig: { path?: string; mapSize?: number } =
+        typeof typeOrConfig === 'string' ? {} : typeOrConfig;
+      const lmdbPath = lmdbConfig.path || legacyConfig.path || './data/lmdb';
       adapter = new LMDBAdapter({
         path: lmdbPath,
-        mapSize: lmdbConfig.mapSize || typeOrConfig.mapSize || 100 * 1024 * 1024 * 1024 // 100GB default
+        mapSize: lmdbConfig.mapSize || legacyConfig.mapSize || 100 * 1024 * 1024 * 1024 // 100GB default
       });
       break;
       
