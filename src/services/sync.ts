@@ -1,10 +1,15 @@
 import { EventEmitter } from 'events';
 import { Blockchain } from '../core/blockchain';
-import { PeerManager } from '../network/peer-manager';
 import { BlockClass } from '../core/block';
 import { getLogger } from '../utils/logger';
 
 const logger = getLogger(__filename);
+
+interface PeerManager {
+  getBestPeer(): any;
+  getBlockchainInfo(peer: any): Promise<any>;
+  requestBlocks(peer: any, height: number): Promise<any[]>;
+}
 
 export interface SyncServiceConfig {
   blockchain: Blockchain;

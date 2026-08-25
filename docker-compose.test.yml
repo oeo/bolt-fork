@@ -3,14 +3,6 @@
 # inherits all service definitions from docker-compose.yml
 
 services:
-  redis:
-    container_name: bolt-redis-test
-    ports:
-      - "7337:6379"  # test port mapping
-    volumes:
-      - redis-test-data:/data  # separate test data volume
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-    
   # disable main app in test mode
   bolt:
     profiles: ["disabled"]
@@ -40,6 +32,3 @@ services:
     
   promtail:
     profiles: ["monitoring"]
-
-volumes:
-  redis-test-data:

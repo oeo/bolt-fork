@@ -109,16 +109,7 @@ class BoltIPFSNode {
     logger.info(`initializing bolt node ${this.identity.getDisplayName()} (${nodeIdentity.address}) with role: ${this.config.role}`);
     
     // create storage
-    if (this.config.storageType === 'redis' && this.config.redisUrl) {
-      const url = new URL(this.config.redisUrl);
-      this.storage = createStorage({
-        type: 'redis',
-        host: url.hostname,
-        port: parseInt(url.port || '6379'),
-        password: url.password,
-        keyPrefix: `bolt:${this.config.nodeId}:`
-      });
-    } else if (this.config.storageType === 'memory') {
+    if (this.config.storageType === 'memory') {
       this.storage = createStorage('memory');
     } else {
       // default to lmdb
@@ -148,7 +139,7 @@ class BoltIPFSNode {
     // determine network mode
     const networkMode = this.config.networkMode || 'ipfs';
     const mode = networkMode === 'tcp' ? NetworkMode.TCP : 
-                  networkMode === 'hybrid' ? NetworkMode.HYBRID : 
+                  networkMode === 'hybrid' ? NetworkMode.TCP :
                   NetworkMode.IPFS;
     
     // create network orchestrator
@@ -171,7 +162,6 @@ class BoltIPFSNode {
       port: this.config.apiPort,
       blockchain: this.blockchain,
       mempool: this.mempool,
-      node: null, // we'll add ipfs stats via a different interface
       storage: this.storage,
       syncService: this.syncService
     });

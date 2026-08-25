@@ -1,14 +1,21 @@
 import { serve } from 'bun';
 import { Blockchain } from '../core/blockchain';
 import { Mempool } from '../core/mempool';
-import { BoltNode } from '../network/node';
-import { StorageAdapter } from '../types';
+import { StorageAdapter } from '../storage/adapter';
 import { getLogger } from '../utils/logger';
 import { formatWatts } from '../utils/currency';
 import { serialize, deserialize } from '../utils/bigint';
 import { getMetricsService } from '../services/metrics';
 
 const logger = getLogger(__filename);
+
+interface BoltNode {
+  isStarted(): boolean;
+  broadcastTransaction(transaction: any): Promise<void>;
+  getStats(): any;
+  getPeers(): any;
+  connectToPeer(address: string): Promise<void>;
+}
 
 export interface ApiServerConfig {
   port?: number;
@@ -365,7 +372,7 @@ export class ApiServer {
       bytes: stats.bytes,
       minFeePerByte: stats.minFeePerByte,
       maxFeePerByte: stats.maxFeePerByte,
-      averageFeePerByte: stats.averageFeePerByte,
+      averageFeePerByte: stats.avgFeePerByte,
       totalFees: formatWatts(stats.totalFees)
     };
   }
@@ -500,7 +507,7 @@ export class ApiServer {
         // trigger sync to catch up
         if (this.config.syncService) {
           setImmediate(() => {
-            this.config.syncService.syncNow().catch(err => 
+            this.config.syncService.syncNow().catch((err: unknown) =>
               logger.error('Failed to trigger sync:', err)
             );
           });
@@ -536,7 +543,7 @@ export class ApiServer {
           // trigger sync instead
           if (this.config.syncService) {
             setImmediate(() => {
-              this.config.syncService.syncNow().catch(err => 
+              this.config.syncService.syncNow().catch((err: unknown) =>
                 logger.error('Failed to trigger sync:', err)
               );
             });
@@ -562,7 +569,7 @@ export class ApiServer {
           // still trigger sync to check for better chains
           if (this.config.syncService) {
             setImmediate(() => {
-              this.config.syncService.syncNow().catch(err => 
+              this.config.syncService.syncNow().catch((err: unknown) =>
                 logger.error('Failed to trigger sync after competing block:', err)
               );
             });

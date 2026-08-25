@@ -224,16 +224,13 @@ export class TransactionRelay extends EventEmitter {
       this.recentTxs.set(tx.hash, Date.now());
       
       // add to mempool
-      const added = await this.config.mempool.addTransaction(tx);
-      
-      if (added) {
-        logger.info(`received new transaction ${tx.hash.substring(0, 8)}... from ${peerId}`);
-        
-        // relay to other peers
-        this.relayTransaction(tx);
-        
-        this.emit('transaction:received', tx, peerId);
-      }
+      await this.config.mempool.addTransaction(tx);
+      logger.info(`received new transaction ${tx.hash.substring(0, 8)}... from ${peerId}`);
+
+      // relay to other peers
+      this.relayTransaction(tx);
+
+      this.emit('transaction:received', tx, peerId);
     } catch (error) {
       logger.error(`failed to handle transaction from ${peerId}:`, error);
     }

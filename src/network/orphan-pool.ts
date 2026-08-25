@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { getLogger } from '../utils/logger';
 import { serialize } from '../utils/bigint';
+import { BlockClass } from '../core/block';
 import type { Block } from '../core/block';
 import type { Blockchain } from '../core/blockchain';
 
@@ -136,8 +137,8 @@ export class OrphanPool extends EventEmitter {
       
       try {
         // try to add the orphan block to the blockchain
-        const added = await this.config.blockchain.addBlock(orphan.block);
-        if (added) {
+        const added = await this.config.blockchain.addBlock(BlockClass.fromObject(orphan.block));
+        if (added.valid) {
           logger.info(`connected orphan block ${orphan.block.index} to chain`);
           connected.push(orphan.block);
           

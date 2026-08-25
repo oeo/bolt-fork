@@ -81,6 +81,7 @@ export class BlockDownloader extends EventEmitter {
       // request more blocks if under limit
       while (this.inFlight.size < this.config.maxInFlight! && this.queue.size > 0) {
         const hash = this.queue.values().next().value;
+        if (!hash) break;
         this.queue.delete(hash);
         
         const peer = this.selectPeerForBlock(hash);

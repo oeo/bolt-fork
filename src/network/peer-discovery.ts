@@ -140,7 +140,7 @@ export class PeerDiscoveryService extends EventEmitter {
     
     for (const addr of PeerDiscoveryService.BOOTSTRAP_NODES) {
       try {
-        await this.ipfs.swarm.connect(addr);
+        await this.ipfs.swarm.connect(addr as any);
         connected++;
         logger.debug(`connected to bootstrap: ${addr.split('/').pop()}`);
       } catch (error) {

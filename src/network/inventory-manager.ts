@@ -87,7 +87,7 @@ export class InventoryManager extends EventEmitter {
   /**
    * handle inventory message from peer
    */
-  handleInv(peerId: string, items: InvItem[]): void {
+  async handleInv(peerId: string, items: InvItem[]): Promise<void> {
     logger.debug(`received inv with ${items.length} items from ${peerId}`);
     
     const inventory = this.getOrCreateInventory(peerId);
@@ -101,7 +101,7 @@ export class InventoryManager extends EventEmitter {
         inventory.blocks.add(item.hash);
         
         // check if we need this block
-        if (!this.config.blockchain.hasBlock(item.hash)) {
+        if (!(await this.config.blockchain.hasBlock(item.hash))) {
           needed.push(item);
         }
       } else if (item.type === 1) { // transaction

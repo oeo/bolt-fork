@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { getLogger } from '../utils/logger';
-import type { Socket, Server } from 'bun';
+import type { Socket } from 'bun';
 import type { PeerEndpoint } from './peer-discovery';
 
 const logger = getLogger(__filename);
@@ -31,7 +31,7 @@ export interface ConnectionManagerConfig {
  */
 export class ConnectionManager extends EventEmitter {
   private config: ConnectionManagerConfig;
-  private server: Server | null = null;
+  private server: any = null;
   private connections: Map<string, PeerConnection> = new Map();
   private socketToId: Map<Socket, string> = new Map();
   private isRunning: boolean = false;

@@ -83,7 +83,7 @@ class FileLogger {
     if (data !== undefined) {
       if (data instanceof Error) {
         formatted += `: ${data.message}`;
-        if (data.stack && level === 'error' || level === 'fatal') {
+        if (data.stack && (level === 'error' || level === 'fatal')) {
           // stack trace on separate lines without indentation
           const stackLines = data.stack.split('\n').map(line => line.trim());
           formatted += '\n' + stackLines.join('\n');

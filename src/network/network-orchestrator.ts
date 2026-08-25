@@ -183,7 +183,8 @@ export class NetworkOrchestrator extends EventEmitter {
     await this.connectionManager.start();
     
     const height = await this.config.blockchain.getHeight();
-    const tipHash = this.config.blockchain.getLatestBlock()?.hash || 'genesis';
+    const latestBlock = await this.config.blockchain.getLatestBlock();
+    const tipHash = latestBlock?.hash || 'genesis';
     await this.discoveryService.start(height, tipHash);
     
     this.inventoryManager.start();
