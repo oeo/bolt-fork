@@ -29,6 +29,7 @@ services:
       MINING_MAX_ITERATIONS: ${MINING_MAX_ITERATIONS:-1000000}
       MINING_INTERVAL: ${MINING_INTERVAL:-10000}
       ENABLE_IPFS: ${ENABLE_IPFS:-true}
+      IPFS_API: http://ipfs:5001
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_DIR: /app/logs
     ports:

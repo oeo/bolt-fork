@@ -1,14 +1,12 @@
 import * as bip39 from 'bip39';
-import HDNode from 'hdkey';
-import { ec as EC } from 'elliptic';
+import { HDKey as HDNode } from '@scure/bip32';
+import { getPublicKey, Point, utils as secp256k1 } from '@noble/secp256k1';
 import { ripemd160 } from '@noble/hashes/ripemd160';
 import { hash, hexToBytes, bytesToHex } from './hash';
 import { getLogger } from '../utils/logger';
 import { BIP44_PURPOSE, BOLT_COIN_TYPE } from '../constants';
 
 const logger = getLogger(__filename);
-const secp256k1 = new EC('secp256k1');
-
 // base58 alphabet (Bitcoin alphabet)
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
@@ -159,10 +157,8 @@ export function publicKeyMatchesAddress(
     const decoded = base58Decode(address);
     if (decoded.length !== 25) return false;
 
-    const key = secp256k1.keyFromPublic(
-      typeof publicKey === 'string' ? hexToBytes(publicKey) : publicKey
-    );
-    const uncompressedKey = key.getPublic(false, 'hex');
+    const key = typeof publicKey === 'string' ? hexToBytes(publicKey) : publicKey;
+    const uncompressedKey = Point.fromHex(key).toRawBytes(false);
     return publicKeyToAddress(uncompressedKey, decoded[0]) === address;
   } catch {
     return false;
@@ -172,10 +168,10 @@ export function publicKeyMatchesAddress(
 /**
  * validate bitcoin-style address
  */
-export function validateAddress(address: string): boolean {
+export function validateAddress(address: string, prefix?: number): boolean {
   try {
-    // check length (25-34 characters for bitcoin addresses)
-    if (address.length < 25 || address.length > 34) {
+    // base58check encodings of 25-byte payloads can reach 35 characters
+    if (address.length < 25 || address.length > 35) {
       return false;
     }
 
@@ -188,6 +184,9 @@ export function validateAddress(address: string): boolean {
     // decode and verify checksum
     const decoded = base58Decode(address);
     if (decoded.length !== 25) {
+      return false;
+    }
+    if (prefix !== undefined && decoded[0] !== prefix) {
       return false;
     }
 
@@ -211,16 +210,11 @@ export function validateAddress(address: string): boolean {
  * generate key info from private key
  */
 export function generateFromPrivateKey(privateKey: string | Uint8Array, prefix: number = 0x00): KeyInfo {
-  // convert to hex string if bytes
-  const privateKeyHex = typeof privateKey === 'string'
-    ? privateKey
-    : bytesToHex(privateKey);
+  const privateKeyBytes = typeof privateKey === 'string' ? hexToBytes(privateKey) : privateKey;
+  if (!isValidPrivateKey(privateKeyBytes)) throw new Error('Invalid private key');
 
-  // create key pair from private key
-  const keyPair = secp256k1.keyFromPrivate(privateKeyHex, 'hex');
-
-  // get public key (uncompressed)
-  const publicKey = keyPair.getPublic(false, 'hex');
+  const privateKeyHex = bytesToHex(privateKeyBytes);
+  const publicKey = bytesToHex(getPublicKey(privateKeyBytes, false));
 
   // generate address
   const address = publicKeyToAddress(publicKey, prefix);
@@ -252,11 +246,7 @@ export function generateAddress(prefix: number = 0x00): KeyInfo {
  * validate private key
  */
 function isValidPrivateKey(key: Uint8Array): boolean {
-  // check if it's a valid secp256k1 private key
-  // must be non-zero and less than the curve order
-  const n = BigInt('0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141');
-  const keyNum = BigInt('0x' + bytesToHex(key));
-  return keyNum > 0n && keyNum < n;
+  return secp256k1.isValidPrivateKey(key);
 }
 
 /**

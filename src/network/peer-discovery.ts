@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { create, IPFSHTTPClient } from 'ipfs-http-client';
+import { create, multiaddr, type KuboRPCClient } from 'kubo-rpc-client';
 import { getLogger } from '../utils/logger';
 
 const logger = getLogger(__filename);
@@ -30,7 +30,7 @@ export interface PeerDiscoveryConfig {
  */
 export class PeerDiscoveryService extends EventEmitter {
   private config: PeerDiscoveryConfig;
-  private ipfs: IPFSHTTPClient | null = null;
+  private ipfs: KuboRPCClient | null = null;
   private knownPeers: Map<string, PeerEndpoint> = new Map();
   private announceTimer: any;
   private cleanupTimer: any;
@@ -140,7 +140,7 @@ export class PeerDiscoveryService extends EventEmitter {
     
     for (const addr of PeerDiscoveryService.BOOTSTRAP_NODES) {
       try {
-        await this.ipfs.swarm.connect(addr as any);
+        await this.ipfs.swarm.connect(multiaddr(addr));
         connected++;
         logger.debug(`connected to bootstrap: ${addr.split('/').pop()}`);
       } catch (error) {

@@ -3,7 +3,9 @@ import { randomBytes } from 'crypto';
 import {
   publicKeyToAddress,
   validateAddress,
-  generateAddress
+  generateAddress,
+  createHDKey,
+  deriveKey
 } from '../../src/crypto/address';
 
 // Network prefix constants
@@ -53,6 +55,12 @@ describe('Address Functions', () => {
   });
   
   describe('validateAddress', () => {
+    it('should enforce the expected network prefix', () => {
+      const { address } = generateAddress(NetworkPrefix.LOCAL);
+      expect(validateAddress(address, NetworkPrefix.LOCAL)).toBe(true);
+      expect(validateAddress(address, NetworkPrefix.MAINNET)).toBe(false);
+    });
+
     it('should validate correct address', () => {
       const { address } = generateAddress();
       expect(validateAddress(address)).toBe(true);
@@ -107,6 +115,20 @@ describe('Address Functions', () => {
       
       expect(mainnet.address).not.toBe(testnet.address);
       // addresses for the same keys but different prefixes have different addresses
+    });
+  });
+
+  describe('HD derivation', () => {
+    it('should derive deterministic and distinct addresses', () => {
+      const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+      const hdKey = createHDKey(mnemonic);
+
+      const first = deriveKey(hdKey);
+      const restored = deriveKey(createHDKey(mnemonic));
+      const second = deriveKey(hdKey, { index: 1 });
+
+      expect(restored).toEqual(first);
+      expect(second.address).not.toBe(first.address);
     });
   });
   

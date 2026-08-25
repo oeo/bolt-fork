@@ -7,26 +7,25 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "metrics": "bun run scripts/metrics-server.ts",
+    "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:unit": "bun test tests/unit",
     "test:integration": "bun test tests/integration",
-    "test:bats": "bats tests/bats",
+    "test:bats": "bats tests/bats/*.bats",
     "test:metrics": "bun test tests/unit/metrics.test.ts",
     "test:gbt": "bun test tests/unit/getblocktemplate.test.ts"
   },
   "dependencies": {
     "@noble/hashes": "^1.3.3",
     "@noble/secp256k1": "^2.0.0",
-    "@types/elliptic": "^6.4.18",
-    "@types/hdkey": "^2.1.0",
+    "@scure/bip32": "2.3.0",
     "bip39": "^3.1.0",
-    "elliptic": "^6.6.1",
-    "hdkey": "^2.1.0",
-    "ipfs-http-client": "^60.0.1",
+    "kubo-rpc-client": "7.1.0",
     "lmdb": "^3.4.2",
     "prom-client": "^15.1.0"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "typescript": "5.9.2"
   }
 }

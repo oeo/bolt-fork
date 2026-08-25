@@ -1,0 +1,38 @@
+services:
+  bolt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      API_PORT: 7333
+      BOLT_NETWORK: devnet
+      DATA_DIR: /data
+      ENABLE_IPFS: "false"
+      IPFS_API: http://ipfs:5001
+      METRICS_PORT: 7336
+      MINING_ENABLED: "false"
+      NETWORK_MODE: tcp
+      STORAGE_TYPE: lmdb
+      TCP_PORT: 8333
+    ports:
+      - "127.0.0.1::7333"
+    volumes:
+      - bolt-data:/data
+    depends_on:
+      ipfs:
+        condition: service_healthy
+
+  ipfs:
+    image: ipfs/kubo:latest
+    command: ["daemon", "--migrate=true", "--enable-pubsub-experiment"]
+    healthcheck:
+      test: ["CMD-SHELL", "ipfs id"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    volumes:
+      - ipfs-data:/data/ipfs
+
+volumes:
+  bolt-data:
+  ipfs-data:
