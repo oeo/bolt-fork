@@ -9,6 +9,8 @@ import { formatWatts } from '../utils/currency';
 const logger = getLogger(__filename);
 
 export interface MempoolConfig {
+  chainId?: number;
+  addressPrefix?: number;
   maxSize?: number;           // max number of transactions
   maxSizeBytes?: number;      // max total size in bytes
   minFeePerByte?: bigint;     // minimum fee per byte in watts
@@ -40,11 +42,14 @@ export class Mempool extends EventEmitter {
   private config: MempoolConfig;
   private entries: Map<string, MempoolEntry>;
   private totalBytes: number;
+  private writeTail: Promise<void> = Promise.resolve();
   
   constructor(storage: StorageAdapter, config: MempoolConfig = {}) {
     super();
     this.storage = storage;
     this.config = {
+      chainId: config.chainId ?? chainConfig.chainId,
+      addressPrefix: config.addressPrefix ?? chainConfig.addressPrefix,
       maxSize: config.maxSize || 10000,
       maxSizeBytes: config.maxSizeBytes || 100_000_000, // 100MB
       minFeePerByte: config.minFeePerByte || chainConfig.minFeePerByte,
@@ -64,6 +69,10 @@ export class Mempool extends EventEmitter {
       
       for (const tx of transactions) {
         const txClass = TransactionClass.fromObject(tx);
+        const validation = txClass.validate(this.config.chainId!, this.config.addressPrefix!);
+        if (!validation.valid) {
+          throw new Error(`Invalid stored transaction ${tx.hash}: ${validation.error}`);
+        }
         const size = txClass.getSize();
         const feePerByte = tx.fee / BigInt(size);
         
@@ -87,6 +96,10 @@ export class Mempool extends EventEmitter {
    * add transaction to mempool
    */
   async addTransaction(tx: Transaction | TransactionClass): Promise<void> {
+    return this.withWriteLock(() => this.addTransactionUnlocked(tx));
+  }
+
+  private async addTransactionUnlocked(tx: Transaction | TransactionClass): Promise<void> {
     const transaction = tx instanceof TransactionClass ? tx.toObject() : tx;
     
     // check if already in mempool
@@ -102,17 +115,31 @@ export class Mempool extends EventEmitter {
     
     // validate transaction
     const txClass = tx instanceof TransactionClass ? tx : TransactionClass.fromObject(transaction);
-    const validation = txClass.validate();
+    if (txClass.isCoinbase()) {
+      throw new Error('Coinbase transactions cannot enter mempool');
+    }
+    const validation = txClass.validate(this.config.chainId!, this.config.addressPrefix!);
     if (!validation.valid) {
       throw new Error(`Invalid transaction: ${validation.error}`);
     }
+    if (!await txClass.verify()) {
+      throw new Error('Invalid transaction signature');
+    }
     
-    // check for duplicate nonce from same sender
     if (transaction.from) {
-      const senderTxs = await this.getTransactionsBySender(transaction.from);
-      const duplicateNonce = senderTxs.some(tx => tx.nonce === transaction.nonce);
-      if (duplicateNonce) {
-        throw new Error(`Duplicate nonce ${transaction.nonce} from sender ${transaction.from}`);
+      const canonical = await this.storage.getAccountState(transaction.from);
+      let balance = canonical?.balance ?? 0n;
+      let nonce = canonical?.nonce ?? 0;
+      const senderTxs = (await this.getTransactionsBySender(transaction.from))
+        .sort((a, b) => a.nonce - b.nonce);
+      for (const pending of senderTxs) {
+        if (pending.nonce !== nonce) throw new Error(`Invalid pending nonce ${pending.nonce}`);
+        balance -= pending.amount + pending.fee;
+        nonce++;
+      }
+      const accountValidation = txClass.validateAgainstAccount(balance, nonce);
+      if (!accountValidation.valid) {
+        throw new Error(accountValidation.error);
       }
     }
     
@@ -421,5 +448,19 @@ export class Mempool extends EventEmitter {
     }
     
     return null;
+  }
+
+  private async withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.writeTail;
+    let release!: () => void;
+    this.writeTail = new Promise(resolve => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 }

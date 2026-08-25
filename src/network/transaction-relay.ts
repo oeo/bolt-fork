@@ -173,6 +173,8 @@ export class TransactionRelay extends EventEmitter {
     try {
       // serialize transaction (simplified for now)
       const txData = {
+        chainId: tx.chainId,
+        kind: tx.kind,
         hash: tx.hash,
         from: tx.from,
         to: tx.to,
@@ -203,6 +205,8 @@ export class TransactionRelay extends EventEmitter {
     try {
       // reconstruct transaction object
       const tx: Transaction = {
+        chainId: txData.chainId,
+        kind: txData.kind,
         hash: txData.hash,
         from: txData.from,
         to: txData.to,

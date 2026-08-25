@@ -11,6 +11,7 @@ describe('Type Guards', () => {
         previousHash: '0000000000000000000000000000000000000000000000000000000000000000',
         hash: 'abcd1234',
         merkleRoot: '',
+        stateRoot: '',
         difficulty: 10,
         nonce: 0,
         transactions: [],
@@ -25,6 +26,8 @@ describe('Type Guards', () => {
   describe('Transaction type', () => {
     it('should handle coinbase transaction', () => {
       const coinbase: Transaction = {
+        chainId: 1057,
+        kind: 'coinbase',
         hash: 'tx123',
         from: null,
         to: 'bolt1234567890',
@@ -40,6 +43,8 @@ describe('Type Guards', () => {
 
     it('should handle regular transaction', () => {
       const tx: Transaction = {
+        chainId: 1057,
+        kind: 'transfer',
         hash: 'tx456',
         from: 'bolt1111111111',
         to: 'bolt2222222222',

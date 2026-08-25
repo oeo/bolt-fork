@@ -27,6 +27,8 @@ describe('Full Blockchain Flow Integration', () => {
     await blockchain.initialize();
     
     mempool = new Mempool(storage, {
+      chainId: chainConfig.chainId,
+      addressPrefix: chainConfig.addressPrefix,
       maxSize: 1000,
       minFeePerByte: 1n
     });
@@ -42,10 +44,10 @@ describe('Full Blockchain Flow Integration', () => {
   
   test('should handle complete transaction flow from creation to confirmation', async () => {
     // Step 1: Create accounts
-    const alice = generateAddress();
-    const bob = generateAddress();
-    const charlie = generateAddress();
-    const miner = generateAddress();
+    const alice = generateAddress(chainConfig.addressPrefix);
+    const bob = generateAddress(chainConfig.addressPrefix);
+    const charlie = generateAddress(chainConfig.addressPrefix);
+    const miner = generateAddress(chainConfig.addressPrefix);
     
     logger.info('Created accounts', {
       alice: alice.address.substring(0, 8) + '...',
@@ -54,11 +56,18 @@ describe('Full Blockchain Flow Integration', () => {
       miner: miner.address.substring(0, 8) + '...'
     });
     
-    // Step 2: Fund Alice (simulate she mined some blocks previously)
-    await storage.updateAccountState(alice.address, {
-      balance: 1000n * WATTS_PER_BOLT,
-      nonce: 0
-    });
+    // Step 2: Fund Alice by mining a block
+    const fundingTemplate = await blockchain.createBlockTemplate([], alice.address);
+    const fundingBlock = new BlockClass(
+      fundingTemplate.height,
+      fundingTemplate.timestamp,
+      fundingTemplate.previousHash,
+      fundingTemplate.transactions,
+      fundingTemplate.difficulty
+    );
+    await blockchain.prepareBlock(fundingBlock);
+    fundingBlock.hash = fundingBlock.calculateHash();
+    expect((await blockchain.addBlock(fundingBlock)).valid).toBe(true);
     
     const aliceInitialBalance = await blockchain.getBalance(alice.address);
     expect(aliceInitialBalance).toBe(1000n * WATTS_PER_BOLT);
@@ -66,6 +75,7 @@ describe('Full Blockchain Flow Integration', () => {
     
     // Step 3: Create transactions
     const tx1 = new TransactionClass(
+      chainConfig.chainId,
       alice.address,
       bob.address,
       100n * WATTS_PER_BOLT,
@@ -75,6 +85,7 @@ describe('Full Blockchain Flow Integration', () => {
     await tx1.sign(alice.privateKey);
     
     const tx2 = new TransactionClass(
+      chainConfig.chainId,
       alice.address,
       charlie.address,
       50n * WATTS_PER_BOLT,
@@ -122,6 +133,7 @@ describe('Full Blockchain Flow Integration', () => {
     );
     
     // In devnet, difficulty is 1, so any nonce works
+    await blockchain.prepareBlock(block);
     block.nonce = 12345;
     block.hash = block.calculateHash();
     
@@ -167,14 +179,14 @@ describe('Full Blockchain Flow Integration', () => {
     expect(integrity.valid).toBe(true);
     
     const height = await blockchain.getHeight();
-    expect(height).toBe(1);
+    expect(height).toBe(2);
     
     logger.info('✓ Complete transaction flow test passed');
   });
   
   test('should prevent double spending attempts', async () => {
-    const alice = generateAddress();
-    const bob = generateAddress();
+    const alice = generateAddress(chainConfig.addressPrefix);
+    const bob = generateAddress(chainConfig.addressPrefix);
     
     // Fund alice
     await storage.updateAccountState(alice.address, {
@@ -184,6 +196,7 @@ describe('Full Blockchain Flow Integration', () => {
     
     // Create valid transaction
     const tx1 = new TransactionClass(
+      chainConfig.chainId,
       alice.address,
       bob.address,
       60n * WATTS_PER_BOLT,
@@ -195,6 +208,7 @@ describe('Full Blockchain Flow Integration', () => {
     
     // Try to double spend with same nonce
     const tx2 = new TransactionClass(
+      chainConfig.chainId,
       alice.address,
       bob.address,
       60n * WATTS_PER_BOLT,
@@ -208,6 +222,7 @@ describe('Full Blockchain Flow Integration', () => {
     
     // Try to spend more than balance
     const tx3 = new TransactionClass(
+      chainConfig.chainId,
       alice.address,
       bob.address,
       150n * WATTS_PER_BOLT, // more than she has
@@ -216,13 +231,13 @@ describe('Full Blockchain Flow Integration', () => {
     );
     await tx3.sign(alice.privateKey);
     
-    // Should be added to mempool but fail when mined
-    await mempool.addTransaction(tx3);
+    // Mempool rejects cumulative overspend before mining
+    await expect(mempool.addTransaction(tx3)).rejects.toThrow('Insufficient balance');
     
     // Mine block with first transaction
     const template = await blockchain.createBlockTemplate(
       [tx1], // only include first tx
-      generateAddress().address
+      generateAddress(chainConfig.addressPrefix).address
     );
     
     const block = new BlockClass(
@@ -232,6 +247,7 @@ describe('Full Blockchain Flow Integration', () => {
       template.transactions, // already includes coinbase and tx1
       template.difficulty
     );
+    await blockchain.prepareBlock(block);
     block.nonce = 1;
     block.hash = block.calculateHash();
     
@@ -246,9 +262,9 @@ describe('Full Blockchain Flow Integration', () => {
   });
   
   test('should handle transaction fee distribution correctly', async () => {
-    const alice = generateAddress();
-    const bob = generateAddress();
-    const miner = generateAddress();
+    const alice = generateAddress(chainConfig.addressPrefix);
+    const bob = generateAddress(chainConfig.addressPrefix);
+    const miner = generateAddress(chainConfig.addressPrefix);
     
     // Fund alice
     await storage.updateAccountState(alice.address, {
@@ -258,6 +274,7 @@ describe('Full Blockchain Flow Integration', () => {
     
     // Create transaction with significant fee
     const tx = new TransactionClass(
+      chainConfig.chainId,
       alice.address,
       bob.address,
       100n * WATTS_PER_BOLT,
@@ -282,6 +299,7 @@ describe('Full Blockchain Flow Integration', () => {
       template.transactions, // already includes coinbase
       template.difficulty
     );
+    await blockchain.prepareBlock(block);
     block.nonce = 1;
     block.hash = block.calculateHash();
     
@@ -296,14 +314,21 @@ describe('Full Blockchain Flow Integration', () => {
   });
   
   test('should maintain consistency with multiple blocks', async () => {
-    const accounts = Array.from({ length: 5 }, () => generateAddress());
-    const miner = generateAddress();
+    const accounts = Array.from({ length: 5 }, () => generateAddress(chainConfig.addressPrefix));
+    const miner = generateAddress(chainConfig.addressPrefix);
     
-    // Fund first account
-    await storage.updateAccountState(accounts[0].address, {
-      balance: 1000n * WATTS_PER_BOLT,
-      nonce: 0
-    });
+    // Fund first account by mining a block
+    const fundingTemplate = await blockchain.createBlockTemplate([], accounts[0].address);
+    const fundingBlock = new BlockClass(
+      fundingTemplate.height,
+      fundingTemplate.timestamp,
+      fundingTemplate.previousHash,
+      fundingTemplate.transactions,
+      fundingTemplate.difficulty
+    );
+    await blockchain.prepareBlock(fundingBlock);
+    fundingBlock.hash = fundingBlock.calculateHash();
+    expect((await blockchain.addBlock(fundingBlock)).valid).toBe(true);
     
     // Mine multiple blocks with transactions
     for (let blockNum = 0; blockNum < 3; blockNum++) {
@@ -314,6 +339,7 @@ describe('Full Blockchain Flow Integration', () => {
       const senderState = await storage.getAccountState(sender.address);
       if (senderState && senderState.balance > 10n * WATTS_PER_BOLT) {
         const tx = new TransactionClass(
+          chainConfig.chainId,
           sender.address,
           receiver.address,
           10n * WATTS_PER_BOLT,
@@ -332,12 +358,13 @@ describe('Full Blockchain Flow Integration', () => {
       
       const block = new BlockClass(
         template.height,
-        template.timestamp + blockNum, // add blockNum to ensure unique timestamps
+        template.timestamp + blockNum + 1,
         template.previousHash,
         template.transactions, // already includes coinbase
         template.difficulty,
         template.chainVersionHash
       );
+      await blockchain.prepareBlock(block);
       block.nonce = blockNum;
       block.hash = block.calculateHash();
       
@@ -355,7 +382,7 @@ describe('Full Blockchain Flow Integration', () => {
     expect(integrity.valid).toBe(true);
     
     const height = await blockchain.getHeight();
-    expect(height).toBe(3);
+    expect(height).toBe(4);
     
     // Verify cumulative difficulty increased
     const cumulativeDifficulty = await blockchain.getCumulativeDifficulty();
@@ -365,14 +392,14 @@ describe('Full Blockchain Flow Integration', () => {
   });
   
   test('should handle mempool transaction prioritization', async () => {
-    const bob = generateAddress();
+    const bob = generateAddress(chainConfig.addressPrefix);
     
     // Create multiple senders with funds
     const senders = [];
     const fees = [1000n, 5000n, 2000n, 10000n, 500n]; // different fee amounts
     
     for (let i = 0; i < fees.length; i++) {
-      const sender = generateAddress();
+      const sender = generateAddress(chainConfig.addressPrefix);
       senders.push(sender);
       
       // Fund each sender
@@ -387,6 +414,7 @@ describe('Full Blockchain Flow Integration', () => {
     
     for (let i = 0; i < fees.length; i++) {
       const tx = new TransactionClass(
+        chainConfig.chainId,
         senders[i].address,
         bob.address,
         10n * WATTS_PER_BOLT,
@@ -416,8 +444,8 @@ describe('Full Blockchain Flow Integration', () => {
   });
   
   test('should track nonces correctly across multiple transactions', async () => {
-    const alice = generateAddress();
-    const bob = generateAddress();
+    const alice = generateAddress(chainConfig.addressPrefix);
+    const bob = generateAddress(chainConfig.addressPrefix);
     
     // Fund alice
     await storage.updateAccountState(alice.address, {
@@ -431,6 +459,7 @@ describe('Full Blockchain Flow Integration', () => {
     
     for (let i = 0; i < txCount; i++) {
       const tx = new TransactionClass(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         10n * WATTS_PER_BOLT,
@@ -445,7 +474,7 @@ describe('Full Blockchain Flow Integration', () => {
     // Mine all transactions in one block
     const template = await blockchain.createBlockTemplate(
       mempool.getTransactionsForBlock(),
-      generateAddress().address
+      generateAddress(chainConfig.addressPrefix).address
     );
     
     expect(template.transactions).toHaveLength(txCount + 1); // +1 for coinbase
@@ -457,6 +486,7 @@ describe('Full Blockchain Flow Integration', () => {
       template.transactions, // already includes coinbase
       template.difficulty
     );
+    await blockchain.prepareBlock(block);
     block.nonce = 1;
     block.hash = block.calculateHash();
     

@@ -30,6 +30,7 @@ export class TestBlockFactory {
       difficulty: 1,
       hash: this.createHash(`block${index}`),
       merkleRoot: this.createHash(`merkle${index}`),
+      stateRoot: this.createHash(`state${index}`),
     };
   }
   
@@ -44,6 +45,8 @@ export class TestBlockFactory {
     fee: bigint = 1000n
   ): Transaction {
     return {
+      chainId: 1057,
+      kind: 'transfer',
       hash: this.createHash(hash),
       from,
       to,

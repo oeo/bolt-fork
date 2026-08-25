@@ -206,8 +206,19 @@ export function estimateTimeToAdjustment(
  */
 export function calculateCumulativeDifficulty(blocks: (Block | BlockClass)[]): bigint {
   return blocks.reduce((total, block) => {
-    return total + BigInt(block.difficulty);
+    return total + calculateBlockWork(block.difficulty);
   }, 0n);
+}
+
+export function calculateBlockWork(difficulty: number): bigint {
+  if (!Number.isSafeInteger(difficulty) || difficulty < 1) {
+    throw new Error(`Invalid difficulty: ${difficulty}`);
+  }
+
+  const hashSpace = 1n << 256n;
+  const maxTarget = hashSpace - 1n;
+  const target = maxTarget / BigInt(difficulty);
+  return hashSpace / (target + 1n);
 }
 
 /**

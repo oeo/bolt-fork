@@ -45,6 +45,8 @@ ipfs is used exclusively for peer discovery via pubsub:
 
 all blockchain data exchange happens over tcp using a binary protocol.
 
+current protocol version: `3`.
+
 ### message format
 ```
 ┌──────────┬──────────┬──────────┬──────────┬──────────────┐
@@ -74,7 +76,7 @@ all blockchain data exchange happens over tcp using a binary protocol.
 
 #### data transfer
 - `block` - full block data
-- `tx` - transaction data
+- `tx` - chain-bound transaction data, including `chainId` and `kind`
 
 #### maintenance
 - `ping` - connection keepalive

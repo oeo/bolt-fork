@@ -106,8 +106,8 @@ export class LMDBManager {
   /**
    * execute a transaction across multiple databases atomically
    */
-  async transaction<T>(fn: () => Promise<T> | T): Promise<T> {
-    return this.env.transaction(fn);
+  transactionSync<T>(fn: () => T): T {
+    return this.env.transactionSync(fn);
   }
 
   /**
@@ -119,12 +119,12 @@ export class LMDBManager {
     key: any;
     value?: any;
   }>): Promise<void> {
-    await this.env.transaction(() => {
+    this.env.transactionSync(() => {
       for (const op of operations) {
         if (op.type === 'put') {
-          op.db.put(op.key, op.value);
+          op.db.putSync(op.key, op.value);
         } else {
-          op.db.remove(op.key);
+          op.db.removeSync(op.key);
         }
       }
     });
@@ -181,17 +181,17 @@ export class LMDBManager {
   async clearAll(): Promise<void> {
     logger.warn('clearing all database content');
     
-    await this.env.transaction(async () => {
-      await this.blocks.clearAsync();
-      await this.blockIndex.clearAsync();
-      await this.blockHeaders.clearAsync();
-      await this.accounts.clearAsync();
-      await this.accountIndex.clearAsync();
-      await this.mempool.clearAsync();
-      await this.mempoolByFee.clearAsync();
-      await this.mempoolByTime.clearAsync();
-      await this.mempoolByAddress.clearAsync();
-      await this.metadata.clearAsync();
+    this.env.transactionSync(() => {
+      this.blocks.clearSync();
+      this.blockIndex.clearSync();
+      this.blockHeaders.clearSync();
+      this.accounts.clearSync();
+      this.accountIndex.clearSync();
+      this.mempool.clearSync();
+      this.mempoolByFee.clearSync();
+      this.mempoolByTime.clearSync();
+      this.mempoolByAddress.clearSync();
+      this.metadata.clearSync();
     });
     
     logger.warn('all databases cleared');

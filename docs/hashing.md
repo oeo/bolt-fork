@@ -1,71 +1,19 @@
-# Hashing system
+# hashing
 
-## Dynamic algorithm support
+bolt consensus uses sha-256. chain configuration cannot select another proof-of-work hash.
 
-bolt supports multiple proof-of-work algorithms, configurable per chain.
+## block work
 
-## Supported algorithms
+each block target is derived from its integer difficulty:
 
-### SHA-256
-- Standard Bitcoin algorithm
-- 256-bit output
-- Fast and well-tested
-
-### SHA-512
-- 512-bit output (first 256 bits used for difficulty)
-- More collision resistant
-- Slightly slower than SHA-256
-
-### Scrypt
-- Memory-hard algorithm
-- ASIC resistant
-- Configurable parameters (N, r, p)
-
-### Double-SHA-256
-- Bitcoin's actual algorithm
-- SHA-256(SHA-256(data))
-- Extra security against length extension attacks
-
-## Configuration
-
-Set in chain config:
-```typescript
-const config = {
-  hashAlgorithm: 'scrypt',
-  // scrypt-specific options
-  scryptOptions: {
-    N: 1024,  // CPU/memory cost
-    r: 8,     // block size
-    p: 1      // parallelization
-  }
-}
+```text
+maxTarget = 2^256 - 1
+target = floor(maxTarget / difficulty)
+work = floor(2^256 / (target + 1))
 ```
 
-## Difficulty adjustment
+chain selection compares the sum of block work. summing difficulty values is not equivalent for every target and is not used.
 
-The difficulty system works identically across all algorithms:
+## other hashes
 
-1. All hashes are compared as 256-bit numbers
-2. SHA-512 uses only first 256 bits for difficulty
-3. Target = MAX_TARGET / difficulty
-4. Block valid if: hash <= target
-
-## Example usage
-
-```typescript
-import { hash, hashMeetsDifficulty } from './crypto/hash';
-
-// mine a block
-let nonce = 0;
-while (true) {
-  const blockData = previousHash + merkleRoot + timestamp + nonce;
-  const blockHash = hash(blockData, 'sha256');
-  
-  if (hashMeetsDifficulty(blockHash, difficulty)) {
-    // valid block found!
-    break;
-  }
-  nonce++;
-}
-```
-
+the hash utility also exposes sha-512, double-sha-256, and the current scrypt-compatible helper for non-consensus callers. these algorithms cannot validate or mine bolt blocks through `Blockchain`.

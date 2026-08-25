@@ -48,9 +48,9 @@ describe('lmdb storage', () => {
       let error: Error | null = null;
       
       try {
-        await lmdb.transaction(async () => {
-          await lmdb.metadata.put('test1', 'value1');
-          await lmdb.metadata.put('test2', 'value2');
+        lmdb.transactionSync(() => {
+          lmdb.metadata.putSync('test1', 'value1');
+          lmdb.metadata.putSync('test2', 'value2');
           throw new Error('rollback test');
         });
       } catch (e) {
@@ -58,9 +58,8 @@ describe('lmdb storage', () => {
       }
       
       expect(error?.message).toBe('rollback test');
-      
-      // lmdb may not rollback on exceptions in async transactions
-      // so we'll just check the error was thrown
+      expect(await lmdb.metadata.get('test1')).toBeUndefined();
+      expect(await lmdb.metadata.get('test2')).toBeUndefined();
     });
 
     it('should perform batch writes', async () => {
@@ -262,6 +261,8 @@ describe('lmdb storage', () => {
       await stateStore.updateAccount(sender);
       
       const tx: Transaction = {
+        chainId: 1057,
+        kind: 'transfer',
         hash: 'tx1',
         from: 'sender',
         to: 'receiver',

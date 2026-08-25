@@ -1,15 +1,17 @@
 import { EventEmitter } from 'events';
 import { Block, Transaction, AccountState, BlockTemplate, ValidationResult } from '../types';
-import { StorageAdapter } from '../storage/adapter';
+import { StaleChainTipError, StorageAdapter } from '../storage/adapter';
 import { ChainConfig } from '../config/chain';
 import { BlockClass, createGenesisBlock } from './block';
-import { TransactionClass, createCoinbaseTransaction, validateTransactionPool } from './transaction';
-import { getDifficultyAdjustment, shouldAdjustDifficulty, DifficultyConfig, calculateCumulativeDifficulty } from './difficulty';
+import { TransactionClass, createCoinbaseTransaction } from './transaction';
+import { getDifficultyAdjustment, shouldAdjustDifficulty, DifficultyConfig, calculateBlockWork, calculateCumulativeDifficulty } from './difficulty';
 import { HashAlgorithm, hash } from '../crypto/hash';
 import { ForkManager } from './fork-manager';
 import { getLogger } from '../utils/logger';
+import { calculateStateRoot, executeBlock, type BlockExecution } from './block-executor';
 
 const logger = getLogger(__filename);
+const STORAGE_VERSION = '4';
 
 /**
  * main blockchain orchestration class
@@ -22,6 +24,7 @@ export class Blockchain extends EventEmitter {
   private currentHeight: number = -1;
   private isInitialized: boolean = false;
   private forkManager: ForkManager;
+  private chainWriteTail: Promise<void> = Promise.resolve();
 
   constructor(
     storage: StorageAdapter,
@@ -29,6 +32,9 @@ export class Blockchain extends EventEmitter {
     hashAlgorithm: HashAlgorithm = 'sha256'
   ) {
     super();
+    if (config.hashAlgorithm !== 'sha256' || hashAlgorithm !== 'sha256') {
+      throw new Error('bolt consensus requires sha256');
+    }
     this.storage = storage;
     this.config = config;
     this.hashAlgorithm = hashAlgorithm;
@@ -47,6 +53,10 @@ export class Blockchain extends EventEmitter {
    * initialize blockchain (create genesis if needed)
    */
   async initialize(): Promise<void> {
+    return this.withChainWrite(() => this.initializeUnlocked());
+  }
+
+  private async initializeUnlocked(): Promise<void> {
     if (this.isInitialized) {
       logger.warn('Blockchain already initialized');
       return;
@@ -58,6 +68,17 @@ export class Blockchain extends EventEmitter {
 
     // check for existing blockchain
     const latestBlock = await this.storage.getLatestBlock();
+    const storedVersion = (await this.storage.getChainMetadata('storageVersion'))?.toString();
+    const storedChainId = (await this.storage.getChainMetadata('chainId'))?.toString();
+
+    if (latestBlock && (storedVersion !== STORAGE_VERSION || storedChainId !== this.config.chainId.toString())) {
+      throw new Error('Stored chain is incompatible with current storage version or chain ID');
+    }
+
+    if (!latestBlock) {
+      await this.storage.saveChainMetadata('storageVersion', STORAGE_VERSION);
+      await this.storage.saveChainMetadata('chainId', this.config.chainId.toString());
+    }
 
     if (latestBlock) {
 
@@ -80,12 +101,18 @@ export class Blockchain extends EventEmitter {
     const genesis = createGenesisBlock(
       this.config.initialDifficulty,
       this.config.genesisTimestamp || Date.now(),
-      this.hashAlgorithm
+      calculateStateRoot(new Map()),
+      this.config.genesisNonce
     );
 
-    // save to storage
-    await this.storage.saveBlock(genesis.toObject());
-    await this.storage.updateCumulativeDifficulty(BigInt(genesis.difficulty));
+    await this.storage.transitionCanonicalChain({
+      expectedTip: { height: -1, hash: null },
+      expectedCumulativeDifficulty: 0n,
+      ancestor: { height: -1, hash: null },
+      blocks: [genesis.toObject()],
+      accountStates: [],
+      cumulativeDifficulty: calculateBlockWork(genesis.difficulty),
+    });
 
     this.currentHeight = 0;
 
@@ -96,6 +123,10 @@ export class Blockchain extends EventEmitter {
    * add a new block to the blockchain
    */
   async addBlock(block: BlockClass): Promise<ValidationResult> {
+    return this.withChainWrite(() => this.addBlockUnlocked(block));
+  }
+
+  private async addBlockUnlocked(block: BlockClass): Promise<ValidationResult> {
     if (!this.isInitialized) {
       throw new Error('Blockchain not initialized');
     }
@@ -124,7 +155,7 @@ export class Blockchain extends EventEmitter {
       }
       // different block at same height - need to handle as competing block
       logger.warn(`Different block at height ${block.index}, handling as competing block`);
-      return await this.handleCompetingBlock(block);
+      return await this.handleCompetingBlockUnlocked(block);
     }
 
     // get previous block
@@ -155,28 +186,35 @@ export class Blockchain extends EventEmitter {
       return difficultyValidation;
     }
 
-    // validate coinbase
-    const blockReward = this.getBlockReward(block.index);
-    const coinbaseValidation = block.validateCoinbase(blockReward);
-    if (!coinbaseValidation.valid) {
-      return coinbaseValidation;
+    let execution: BlockExecution;
+    try {
+      execution = await this.executeBlock(block);
+    } catch (error) {
+      return { valid: false, error: error instanceof Error ? error.message : String(error) };
     }
-
-    // validate all transactions
-    const txValidation = await this.validateBlockTransactions(block);
-    if (!txValidation.valid) {
-      return txValidation;
+    if (block.stateRoot !== execution.stateRoot) {
+      return { valid: false, error: 'Invalid state root' };
     }
 
     // update cumulative difficulty
     const currentCumulative = await this.storage.getCumulativeDifficulty();
-    const newCumulative = currentCumulative + BigInt(block.difficulty);
-    const accountStates = await this.calculateBlockStateChanges(block);
-    await this.storage.commitBlock({
-      block: block.toObject(),
-      accountStates: Array.from(accountStates, ([address, state]) => ({ address, state })),
+    const newCumulative = currentCumulative + calculateBlockWork(block.difficulty);
+    try {
+      await this.storage.transitionCanonicalChain({
+      expectedTip: { height: previousBlock.index, hash: previousBlock.hash },
+      expectedCumulativeDifficulty: currentCumulative,
+      ancestor: { height: previousBlock.index, hash: previousBlock.hash },
+      blocks: [block.toObject()],
+      accountStates: Array.from(execution.accountStates, ([address, state]) => ({ address, state })),
       cumulativeDifficulty: newCumulative,
-    });
+      });
+    } catch (error) {
+      if (error instanceof StaleChainTipError) {
+        this.currentHeight = error.actualTip.height;
+        return { valid: false, error: error.message };
+      }
+      throw error;
+    }
 
     // update current height
     this.currentHeight = block.index;
@@ -184,103 +222,29 @@ export class Blockchain extends EventEmitter {
     logger.info(`Block ${block.index} added successfully`);
 
     // emit event with block details for metrics recording
-    this.emit('block:added', block);
+    this.emitCommitted('block:added', block);
 
     return { valid: true };
   }
 
-  /**
-   * validate all transactions in a block
-   */
-  private async validateBlockTransactions(block: BlockClass): Promise<ValidationResult> {
-    const transactions = block.transactions.map(tx => TransactionClass.fromObject(tx));
-
-    // check for duplicate transactions
-    const poolValidation = validateTransactionPool(transactions);
-    if (!poolValidation.valid) {
-      return poolValidation;
-    }
-
-    // track temporary state changes for validation
-    const tempStateChanges = new Map<string, { balance: bigint; nonce: number }>();
-
-    // validate each transaction
-    for (const tx of transactions) {
-      // validate structure
-      const txValidation = tx.validate();
-      if (!txValidation.valid) {
-        return { valid: false, error: `Transaction ${tx.hash}: ${txValidation.error}` };
-      }
-
-      // verify signature
-      const isValid = await tx.verify();
-      if (!isValid && !tx.isCoinbase()) {
-        return { valid: false, error: `Transaction ${tx.hash}: Invalid signature` };
-      }
-
-      // validate against account state (skip coinbase)
-      if (!tx.isCoinbase()) {
-        // get current or temporary state
-        let accountState = tempStateChanges.get(tx.from!);
-        if (!accountState) {
-          const storedState = await this.storage.getAccountState(tx.from!);
-          if (!storedState) {
-            return { valid: false, error: `Transaction ${tx.hash}: Sender account not found` };
-          }
-          accountState = { ...storedState };
-        }
-
-        const accountValidation = tx.validateAgainstAccount(
-          accountState.balance,
-          accountState.nonce
-        );
-        if (!accountValidation.valid) {
-          return { valid: false, error: `Transaction ${tx.hash}: ${accountValidation.error}` };
-        }
-
-        // update temporary state
-        accountState.balance -= (tx.amount + tx.fee);
-        accountState.nonce++;
-        tempStateChanges.set(tx.from!, accountState);
-      }
-    }
-
-    return { valid: true };
-  }
-
-  /**
-   * process transactions and update account states
-   */
-  private async calculateBlockStateChanges(
-    block: BlockClass
+  async prepareBlock(
+    block: BlockClass,
+    currentStates?: ReadonlyMap<string, AccountState>
   ): Promise<Map<string, AccountState>> {
-    const changes = new Map<string, AccountState>();
-    const getState = async (address: string): Promise<AccountState> => {
-      const changed = changes.get(address);
-      if (changed) return changed;
+    const execution = currentStates
+      ? await executeBlock(block.toObject(), currentStates, this.config, this.getBlockReward(block.index))
+      : await this.executeBlock(block);
+    block.stateRoot = execution.stateRoot;
+    return execution.accountStates;
+  }
 
-      const stored = await this.storage.getAccountState(address);
-      const state = stored ? { ...stored } : { balance: 0n, nonce: 0 };
-      changes.set(address, state);
-      return state;
-    };
-
-    for (const txData of block.transactions) {
-      const tx = TransactionClass.fromObject(txData);
-      if (tx.isCoinbase()) {
-        const minerState = await getState(tx.to);
-        minerState.balance += tx.amount;
-        continue;
-      }
-
-      const senderState = await getState(tx.from!);
-      const recipientState = await getState(tx.to);
-      senderState.balance -= tx.amount + tx.fee;
-      senderState.nonce++;
-      recipientState.balance += tx.amount;
+  private async executeBlock(block: BlockClass): Promise<BlockExecution> {
+    const accountStates = new Map<string, AccountState>();
+    for (const address of await this.storage.getAllAccountAddresses()) {
+      const state = await this.storage.getAccountState(address);
+      if (state) accountStates.set(address, state);
     }
-
-    return changes;
+    return executeBlock(block.toObject(), accountStates, this.config, this.getBlockReward(block.index));
   }
 
   /**
@@ -471,6 +435,7 @@ export class Blockchain extends EventEmitter {
 
     let previousBlock: Block | null = null;
     let cumulativeDifficulty = 0n;
+    let accountStates = new Map<string, AccountState>();
 
     for await (const block of this.iterateChain()) {
       const blockClass = BlockClass.fromObject(block);
@@ -490,8 +455,29 @@ export class Blockchain extends EventEmitter {
         }
       }
 
+      if (block.index === 0) {
+        if (block.stateRoot !== calculateStateRoot(accountStates)) {
+          return { valid: false, error: 'Block 0: Invalid state root' };
+        }
+      } else {
+        try {
+          const execution = await executeBlock(
+            block,
+            accountStates,
+            this.config,
+            this.getBlockReward(block.index)
+          );
+          if (block.stateRoot !== execution.stateRoot) {
+            return { valid: false, error: `Block ${block.index}: Invalid state root` };
+          }
+          accountStates = execution.accountStates;
+        } catch (error) {
+          return { valid: false, error: `Block ${block.index}: ${error instanceof Error ? error.message : String(error)}` };
+        }
+      }
+
       // accumulate difficulty
-      cumulativeDifficulty += BigInt(block.difficulty);
+      cumulativeDifficulty += calculateBlockWork(block.difficulty);
 
       previousBlock = block;
     }
@@ -549,7 +535,16 @@ export class Blockchain extends EventEmitter {
    * handle a competing block that may trigger reorganization
    */
   async handleCompetingBlock(block: BlockClass, peerId?: string): Promise<ValidationResult> {
+    return this.withChainWrite(() => this.handleCompetingBlockUnlocked(block, peerId));
+  }
+
+  private async handleCompetingBlockUnlocked(block: BlockClass, peerId?: string): Promise<ValidationResult> {
     logger.info(`Handling competing block ${block.index} with hash ${block.hash}`);
+
+    const structureValidation = block.validate(this.hashAlgorithm);
+    if (!structureValidation.valid) return structureValidation;
+    const sizeValidation = block.validateSize(this.config.maxBlockSize);
+    if (!sizeValidation.valid) return sizeValidation;
     
     // check if this block extends a known fork
     const fork = this.forkManager.updateFork(block.previousHash, block.toObject(), peerId);
@@ -561,8 +556,12 @@ export class Blockchain extends EventEmitter {
         // new fork starting from our chain
         const forkBase = await this.storage.getBlock(previousBlock.index);
         if (forkBase) {
-          const forkCumulativeDifficulty = await this.storage.getCumulativeDifficulty() - 
-            BigInt(forkBase.difficulty) + BigInt(block.difficulty);
+          let forkCumulativeDifficulty = calculateBlockWork(block.difficulty);
+          for (let height = 0; height <= forkBase.index; height++) {
+            const canonicalBlock = await this.storage.getBlock(height);
+            if (!canonicalBlock) return { valid: false, error: `Missing canonical block ${height}` };
+            forkCumulativeDifficulty += calculateBlockWork(canonicalBlock.difficulty);
+          }
           this.forkManager.addFork(block.toObject(), forkCumulativeDifficulty, peerId);
         }
       } else {
@@ -590,15 +589,12 @@ export class Blockchain extends EventEmitter {
         
         // find common ancestor
         const commonAncestorHeight = await this.findCommonAncestor(bestFork.blocks);
-        
+        let success = false;
         if (commonAncestorHeight >= 0) {
-          // trigger reorganization
-          const success = await this.reorganize(commonAncestorHeight, bestFork.blocks);
-          if (success) {
-            this.forkManager.removeFork(bestFork.tipHash);
-            return { valid: true };
-          }
+          success = await this.reorganizeUnlocked(commonAncestorHeight, bestFork.blocks);
         }
+        this.forkManager.removeFork(bestFork.tipHash);
+        if (success) return { valid: true };
       }
     }
     
@@ -627,317 +623,109 @@ export class Blockchain extends EventEmitter {
    * reorganize blockchain from a specific height
    */
   async reorganize(commonAncestorHeight: number, newBlocks: Block[]): Promise<boolean> {
-    logger.warn(`Starting chain reorganization from height ${commonAncestorHeight}`);
-    
-    try {
-      // calculate cumulative difficulty of new chain segment
-      let newSegmentDifficulty = 0n;
-      for (const block of newBlocks) {
-        newSegmentDifficulty += BigInt(block.difficulty);
-      }
-      
-      // calculate current chain segment difficulty
-      let currentSegmentDifficulty = 0n;
-      for (let height = commonAncestorHeight + 1; height <= this.currentHeight; height++) {
-        const block = await this.storage.getBlock(height);
-        if (block) {
-          currentSegmentDifficulty += BigInt(block.difficulty);
-        }
-      }
-      
-      // verify new chain has more work
-      if (newSegmentDifficulty <= currentSegmentDifficulty) {
-        logger.warn('New chain does not have more work, aborting reorganization');
-        return false;
-      }
-      
-      // pre-validate entire new chain before applying
-      logger.info(`Pre-validating ${newBlocks.length} new blocks`);
-      const validationResult = await this.validateReorgChain(commonAncestorHeight, newBlocks);
-      if (!validationResult.valid) {
-        logger.error(`New chain validation failed: ${validationResult.error}`);
-        return false;
-      }
-      
-      // rollback to common ancestor
-      logger.info(`Rolling back from height ${this.currentHeight} to ${commonAncestorHeight}`);
-      
-      // collect all transactions from blocks being removed
-      const removedTransactions: Transaction[] = [];
-      for (let height = this.currentHeight; height > commonAncestorHeight; height--) {
-        const block = await this.storage.getBlock(height);
-        if (block) {
-          // skip coinbase transactions
-          removedTransactions.push(...block.transactions.filter(tx => tx.from !== null));
-        }
-      }
-      
-      // recalculate account states up to common ancestor
-      const ancestorStates = await this.recalculateStateFromHeight(0, commonAncestorHeight);
-      let ancestorCumulativeDifficulty = 0n;
-      for (let height = 0; height <= commonAncestorHeight; height++) {
-        const block = await this.storage.getBlock(height);
-        if (block) ancestorCumulativeDifficulty += BigInt(block.difficulty);
-      }
-
-      await this.storage.rewindChain({
-        height: commonAncestorHeight,
-        cumulativeDifficulty: ancestorCumulativeDifficulty,
-        accountStates: Array.from(ancestorStates, ([address, state]) => ({ address, state })),
-      });
-      this.currentHeight = commonAncestorHeight;
-      
-      // apply new blocks using special reorg mode
-      logger.info(`Applying ${newBlocks.length} new blocks`);
-      for (let i = 0; i < newBlocks.length; i++) {
-        const block = newBlocks[i];
-        const blockClass = block instanceof BlockClass ? block : BlockClass.fromObject(block);
-        
-        // use special add method that considers already validated chain
-        const result = await this.addBlockDuringReorg(blockClass, newBlocks.slice(0, i));
-        if (!result.valid) {
-          logger.error(`Failed to apply block ${block.index} during reorg: ${result.error}`);
-          throw new Error(`Reorganization failed: ${result.error}`);
-        }
-      }
-      
-      // re-add removed transactions to mempool (if they're still valid)
-      logger.info(`Re-adding ${removedTransactions.length} transactions to mempool`);
-      for (const tx of removedTransactions) {
-        try {
-          // check if transaction is still valid with new state
-          const balance = await this.getBalance(tx.from!);
-          const nonce = await this.getNonce(tx.from!);
-          
-          const txClass = TransactionClass.fromObject(tx);
-          const validation = txClass.validateAgainstAccount(balance, nonce);
-          
-          if (validation.valid) {
-            // re-add to mempool if we have one
-            // note: mempool integration would go here
-            logger.debug(`Re-added transaction ${tx.hash} to mempool`);
-          } else {
-            logger.debug(`Transaction ${tx.hash} no longer valid: ${validation.error}`);
-          }
-        } catch (error) {
-          logger.debug(`Failed to re-add transaction ${tx.hash}`, error);
-        }
-      }
-      
-      logger.info(`Chain reorganization completed, new height=${this.currentHeight}`);
-      return true;
-      
-    } catch (error) {
-      logger.error('Chain reorganization failed', error);
-      throw error;
-    }
+    return this.withChainWrite(() => this.reorganizeUnlocked(commonAncestorHeight, newBlocks));
   }
-  
-  /**
-   * validate entire competing chain before reorganization
-   */
-  private async validateReorgChain(
-    commonAncestorHeight: number,
-    newBlocks: Block[]
-  ): Promise<ValidationResult> {
-    // get blocks up to common ancestor for median time validation
-    const ancestorBlocks: BlockClass[] = [];
-    for (let height = Math.max(0, commonAncestorHeight - 10); height <= commonAncestorHeight; height++) {
+
+  private async reorganizeUnlocked(commonAncestorHeight: number, newBlocks: Block[]): Promise<boolean> {
+    logger.warn(`Starting chain reorganization from height ${commonAncestorHeight}`);
+    if (newBlocks.length === 0) return false;
+
+    const expectedTip = await this.storage.getLatestBlock();
+    const ancestor = await this.storage.getBlock(commonAncestorHeight);
+    if (!expectedTip || !ancestor || commonAncestorHeight >= expectedTip.index) return false;
+
+    const expectedCumulativeDifficulty = await this.storage.getCumulativeDifficulty();
+    let candidateCumulativeDifficulty = 0n;
+    for (let height = 0; height <= commonAncestorHeight; height++) {
       const block = await this.storage.getBlock(height);
-      if (block) {
-        ancestorBlocks.push(BlockClass.fromObject(block));
-      }
+      if (!block) return false;
+      candidateCumulativeDifficulty += calculateBlockWork(block.difficulty);
     }
-    
-    // validate each block in the new chain
+
+    const candidateBlocks = new Map<number, Block>();
+    const getCandidateBlock = async (height: number): Promise<Block | null> => {
+      const candidate = candidateBlocks.get(height);
+      if (candidate) return candidate;
+      return height <= commonAncestorHeight ? this.storage.getBlock(height) : null;
+    };
+    let accountStates = await this.recalculateStateFromHeight(0, commonAncestorHeight);
+
     for (let i = 0; i < newBlocks.length; i++) {
       const block = newBlocks[i];
-      const blockClass = block instanceof BlockClass ? block : BlockClass.fromObject(block);
-      
-      // validate block structure
+      const blockClass = BlockClass.fromObject(block);
       const structureValidation = blockClass.validate(this.hashAlgorithm);
-      if (!structureValidation.valid) {
-        return { valid: false, error: `Block ${block.index}: ${structureValidation.error}` };
+      if (!structureValidation.valid) return false;
+      const sizeValidation = blockClass.validateSize(this.config.maxBlockSize);
+      if (!sizeValidation.valid) return false;
+
+      const previousBlock = i === 0 ? ancestor : newBlocks[i - 1];
+      if (!blockClass.validatePreviousBlock(BlockClass.fromObject(previousBlock)).valid) return false;
+
+      const pastBlocks: BlockClass[] = [];
+      for (let height = Math.max(0, block.index - 11); height < block.index; height++) {
+        const pastBlock = await getCandidateBlock(height);
+        if (pastBlock) pastBlocks.push(BlockClass.fromObject(pastBlock));
       }
-      
-      // validate against previous block
-      const prevBlock = i === 0
-        ? await this.storage.getBlock(commonAncestorHeight)
-        : newBlocks[i - 1];
-      
-      if (!prevBlock) {
-        return { valid: false, error: `Block ${block.index}: Previous block not found` };
-      }
-      
-      const prevBlockClass = prevBlock instanceof BlockClass
-        ? prevBlock
-        : BlockClass.fromObject(prevBlock);
-      
-      const prevValidation = blockClass.validatePreviousBlock(prevBlockClass);
-      if (!prevValidation.valid) {
-        return { valid: false, error: `Block ${block.index}: ${prevValidation.error}` };
-      }
-      
-      // validate median time using correct past blocks
-      const pastBlocksForMedian = this.getPastBlocksForReorg(
-        ancestorBlocks,
-        newBlocks.slice(0, i),
-        11
+      if (!blockClass.validateMedianTime(pastBlocks).valid) return false;
+
+      const expectedDifficulty = await getDifficultyAdjustment(
+        block.index,
+        getCandidateBlock,
+        this.difficultyConfig
       );
-      
-      const medianValidation = blockClass.validateMedianTime(pastBlocksForMedian);
-      if (!medianValidation.valid) {
-        return { valid: false, error: `Block ${block.index}: ${medianValidation.error}` };
+      if (!blockClass.validateDifficulty(expectedDifficulty).valid) return false;
+
+      try {
+        const execution = await executeBlock(
+          block,
+          accountStates,
+          this.config,
+          this.getBlockReward(block.index)
+        );
+        if (block.stateRoot !== execution.stateRoot) return false;
+        accountStates = execution.accountStates;
+      } catch {
+        return false;
       }
-      
-      // validate difficulty
-      const expectedDifficulty = await this.getDifficulty(block.index);
-      const difficultyValidation = blockClass.validateDifficulty(expectedDifficulty);
-      if (!difficultyValidation.valid) {
-        return { valid: false, error: `Block ${block.index}: ${difficultyValidation.error}` };
-      }
-      
-      // validate coinbase
-      const blockReward = this.getBlockReward(block.index);
-      const coinbaseValidation = blockClass.validateCoinbase(blockReward);
-      if (!coinbaseValidation.valid) {
-        return { valid: false, error: `Block ${block.index}: ${coinbaseValidation.error}` };
-      }
+
+      candidateBlocks.set(block.index, block);
+      candidateCumulativeDifficulty += calculateBlockWork(block.difficulty);
     }
-    
-    return { valid: true };
-  }
-  
-  /**
-   * get past blocks for median time validation during reorganization
-   */
-  private getPastBlocksForReorg(
-    ancestorBlocks: BlockClass[],
-    newBlocksBefore: Block[],
-    count: number
-  ): BlockClass[] {
-    const allBlocks: BlockClass[] = [...ancestorBlocks];
-    
-    // add new blocks that come before current block
-    for (const block of newBlocksBefore) {
-      const blockClass = block instanceof BlockClass ? block : BlockClass.fromObject(block);
-      allBlocks.push(blockClass);
-    }
-    
-    // return last 'count' blocks
-    return allBlocks.slice(-count);
-  }
-  
-  /**
-   * add block during reorganization with special handling for median time
-   */
-  private async addBlockDuringReorg(
-    block: BlockClass,
-    previousNewBlocks: Block[]
-  ): Promise<ValidationResult> {
-    if (!this.isInitialized) {
-      throw new Error('Blockchain not initialized');
-    }
-    
-    logger.debug(`Adding block ${block.index} during reorganization`);
-    
-    // validate block structure
-    const structureValidation = block.validate(this.hashAlgorithm);
-    if (!structureValidation.valid) {
-      return structureValidation;
-    }
-    
-    // get previous block
-    const previousBlock = await this.storage.getBlock(block.index - 1);
-    if (!previousBlock) {
-      return { valid: false, error: 'Previous block not found' };
-    }
-    
-    const prevBlockClass = BlockClass.fromObject(previousBlock);
-    
-    // validate against previous block
-    const prevValidation = block.validatePreviousBlock(prevBlockClass);
-    if (!prevValidation.valid) {
-      return prevValidation;
-    }
-    
-    // for median time validation, we need to consider the new chain being built
-    // get past blocks including those from the new chain
-    const pastBlocks = await this.getPastBlocksForReorgAdd(previousNewBlocks, 11);
-    const medianValidation = block.validateMedianTime(pastBlocks);
-    if (!medianValidation.valid) {
-      return medianValidation;
-    }
-    
-    // validate difficulty
-    const expectedDifficulty = await this.getDifficulty(block.index);
-    const difficultyValidation = block.validateDifficulty(expectedDifficulty);
-    if (!difficultyValidation.valid) {
-      return difficultyValidation;
-    }
-    
-    // validate coinbase
-    const blockReward = this.getBlockReward(block.index);
-    const coinbaseValidation = block.validateCoinbase(blockReward);
-    if (!coinbaseValidation.valid) {
-      return coinbaseValidation;
-    }
-    
-    // validate all transactions
-    const txValidation = await this.validateBlockTransactions(block);
-    if (!txValidation.valid) {
-      return txValidation;
-    }
-    
-    // update cumulative difficulty
-    const currentCumulative = await this.storage.getCumulativeDifficulty();
-    const newCumulative = currentCumulative + BigInt(block.difficulty);
-    const accountStates = await this.calculateBlockStateChanges(block);
-    await this.storage.commitBlock({
-      block: block.toObject(),
-      accountStates: Array.from(accountStates, ([address, state]) => ({ address, state })),
-      cumulativeDifficulty: newCumulative,
-    });
-    
-    // update current height
-    this.currentHeight = block.index;
-    
-    logger.info(`Block ${block.index} added successfully during reorganization`);
-    
-    // emit event with block details for metrics recording
-    this.emit('block:added', block);
-    
-    return { valid: true };
-  }
-  
-  /**
-   * get past blocks during reorganization add phase
-   */
-  private async getPastBlocksForReorgAdd(
-    previousNewBlocks: Block[],
-    count: number
-  ): Promise<BlockClass[]> {
-    const blocks: BlockClass[] = [];
-    const startHeight = Math.max(0, this.currentHeight - count + 1);
-    
-    // first get blocks from storage up to current height
-    for (let height = startHeight; height <= this.currentHeight; height++) {
+
+    if (candidateCumulativeDifficulty <= expectedCumulativeDifficulty) return false;
+
+    const removedBlocks: Block[] = [];
+    for (let height = commonAncestorHeight + 1; height <= expectedTip.index; height++) {
       const block = await this.storage.getBlock(height);
-      if (block) {
-        blocks.push(BlockClass.fromObject(block));
-      }
+      if (block) removedBlocks.push(block);
     }
-    
-    // then add any new blocks that were already added during this reorg
-    for (const block of previousNewBlocks) {
-      if (block.index > this.currentHeight) {
-        const blockClass = block instanceof BlockClass ? block : BlockClass.fromObject(block);
-        blocks.push(blockClass);
+
+    try {
+      await this.storage.transitionCanonicalChain({
+        expectedTip: { height: expectedTip.index, hash: expectedTip.hash },
+        expectedCumulativeDifficulty,
+        ancestor: { height: ancestor.index, hash: ancestor.hash },
+        blocks: newBlocks,
+        accountStates: Array.from(accountStates, ([address, state]) => ({ address, state })),
+        cumulativeDifficulty: candidateCumulativeDifficulty,
+      });
+    } catch (error) {
+      if (error instanceof StaleChainTipError) {
+        this.currentHeight = error.actualTip.height;
+        return false;
       }
+      throw error;
     }
-    
-    // return last 'count' blocks
-    return blocks.slice(-count);
+
+    this.currentHeight = newBlocks.at(-1)!.index;
+    this.emitCommitted('chain:reorganized', {
+      ancestor,
+      removedBlocks,
+      addedBlocks: newBlocks,
+    });
+    for (const block of newBlocks) this.emitCommitted('block:added', BlockClass.fromObject(block));
+    logger.info(`Chain reorganization completed, new height=${this.currentHeight}`);
+    return true;
   }
   
   /**
@@ -949,34 +737,21 @@ export class Blockchain extends EventEmitter {
   ): Promise<Map<string, AccountState>> {
     logger.info(`Recalculating state from height ${startHeight} to ${endHeight}`);
     
-    // reset all account states
-    const accounts = new Map<string, AccountState>();
+    let accounts = new Map<string, AccountState>();
     
     // process all blocks up to end height
     for (let height = startHeight; height <= endHeight; height++) {
       const block = await this.storage.getBlock(height);
       if (!block) continue;
       
-      // process each transaction
-      for (const tx of block.transactions) {
-        // handle coinbase
-        if (tx.from === null) {
-          const recipientState = accounts.get(tx.to) || { balance: 0n, nonce: 0 };
-          recipientState.balance += tx.amount;
-          accounts.set(tx.to, recipientState);
-        } else {
-          // handle regular transaction
-          const senderState = accounts.get(tx.from) || { balance: 0n, nonce: 0 };
-          const recipientState = accounts.get(tx.to) || { balance: 0n, nonce: 0 };
-          
-          senderState.balance -= (tx.amount + tx.fee);
-          senderState.nonce = tx.nonce + 1;
-          recipientState.balance += tx.amount;
-          
-          accounts.set(tx.from, senderState);
-          accounts.set(tx.to, recipientState);
-        }
+      if (height === 0) {
+        if (block.stateRoot !== calculateStateRoot(accounts)) throw new Error('Invalid genesis state root');
+        continue;
       }
+
+      const execution = await executeBlock(block, accounts, this.config, this.getBlockReward(height));
+      if (block.stateRoot !== execution.stateRoot) throw new Error(`Invalid state root at height ${height}`);
+      accounts = execution.accountStates;
     }
     
     return accounts;
@@ -1032,6 +807,7 @@ export class Blockchain extends EventEmitter {
 
     // create coinbase transaction
     const coinbase = createCoinbaseTransaction(
+      this.config.chainId,
       minerAddress,
       blockReward,
       totalFees,
@@ -1079,11 +855,35 @@ export class Blockchain extends EventEmitter {
     return this.getBlockReward(blockHeight);
   }
 
+  private async withChainWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.chainWriteTail;
+    let release!: () => void;
+    this.chainWriteTail = new Promise(resolve => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  private emitCommitted(event: string, value: unknown): void {
+    try {
+      this.emit(event, value);
+    } catch (error) {
+      logger.error(`Committed ${event} listener failed`, error);
+    }
+  }
+
   /**
    * cleanup and close storage connection
    */
   async close(): Promise<void> {
-    await this.storage.close();
-    this.isInitialized = false;
+    await this.withChainWrite(async () => {
+      await this.storage.close();
+      this.isInitialized = false;
+    });
   }
 }

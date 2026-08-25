@@ -1,125 +1,50 @@
-# bolt blockchain implementation plan
+# bolt remediation plan
 
-current focus: production-ready blockchain with tcp networking, lmdb storage, and complete test coverage
+current focus: pass consensus, persistence, networking, dependency, and deployment release gates before adding protocol features.
 
-## @todo
+## status
 
-### production hardening
-- [ ] implement peer banning and reputation scoring
-- [ ] add dos protection mechanisms
-- [ ] implement partial chain validation
-- [ ] add deep reorganization limits (e.g., 100 blocks)
-- [ ] create automatic checkpoint system
-- [ ] implement memory pool expiration
+resolved audit findings:
 
-### scalability improvements
-- [ ] implement block pruning for light clients
-- [ ] add fast sync mode (state snapshots)
-- [ ] optimize lmdb with compression
-- [ ] implement bloom filters for spv
-- [ ] add transaction indexing options
-- [ ] create archival node mode
+- [x] bind transaction public keys to sender addresses
+- [x] require exactly one coinbase transaction at index zero
+- [x] enforce consensus block size limits
+- [x] consolidate storage adapter contracts
+- [x] make normal block commits atomic
+- [x] restore clean typechecking
+- [x] repair the test compose overlay
+- [x] enforce typecheck, test, and docker smoke ci gates
+- [x] replace vulnerable cryptography and kubo client dependencies
+- [x] bind canonical transaction signatures and hashes to chain identity
+- [x] execute block state transitions through one pure executor
+- [x] commit deterministic account state roots
+- [x] use deterministic genesis blocks and exact target-derived chainwork
+- [x] restrict consensus proof of work to sha-256
+- [x] make extension and reorganization expected-tip atomic transitions
+- [x] serialize canonical block admission
 
-### network enhancements
-- [ ] implement peer exchange protocol (pex)
-- [ ] add nat traversal (upnp/pmp)
-- [ ] create tor/i2p support
-- [ ] implement compact block relay
-- [ ] add fee estimation algorithm
-- [ ] create mempool synchronization improvements
+open release gates:
 
-### api expansion
-- [ ] websocket api for real-time updates
-- [ ] graphql api for complex queries
-- [ ] json-rpc 2.0 compatibility
-- [ ] stratum protocol for mining pools
-- [ ] block explorer api endpoints
-- [ ] wallet api with hd support
+- [ ] bind peer handshakes and traffic to chain identity
+- [ ] validate mempool transactions against canonical and pending account state
+- [ ] authenticate and bound tcp transport
+- [ ] relay transactions and synchronize by validated cumulative work
+- [ ] persist confirmed transaction indexes and mempool lifecycle state
+- [ ] harden api input, exposure, pagination, and metric labels
+- [ ] pin deployment inputs
+- [ ] pass real multi-node deployment tests
 
-### smart contract layer
-- [ ] design vm architecture
-- [ ] implement basic opcodes
-- [ ] create contract storage system
-- [ ] add gas metering
-- [ ] implement contract deployment
-- [ ] create standard token contracts
+## sequence
 
-## technical debt
+1. establish honest typecheck, unit, integration, and docker smoke gates
+2. replace vulnerable cryptography and kubo dependencies
+3. add chain-bound canonical transaction encoding
+4. unify block execution, state roots, deterministic genesis, and chainwork
+5. move all canonical writes behind one atomic storage transition
+6. unify mempool and block-template admission and lifecycle ownership
+7. authenticate and bound peer transport
+8. centralize protocol dispatch, relay, inventory, and synchronization
+9. remove obsolete peer http routes and harden remaining api routes
+10. complete deployment tests, reproducible builds, cleanup, and documentation
 
-### code improvements needed
-- [ ] add more comprehensive error types
-- [ ] improve test coverage for edge cases
-- [ ] optimize serialization/deserialization
-- [ ] reduce memory allocations in hot paths
-- [ ] implement zero-copy where possible
-
-### documentation needed
-initially we should utilize rust-doc (or rust-book?) for documentation and graduate later
-to something more robust or with better aesthetics.
-
-- [ ] api client examples
-- [ ] deployment guide
-- [ ] mining pool setup
-- [ ] performance tuning guide
-- [ ] security best practices
-
-## architecture decisions
-
-### why lmdb over redis
-- native bun integration
-- atomic transactions across databases
-- better performance for blockchain workloads
-- no external dependencies
-- built-in backup/recovery
-
-### why tcp over websockets
-- binary protocol efficiency
-- better backpressure handling
-- standard bitcoin-like protocol
-- easier debugging and monitoring
-- proven reliability
-
-### why ipfs for discovery only
-- separation of concerns
-- ipfs handles nat traversal
-- pubsub for peer announcements
-- tcp for actual data transfer
-- best of both worlds
-
-## metrics
-
-### current performance
-- sync speed: ~1000 blocks/minute
-- transaction throughput: 100+ tps
-- memory usage: <500mb per node
-- disk usage: ~1gb per 100k blocks
-- network bandwidth: <10mbps average
-
-## development guidelines
-
-### code style
-- use typescript with strict mode
-- prefer functional style where appropriate
-- use async/await over promises
-- minimize external dependencies
-- write tests for new features
-
-### commit messages
-- use conventional commits format
-- reference issue numbers
-- keep messages concise
-- group related changes
-
-### testing approach
-- write tests first when possible
-- test edge cases explicitly
-- use memory adapter for unit tests
-- use docker for integration tests
-- maintain high coverage
-
-## conclusion
-
-bolt has evolved from a proof-of-concept to a production-ready blockchain implementation. the recent protocol fixes and codebase cleanup have resulted in a stable, efficient, and maintainable system. with 368 passing tests and working multi-node synchronization, the foundation is solid for future enhancements.
-
-the focus now shifts to production hardening, scalability improvements, and expanding the api surface for broader adoption.
-
+Smart contracts and private transactions remain blocked until every release gate passes.

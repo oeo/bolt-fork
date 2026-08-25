@@ -56,6 +56,24 @@ export function bytesToHex(bytes: Uint8Array): string {
     .join('');
 }
 
+export function encodeCanonicalFields(fields: Array<string | Uint8Array>): Uint8Array {
+  const encoded = fields.map(field => typeof field === 'string' ? new TextEncoder().encode(field) : field);
+  const result = new Uint8Array(4 + encoded.reduce((size, field) => size + 4 + field.length, 0));
+  const view = new DataView(result.buffer);
+  let offset = 0;
+
+  view.setUint32(offset, encoded.length, false);
+  offset += 4;
+  for (const field of encoded) {
+    view.setUint32(offset, field.length, false);
+    offset += 4;
+    result.set(field, offset);
+    offset += field.length;
+  }
+
+  return result;
+}
+
 /**
  * serialize transaction to binary format
  */
@@ -112,8 +130,7 @@ export function createSortableKey(value: bigint, suffix?: string): Uint8Array {
  * bun-optimized block header serialization
  */
 export function serializeBlockHeader(header: any): Uint8Array {
-  // fixed size: 4 + 32 + 32 + 8 + 4 + 4 = 84 bytes
-  const buffer = new Uint8Array(84);
+  const buffer = new Uint8Array(116);
   const view = new DataView(buffer.buffer);
   
   let offset = 0;
@@ -130,6 +147,10 @@ export function serializeBlockHeader(header: any): Uint8Array {
   // merkle root (32 bytes)
   const merkleBytes = hexToBytes(header.merkleRoot || '0'.repeat(64));
   buffer.set(merkleBytes, offset);
+  offset += 32;
+
+  const stateBytes = hexToBytes(header.stateRoot || '0'.repeat(64));
+  buffer.set(stateBytes, offset);
   offset += 32;
   
   // timestamp (8 bytes)
@@ -158,6 +179,7 @@ export function deserializeBlockHeader(buffer: Uint8Array): any {
     index: view.getUint32(offset, false),
     previousHash: '',
     merkleRoot: '',
+    stateRoot: '',
     timestamp: 0,
     difficulty: 0,
     nonce: 0,
@@ -168,6 +190,9 @@ export function deserializeBlockHeader(buffer: Uint8Array): any {
   offset += 32;
   
   header.merkleRoot = bytesToHex(buffer.slice(offset, offset + 32));
+  offset += 32;
+
+  header.stateRoot = bytesToHex(buffer.slice(offset, offset + 32));
   offset += 32;
   
   header.timestamp = Number(view.getBigUint64(offset, false));

@@ -1,6 +1,7 @@
 import { Block } from '../types';
 import { BlockClass } from './block';
 import { getLogger } from '../utils/logger';
+import { calculateBlockWork } from './difficulty';
 
 const logger = getLogger(__filename);
 
@@ -67,7 +68,7 @@ export class ForkManager {
       const orphan = this.orphanBlocks.get(previousHash);
       if (orphan) {
         // create new fork from orphan chain
-        this.addFork(newBlock, BigInt(newBlock.difficulty), peerId);
+        this.addFork(newBlock, calculateBlockWork(newBlock.difficulty), peerId);
         return this.forks.get(newBlock.hash) || null;
       }
       return null;
@@ -77,7 +78,7 @@ export class ForkManager {
     fork.blocks.push(newBlock);
     fork.tipHash = newBlock.hash;
     fork.tipHeight = newBlock.index;
-    fork.cumulativeDifficulty += BigInt(newBlock.difficulty);
+    fork.cumulativeDifficulty += calculateBlockWork(newBlock.difficulty);
     fork.lastSeen = Date.now();
     if (peerId) fork.peerId = peerId;
     

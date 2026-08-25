@@ -84,9 +84,10 @@ export class LMDBStateStore {
    * batch update multiple accounts (for block processing)
    */
   async updateAccounts(accounts: Account[]): Promise<void> {
-    await this.lmdb.transaction(() => {
+    this.lmdb.transactionSync(() => {
       this.writeAccounts(accounts);
     });
+    for (const account of accounts) this.updateCache(account);
     
     logger.debug(`updated ${accounts.length} accounts`);
   }
@@ -94,8 +95,7 @@ export class LMDBStateStore {
   writeAccounts(accounts: Account[]): void {
     for (const account of accounts) {
       const serialized = this.serializeAccount(account);
-      this.lmdb.accounts.put(account.address, serialized);
-      this.updateCache(account);
+      this.lmdb.accounts.putSync(account.address, serialized);
     }
   }
 
@@ -191,24 +191,30 @@ export class LMDBStateStore {
     if (tx.from === null) throw new Error('Cannot apply coinbase as regular transaction');
     const senderAddress = tx.from;
 
-    await this.lmdb.transaction(async () => {
-      // get or create sender account
-      const sender = await this.getOrCreateAccount(senderAddress);
-      
-      // update sender
+    let sender!: Account;
+    let receiver: Account | undefined;
+    this.lmdb.transactionSync(() => {
+      const senderData = this.lmdb.accounts.get(senderAddress);
+      sender = senderData
+        ? this.deserializeAccount(senderData)
+        : { address: senderAddress, balance: 0n, nonce: 0 };
       sender.balance -= tx.amount + tx.fee;
       sender.nonce++;
       sender.lastBlockIndex = blockIndex;
-      await this.updateAccount(sender);
-      
-      // update receiver (if not a contract creation)
+      this.lmdb.accounts.putSync(sender.address, this.serializeAccount(sender));
+
       if (tx.to) {
-        const receiver = await this.getOrCreateAccount(tx.to);
+        const receiverData = this.lmdb.accounts.get(tx.to);
+        receiver = receiverData
+          ? this.deserializeAccount(receiverData)
+          : { address: tx.to, balance: 0n, nonce: 0 };
         receiver.balance += tx.amount;
         receiver.lastBlockIndex = blockIndex;
-        await this.updateAccount(receiver);
+        this.lmdb.accounts.putSync(receiver.address, this.serializeAccount(receiver));
       }
     });
+    this.updateCache(sender);
+    if (receiver) this.updateCache(receiver);
     
     logger.debug(`applied transaction ${tx.hash} to state`);
   }
@@ -217,10 +223,17 @@ export class LMDBStateStore {
    * apply a coinbase reward
    */
   async applyCoinbase(minerAddress: string, amount: bigint, blockIndex: number): Promise<void> {
-    const miner = await this.getOrCreateAccount(minerAddress);
-    miner.balance += amount;
-    miner.lastBlockIndex = blockIndex;
-    await this.updateAccount(miner);
+    let miner!: Account;
+    this.lmdb.transactionSync(() => {
+      const minerData = this.lmdb.accounts.get(minerAddress);
+      miner = minerData
+        ? this.deserializeAccount(minerData)
+        : { address: minerAddress, balance: 0n, nonce: 0 };
+      miner.balance += amount;
+      miner.lastBlockIndex = blockIndex;
+      this.lmdb.accounts.putSync(miner.address, this.serializeAccount(miner));
+    });
+    this.updateCache(miner);
     
     logger.debug(`applied coinbase reward ${amount} to ${minerAddress}`);
   }
@@ -322,19 +335,14 @@ export class LMDBStateStore {
    * restore from a state snapshot
    */
   async restoreSnapshot(snapshot: StateSnapshot): Promise<void> {
-    await this.lmdb.transaction(async () => {
-      // clear current state
-      await this.lmdb.accounts.clearAsync();
-      
-      // restore from snapshot
+    this.lmdb.transactionSync(() => {
+      this.lmdb.accounts.clearSync();
       for (const [address, account] of snapshot.accounts) {
         const serialized = this.serializeAccount(account);
-        this.lmdb.accounts.put(address, serialized);
+        this.lmdb.accounts.putSync(address, serialized);
       }
-      
-      // update metadata (convert numbers to strings)
-      this.lmdb.metadata.put('stateHeight', snapshot.blockHeight.toString());
-      this.lmdb.metadata.put('stateTimestamp', snapshot.timestamp.toString());
+      this.lmdb.metadata.putSync('stateHeight', snapshot.blockHeight.toString());
+      this.lmdb.metadata.putSync('stateTimestamp', snapshot.timestamp.toString());
     });
     
     // clear cache
@@ -354,6 +362,9 @@ export class LMDBStateStore {
 
   clearAccounts(): void {
     this.lmdb.accounts.clearSync();
+  }
+
+  clearCache(): void {
     this.accountCache.clear();
   }
 

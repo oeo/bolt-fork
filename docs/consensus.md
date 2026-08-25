@@ -1,221 +1,41 @@
-# bolt consensus mechanism
+# bolt consensus
 
-## overview
+bolt uses proof of work with account state. consensus follows the valid chain with the greatest cumulative work.
 
-bolt uses proof-of-work consensus based on cumulative difficulty (total work) rather than just chain length. this ensures the network converges on the chain that required the most computational work to produce.
+## block commitment
 
-## current implementation status
+each block hash commits to:
 
-### ✅ FULLY WORKING (2025-08-11)
-- basic proof-of-work mining
-- block validation and hash verification  
-- difficulty adjustment algorithm
-- multi-node mining
-- cumulative difficulty tracking
-- fork detection and management (ForkManager)
-- **ROBUST CHAIN REORGANIZATION** with pre-validation
-- **MEDIAN TIME VALIDATION FIXED** during reorganization
-- consensus based on cumulative work
-- deterministic tie-breaker (lexicographic hash comparison)  
-- full chain synchronization when forks detected
-- network convergence to single chain
-- complete chain pre-validation before reorganization attempts
-- specialized block validation during reorganization process
-- comprehensive reorganization test coverage
-- **VERIFIED: All consensus tests passing with robust reorganization**
+- height
+- timestamp
+- previous block hash
+- transaction merkle root
+- account state root
+- difficulty
+- proof-of-work nonce
 
-### partially implemented
-- headers-first synchronization
-- peer reputation scoring
-- partial chain download efficiency
+sha-256 is the only consensus hash.
 
-### remaining issues
-- peer cumulative difficulty sometimes shows as "undefined" in logs
-- need retry logic for failed peer info fetches
-- state management could be optimized for reorganization
+## state transition
 
-### not yet implemented
-- deep reorganization limits
-- checkpoint system for finality
-- parallel block download from peers
+`executeBlock()` is the state transition function. it receives a block, complete parent account state, chain configuration, and block reward. it performs no storage writes.
 
-## the consensus problem (SOLVED!)
+execution validates transaction structure, chain id, address prefixes, signatures, nonce order, balances, coinbase position, and coinbase value. output contains complete resulting account state and its root. storage commits output only after block validation succeeds.
 
-when multiple miners find blocks at similar times, they create competing chains (forks):
+state roots sort addresses by ascii value. each address, balance, and nonce uses length-prefixed utf-8 encoding under the `bolt:state:v1` domain before sha-256 hashing.
 
-```
-Genesis ── Block 1 ── Block 2 ──┬── Block 3a (miner 1) ── Block 4a ── Block 5a
-                                 │
-                                 └── Block 3b (miner 2) ── Block 4b ── Block 5b
-```
+## chainwork
 
-~~currently, each miner continues on its own fork and rejects blocks from the other fork. this prevents consensus.~~
+block work is calculated from the proof-of-work target. cumulative work is the sum of exact block work, not the sum of displayed difficulty values. equal-work forks use the lower tip hash as deterministic tie-breaker where fork comparison has both hashes.
 
-**UPDATE: This problem is now SOLVED!** Nodes successfully detect forks, compare cumulative difficulty, and reorganize to follow the chain with most work.
+## genesis
 
-## the solution: cumulative proof-of-work
+genesis uses fixed millisecond timestamps, configured nonce and difficulty, empty transaction merkle root, and empty account state root. persisted stores carry storage version and chain id metadata. nodes reject data from older schemas or another chain.
 
-### consensus rule
-**always follow the chain with the most cumulative work (cumulative difficulty)**
+## reorganization
 
-cumulative work = sum of difficulty of all blocks in the chain
+reorganization rebuilds account state at the common ancestor and executes the full replacement branch before persistence. median time and difficulty use the candidate branch history. one canonical storage transition then replaces detached blocks, block indexes, complete account state, tip metadata, and cumulative work.
 
-### why cumulative difficulty?
-- prevents attackers from creating long chains with low difficulty
-- ensures the "best" chain is the one with most computational work
-- naturally resolves forks as one chain accumulates more work
+the storage transition compares expected tip hash, height, and cumulative work inside the same transaction as all writes. stale writers cannot overwrite a newer chain. block admission uses one process-local write queue, while storage compare-and-swap protects shared persistence.
 
-## implementation details
-
-### phase 1: cumulative difficulty tracking (implemented)
-the blockchain now tracks cumulative difficulty in the storage layer:
-- `getCumulativeDifficulty()` returns total work done
-- `updateCumulativeDifficulty()` updates after each block
-- used for chain selection during sync and reorganization
-
-### phase 2: fork management (implemented)
-the `ForkManager` class tracks competing chains:
-- stores multiple chain tips and their cumulative work
-- manages orphan blocks waiting for parents
-- determines which fork has the most cumulative work
-- triggers reorganization when better chain is found
-
-### phase 3: chain reorganization (fully implemented)
-the blockchain now has robust automatic reorganization when a better chain is found:
-
-1. **detect fork**: `handleCompetingBlock()` detects blocks from different chains
-2. **track fork**: `ForkManager` maintains competing chain state
-3. **compare work**: cumulative difficulty determines best chain
-4. **pre-validate**: `validateReorgChain()` validates entire competing chain before reorganization
-5. **reorganize**: `reorganize()` switches to chain with more work using specialized validation
-6. **update state**: `recalculateStateFromHeight()` rebuilds account states
-
-the advanced reorganization process:
-- **pre-validation**: validates entire competing chain before attempting reorganization
-- **median time fix**: uses correct past blocks for median time validation during reorg
-- **specialized block addition**: `addBlockDuringReorg()` handles blocks with proper context
-- **atomic operation**: either entire reorganization succeeds or fails cleanly
-- finds common ancestor between chains
-- reverts blocks back to common point
-- applies new blocks from better chain with proper validation
-- re-adds valid transactions to mempool
-- emits events for monitoring
-
-## fork resolution example
-
-### scenario
-two miners find blocks simultaneously:
-
-```
-Time 0: Both miners at height 10
-Time 1: Miner A finds block 11a (difficulty 1000)
-Time 1: Miner B finds block 11b (difficulty 1000)
-Time 2: Miner A finds block 12a (difficulty 1000)
-Time 3: Miner B receives block 12a
-```
-
-### resolution
-1. miner B compares chains:
-   - chain A: cumulative difficulty = 12000
-   - chain B: cumulative difficulty = 11000
-2. miner B reorganizes to follow chain A
-3. miner B starts mining on block 12a
-4. network converges on chain A
-
-## safety mechanisms
-
-### maximum reorganization depth
-limit how deep a reorganization can go (e.g., 100 blocks):
-```typescript
-const MAX_REORG_DEPTH = 100;
-
-if (reorgDepth > MAX_REORG_DEPTH) {
-  throw new Error('Reorganization too deep, possible attack');
-}
-```
-
-### checkpoint system
-finalize blocks after certain depth:
-```typescript
-const FINALITY_DEPTH = 1000;
-
-function isFinalized(block: Block): boolean {
-  return currentHeight - block.height > FINALITY_DEPTH;
-}
-```
-
-### fork monitoring
-track and log all reorganizations:
-```typescript
-interface ReorgEvent {
-  timestamp: number;
-  depth: number;
-  oldTip: string;
-  newTip: string;
-  cumulativeWorkDiff: bigint;
-}
-```
-
-## attack resistance
-
-### 51% attack
-- attacker needs majority of network hashpower
-- even with 51%, can only reorg recent blocks (max depth limit)
-- older blocks protected by checkpoint system
-
-### selfish mining
-- withholding blocks gives no advantage
-- network follows most work, not first seen
-- orphan blocks waste attacker's resources
-
-### long-range attacks
-- checkpoint system prevents deep reorganizations
-- nodes reject reorgs beyond maximum depth
-
-## current behavior
-
-1. **temporary forks are normal**: when miners find blocks simultaneously
-2. **quick convergence**: forks resolve within 2-3 blocks
-3. **automatic resolution**: nodes switch to best chain without intervention
-4. **network consensus**: all nodes eventually agree on same chain
-
-## metrics for success
-
-- fork frequency: < 10% of blocks cause forks
-- fork resolution time: < 3 blocks
-- reorganization depth: typically 1-2 blocks
-- consensus failures: 0 during normal operation
-- network convergence: 100% within 10 blocks
-
-## implementation priority
-
-1. **critical**: cumulative difficulty tracking
-2. **critical**: chain comparison logic
-3. **critical**: basic reorganization
-4. **important**: safety mechanisms
-5. **important**: fork monitoring
-6. **nice-to-have**: advanced optimizations
-
-## testing strategy
-
-### unit tests
-- cumulative difficulty calculation
-- chain comparison logic
-- state reversion mechanisms
-
-### integration tests
-- two-miner fork resolution
-- three-way fork handling
-- deep reorganization limits
-
-### end-to-end tests
-- full network consensus
-- partition recovery
-- attack simulations
-
-## references
-
-- bitcoin consensus rules
-- ethereum's ghost protocol (for context)
-- proof-of-work security analysis
-- selfish mining research papers
+bounded reorganization depth, checkpoints, and finalized blocks are not implemented yet.

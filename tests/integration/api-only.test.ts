@@ -106,8 +106,8 @@ describe('API Server Integration', () => {
 
   test('should submit valid transaction', async () => {
     // create test accounts
-    const alice = generateAddress();
-    const bob = generateAddress();
+    const alice = generateAddress(chainConfig.addressPrefix);
+    const bob = generateAddress(chainConfig.addressPrefix);
     
     // give alice some balance
     await storage.updateAccountState(alice.address, {
@@ -117,6 +117,7 @@ describe('API Server Integration', () => {
 
     // create transaction (from, to, amount, nonce, fee, timestamp)
     const tx = new TransactionClass(
+      chainConfig.chainId,
       alice.address,
       bob.address,
       1_000_000_000n, // 10 BOLT amount
@@ -146,11 +147,12 @@ describe('API Server Integration', () => {
   });
 
   test('should reject invalid transaction', async () => {
-    const alice = generateAddress();
-    const bob = generateAddress();
+    const alice = generateAddress(chainConfig.addressPrefix);
+    const bob = generateAddress(chainConfig.addressPrefix);
     
     // alice has no balance
     const tx = new TransactionClass(
+      chainConfig.chainId,
       alice.address,
       bob.address,
       1_000_000_000n, // amount
@@ -172,7 +174,7 @@ describe('API Server Integration', () => {
   });
 
   test('should get account balance', async () => {
-    const alice = generateAddress();
+    const alice = generateAddress(chainConfig.addressPrefix);
     
     await storage.updateAccountState(alice.address, {
       balance: 5_000_000_000n, // 50 BOLT
@@ -189,7 +191,7 @@ describe('API Server Integration', () => {
   });
 
   test('should get account nonce', async () => {
-    const alice = generateAddress();
+    const alice = generateAddress(chainConfig.addressPrefix);
     
     await storage.updateAccountState(alice.address, {
       balance: 1_000_000_000n,
@@ -206,8 +208,8 @@ describe('API Server Integration', () => {
 
   test('should get transaction by hash', async () => {
     // add a transaction to mempool
-    const alice = generateAddress();
-    const bob = generateAddress();
+    const alice = generateAddress(chainConfig.addressPrefix);
+    const bob = generateAddress(chainConfig.addressPrefix);
     
     await storage.updateAccountState(alice.address, {
       balance: 10_000_000_000n,
@@ -215,6 +217,7 @@ describe('API Server Integration', () => {
     });
 
     const tx = new TransactionClass(
+      chainConfig.chainId,
       alice.address,
       bob.address,
       100_000_000n, // 1 BOLT amount

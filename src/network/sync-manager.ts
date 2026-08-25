@@ -4,7 +4,7 @@ import type { Blockchain } from '../core/blockchain';
 import type { Block } from '../core/block';
 import { BlockClass } from '../core/block';
 import type { ConnectionManager } from './connection-manager';
-import type { Protocol } from './protocol';
+import { PROTOCOL_VERSION, type Protocol } from './protocol';
 import type { PeerDiscoveryService, PeerEndpoint } from './peer-discovery';
 
 const logger = getLogger(__filename);
@@ -305,6 +305,11 @@ export class SyncManager extends EventEmitter {
    */
   private handleVersion(peerId: string, version: any): void {
     logger.info(`received version from ${peerId}: height=${version.startHeight}`);
+
+    if (version.version !== PROTOCOL_VERSION) {
+      this.config.connectionManager.disconnect(peerId, `unsupported protocol version ${version.version}`);
+      return;
+    }
     
     // update peer info
     this.config.connectionManager.updatePeerInfo(peerId, {
@@ -458,6 +463,7 @@ export class SyncManager extends EventEmitter {
           previousHash: block.previousHash,
           timestamp: block.timestamp,
           merkleRoot: block.merkleRoot,
+          stateRoot: block.stateRoot,
           difficulty: block.difficulty,
           nonce: block.nonce
         });
@@ -564,7 +570,7 @@ export class SyncManager extends EventEmitter {
    */
   private async sendVersion(peerId: string): Promise<void> {
     const version = {
-      version: 1,
+      version: PROTOCOL_VERSION,
       services: 1n, // full node
       timestamp: Date.now(),
       addrRecv: 'peer',

@@ -9,6 +9,7 @@ import {
   validateBlockDifficulty,
   estimateTimeToAdjustment,
   calculateCumulativeDifficulty,
+  calculateBlockWork,
   formatDifficulty,
   DEFAULT_DIFFICULTY_CONFIG,
   DifficultyConfig
@@ -294,7 +295,7 @@ describe('Difficulty Adjustment', () => {
   });
   
   describe('calculateCumulativeDifficulty', () => {
-    it('should sum difficulties', () => {
+    it('should sum exact block work', () => {
       const blocks = [
         new BlockClass(0, 0, '', [], 10, 'test'),
         new BlockClass(1, 0, '', [], 20, 'test'),
@@ -302,12 +303,26 @@ describe('Difficulty Adjustment', () => {
       ];
       
       const cumulative = calculateCumulativeDifficulty(blocks);
-      expect(cumulative).toBe(60n);
+      expect(cumulative).toBe(57n);
     });
     
     it('should handle empty array', () => {
       const cumulative = calculateCumulativeDifficulty([]);
       expect(cumulative).toBe(0n);
+    });
+  });
+
+  describe('calculateBlockWork', () => {
+    it('should derive work from the proof-of-work target', () => {
+      expect(calculateBlockWork(1)).toBe(1n);
+      expect(calculateBlockWork(2)).toBe(2n);
+      expect(calculateBlockWork(3)).toBe(2n);
+      expect(calculateBlockWork(100000)).toBe(99999n);
+    });
+
+    it('should reject invalid difficulty', () => {
+      expect(() => calculateBlockWork(0)).toThrow('Invalid difficulty');
+      expect(() => calculateBlockWork(1.5)).toThrow('Invalid difficulty');
     });
   });
   

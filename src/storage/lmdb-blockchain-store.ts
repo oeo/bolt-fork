@@ -10,6 +10,7 @@ interface BlockHeader {
   previousHash: string;
   timestamp: number;
   merkleRoot: string;
+  stateRoot: string;
   difficulty: number;
   nonce: number;
   hash: string;
@@ -37,7 +38,7 @@ export class LMDBBlockchainStore {
     const serialized = this.serializeBlock(block);
     const header = this.extractHeader(block);
     
-    await this.lmdb.transaction(() => {
+    this.lmdb.transactionSync(() => {
       this.writeBlock(block, serialized, header);
     });
     
@@ -51,18 +52,18 @@ export class LMDBBlockchainStore {
       // store full block (convert index to buffer for key)
       const indexBuffer = Buffer.allocUnsafe(4);
       indexBuffer.writeUInt32BE(block.index, 0);
-      this.lmdb.blocks.put(indexBuffer, serialized);
+      this.lmdb.blocks.putSync(indexBuffer, serialized);
       
       // store block index (hash -> height, convert height to buffer)
       const heightBuffer = Buffer.allocUnsafe(4);
       heightBuffer.writeUInt32BE(block.index, 0);
-      this.lmdb.blockIndex.put(
+      this.lmdb.blockIndex.putSync(
         Buffer.from(block.hash, 'hex'),
         heightBuffer
       );
       
       // store header separately for fast sync
-      this.lmdb.blockHeaders.put(
+      this.lmdb.blockHeaders.putSync(
         indexBuffer,
         this.serializeHeader(header)
       );
@@ -71,8 +72,8 @@ export class LMDBBlockchainStore {
       const currentHeight = this.lmdb.metadata.get('chainHeight');
       const currentHeightNum = currentHeight ? parseInt(currentHeight) : -1;
       if (block.index > currentHeightNum) {
-        this.lmdb.metadata.put('chainHeight', block.index.toString());
-        this.lmdb.metadata.put('chainTip', block.hash);
+        this.lmdb.metadata.putSync('chainHeight', block.index.toString());
+        this.lmdb.metadata.putSync('chainTip', block.hash);
       }
   }
 
@@ -185,9 +186,10 @@ export class LMDBBlockchainStore {
    * remove blocks above a certain height (for reorg)
    */
   async removeBlocksAbove(height: number): Promise<void> {
-    await this.lmdb.transaction(() => {
+    this.lmdb.transactionSync(() => {
       this.writeRemoveBlocksAbove(height);
     });
+    this.clearCache();
     
     logger.info(`removed ${await this.getHeight() - height} blocks above height ${height}`);
   }
@@ -204,20 +206,23 @@ export class LMDBBlockchainStore {
     for (const block of blocksToRemove) {
       const indexBuffer = Buffer.allocUnsafe(4);
       indexBuffer.writeUInt32BE(block.index, 0);
-      this.lmdb.blocks.remove(indexBuffer);
-      this.lmdb.blockIndex.remove(Buffer.from(block.hash, 'hex'));
-      this.lmdb.blockHeaders.remove(indexBuffer);
-      this.recentBlocks.delete(block.index);
+      this.lmdb.blocks.removeSync(indexBuffer);
+      this.lmdb.blockIndex.removeSync(Buffer.from(block.hash, 'hex'));
+      this.lmdb.blockHeaders.removeSync(indexBuffer);
     }
 
-    this.lmdb.metadata.put('chainHeight', height.toString());
+    this.lmdb.metadata.putSync('chainHeight', height.toString());
+    if (height < 0) {
+      this.lmdb.metadata.removeSync('chainTip');
+      return;
+    }
     const tipKey = Buffer.allocUnsafe(4);
     tipKey.writeUInt32BE(height, 0);
     const tipData = this.lmdb.blocks.get(tipKey);
     if (tipData) {
-      this.lmdb.metadata.put('chainTip', this.deserializeBlock(tipData).hash);
+      this.lmdb.metadata.putSync('chainTip', this.deserializeBlock(tipData).hash);
     } else {
-      this.lmdb.metadata.remove('chainTip');
+      this.lmdb.metadata.removeSync('chainTip');
     }
   }
 
@@ -270,6 +275,7 @@ export class LMDBBlockchainStore {
       previousHash: block.previousHash,
       timestamp: block.timestamp,
       merkleRoot: block.merkleRoot,
+      stateRoot: block.stateRoot,
       difficulty: block.difficulty,
       nonce: block.nonce,
       hash: block.hash,
@@ -293,5 +299,16 @@ export class LMDBBlockchainStore {
       const oldestHeight = Math.min(...this.recentBlocks.keys());
       this.recentBlocks.delete(oldestHeight);
     }
+  }
+
+  readBlock(height: number): Block | null {
+    const key = Buffer.allocUnsafe(4);
+    key.writeUInt32BE(height, 0);
+    const data = this.lmdb.blocks.get(key);
+    return data ? this.deserializeBlock(data) : null;
+  }
+
+  clearCache(): void {
+    this.recentBlocks.clear();
   }
 }

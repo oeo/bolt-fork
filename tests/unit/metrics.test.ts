@@ -23,7 +23,7 @@ describe('Metrics Service', async () => {
     blockchain = new Blockchain(storage, chainConfig);
     await blockchain.initialize();
     
-    mempool = new Mempool(storage);
+    mempool = new Mempool(storage, chainConfig);
     await mempool.initialize();
     
     // connect to metrics

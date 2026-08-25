@@ -3,9 +3,11 @@ import { ForkManager } from '../../src/core/fork-manager';
 import { BlockClass } from '../../src/core/block';
 import { Blockchain } from '../../src/core/blockchain';
 import { MemoryAdapter } from '../../src/storage/memory';
-import { testnet } from '../../src/config/chains/testnet';
+import { testnet as testnetConfig } from '../../src/config/chains/testnet';
 import { createCoinbaseTransaction } from '../../src/core/transaction';
 import { generateAddress } from '../../src/crypto/address';
+
+const testnet = { ...testnetConfig, initialDifficulty: 1 };
 
 describe('consensus mechanism', () => {
   
@@ -122,7 +124,7 @@ describe('consensus mechanism', () => {
       
       expect(updatedFork).toBeDefined();
       expect(updatedFork?.tipHeight).toBe(11);
-      expect(updatedFork?.cumulativeDifficulty).toBe(115n); // 100 + 15
+      expect(updatedFork?.cumulativeDifficulty).toBe(114n);
       expect(updatedFork?.blocks.length).toBe(2);
     });
     
@@ -189,7 +191,7 @@ describe('consensus mechanism', () => {
       expect(genesis).toBeDefined();
       
       // create first block
-      const coinbase1 = createCoinbaseTransaction(miner1Address, testnet.initialReward, 0n);
+      const coinbase1 = createCoinbaseTransaction(testnet.chainId, miner1Address, testnet.initialReward, 0n);
       const block1 = new BlockClass(
         1,
         Date.now(),
@@ -198,6 +200,7 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner1'
       );
+      await blockchain.prepareBlock(block1);
       block1.mine();
       
       // add first block
@@ -208,7 +211,7 @@ describe('consensus mechanism', () => {
       expect(result1.valid).toBe(true);
       
       // create competing block at same height
-      const coinbase2 = createCoinbaseTransaction(miner2Address, testnet.initialReward, 0n);
+      const coinbase2 = createCoinbaseTransaction(testnet.chainId, miner2Address, testnet.initialReward, 0n);
       const competingBlock = new BlockClass(
         1,
         Date.now(),
@@ -217,6 +220,7 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner2'
       );
+      await blockchain.prepareBlock(competingBlock);
       competingBlock.mine();
       
       // try to add competing block
@@ -226,6 +230,40 @@ describe('consensus mechanism', () => {
       expect(result.valid).toBe(false);
       expect(result.error).toContain('less work');
     });
+
+    test('should serialize competing block acceptance', async () => {
+      const genesis = await blockchain.getLatestBlock();
+      const blocks = await Promise.all([miner1Address, miner2Address].map(async (address, index) => {
+        const coinbase = createCoinbaseTransaction(
+          testnet.chainId,
+          address,
+          testnet.initialReward,
+          0n,
+          Date.now() + index
+        );
+        const block = new BlockClass(
+          1,
+          Date.now() + index,
+          genesis!.hash,
+          [coinbase],
+          testnet.initialDifficulty
+        );
+        await blockchain.prepareBlock(block);
+        block.mine();
+        return block;
+      }));
+      let committedEvents = 0;
+      blockchain.on('block:added', () => committedEvents++);
+
+      const results = await Promise.all(blocks.map(block => blockchain.addBlock(block)));
+
+      expect(results.filter(result => result.valid)).toHaveLength(1);
+      expect(await blockchain.getHeight()).toBe(1);
+      expect(committedEvents).toBe(1);
+      expect(
+        await blockchain.getBalance(miner1Address) + await blockchain.getBalance(miner2Address)
+      ).toBe(testnet.initialReward);
+    });
     
     test('should handle fork with more blocks', async () => {
       // get genesis
@@ -233,7 +271,7 @@ describe('consensus mechanism', () => {
       expect(genesis).toBeDefined();
       
       // create first block on our chain
-      const coinbase1 = createCoinbaseTransaction(miner1Address, testnet.initialReward, 0n);
+      const coinbase1 = createCoinbaseTransaction(testnet.chainId, miner1Address, testnet.initialReward, 0n);
       const block1 = new BlockClass(
         1,
         Date.now(),
@@ -242,6 +280,7 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner1'
       );
+      await blockchain.prepareBlock(block1);
       block1.mine();
       
       // add first block
@@ -252,7 +291,7 @@ describe('consensus mechanism', () => {
       expect(result1.valid).toBe(true);
       
       // create competing fork with TWO blocks (more cumulative work)
-      const coinbase2a = createCoinbaseTransaction(miner2Address, testnet.initialReward, 0n);
+      const coinbase2a = createCoinbaseTransaction(testnet.chainId, miner2Address, testnet.initialReward, 0n);
       const competingBlock1 = new BlockClass(
         1,
         Date.now() + 1000,
@@ -261,10 +300,11 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner2'
       );
+      await blockchain.prepareBlock(competingBlock1);
       competingBlock1.mine();
       
       // second block on competing fork
-      const coinbase2b = createCoinbaseTransaction(miner2Address, testnet.initialReward, 0n);
+      const coinbase2b = createCoinbaseTransaction(testnet.chainId, miner2Address, testnet.initialReward, 0n);
       const competingBlock2 = new BlockClass(
         2,
         Date.now() + 2000,
@@ -288,7 +328,7 @@ describe('consensus mechanism', () => {
     
     test('should handle orphan blocks', async () => {
       // create orphan block (unknown parent)
-      const coinbase = createCoinbaseTransaction(miner1Address, testnet.initialReward, 0n);
+      const coinbase = createCoinbaseTransaction(testnet.chainId, miner1Address, testnet.initialReward, 0n);
       const orphanBlock = new BlockClass(
         10,
         Date.now(),
@@ -297,6 +337,7 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner1'
       );
+      await blockchain.prepareBlock(orphanBlock);
       orphanBlock.mine();
       
       const result = await blockchain.handleCompetingBlock(orphanBlock);
@@ -334,7 +375,7 @@ describe('consensus mechanism', () => {
       const genesis = await blockchain.getLatestBlock();
       
       // add a block
-      const coinbase1 = createCoinbaseTransaction(miner1Address, testnet.initialReward, 0n);
+      const coinbase1 = createCoinbaseTransaction(testnet.chainId, miner1Address, testnet.initialReward, 0n);
       const block1 = new BlockClass(
         1,
         Date.now(),
@@ -343,6 +384,7 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner1'
       );
+      await blockchain.prepareBlock(block1);
       block1.mine();
       
       const result1 = await blockchain.addBlock(block1);
@@ -356,7 +398,7 @@ describe('consensus mechanism', () => {
       expect(cumulative).toBe(BigInt(testnet.initialDifficulty * 2));
       
       // add another block
-      const coinbase2 = createCoinbaseTransaction(miner2Address, testnet.initialReward, 0n);
+      const coinbase2 = createCoinbaseTransaction(testnet.chainId, miner2Address, testnet.initialReward, 0n);
       const block2 = new BlockClass(
         2,
         Date.now() + 1000, // ensure timestamp is after block1
@@ -365,6 +407,7 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner2'
       );
+      await blockchain.prepareBlock(block2);
       block2.mine();
       
       const result2 = await blockchain.addBlock(block2);
@@ -397,8 +440,8 @@ describe('consensus mechanism', () => {
   describe('median time validation during reorganization', () => {
     let blockchain: Blockchain;
     let storage: MemoryAdapter;
-    const miner1Address = generateAddress().address;
-    const miner2Address = generateAddress().address;
+    const miner1Address = generateAddress(testnet.addressPrefix).address;
+    const miner2Address = generateAddress(testnet.addressPrefix).address;
     
     beforeEach(async () => {
       storage = new MemoryAdapter();
@@ -417,7 +460,7 @@ describe('consensus mechanism', () => {
       
       // create main chain blocks with proper timestamps
       for (let i = 1; i <= 5; i++) {
-        const coinbase = createCoinbaseTransaction(miner1Address, testnet.initialReward, 0n);
+        const coinbase = createCoinbaseTransaction(testnet.chainId, miner1Address, testnet.initialReward, 0n);
         const block = new BlockClass(
           i,
           baseTimestamp + (i * 1000), // increasing timestamps
@@ -426,6 +469,7 @@ describe('consensus mechanism', () => {
           testnet.initialDifficulty,
             'miner1'
         );
+        await blockchain.prepareBlock(block);
         block.mine();
         
         const result = await blockchain.addBlock(block);
@@ -438,14 +482,18 @@ describe('consensus mechanism', () => {
       
       // create competing fork from block 3 with 3 blocks (total height 6)
       const block3 = await blockchain.getBlock(3);
+      const displacedBlock = await blockchain.getBlock(4);
       expect(block3).toBeDefined();
       
       const forkBlocks: BlockClass[] = [];
       previousHash = block3!.hash;
+      let forkStates = new Map([
+        [miner1Address, { balance: testnet.initialReward * 3n, nonce: 0 }]
+      ]);
       
       // create fork blocks with valid median time
       for (let i = 4; i <= 6; i++) {
-        const coinbase = createCoinbaseTransaction(miner2Address, testnet.initialReward, 0n);
+        const coinbase = createCoinbaseTransaction(testnet.chainId, miner2Address, testnet.initialReward, 0n);
         const block = new BlockClass(
           i,
           baseTimestamp + (i * 1100), // slightly different timestamps but still valid
@@ -454,6 +502,7 @@ describe('consensus mechanism', () => {
           testnet.initialDifficulty,
             'miner2'
         );
+        forkStates = await blockchain.prepareBlock(block, forkStates);
         block.mine();
         forkBlocks.push(block);
         previousHash = block.hash;
@@ -472,6 +521,10 @@ describe('consensus mechanism', () => {
       // verify the tip is from the fork
       const tip = await blockchain.getLatestBlock();
       expect(tip?.hash).toBe(forkBlocks[2].hash);
+      expect(await storage.getBlockByHash(displacedBlock!.hash)).toBeNull();
+      expect(await blockchain.getBalance(miner1Address)).toBe(testnet.initialReward * 3n);
+      expect(await blockchain.getBalance(miner2Address)).toBe(testnet.initialReward * 3n);
+      expect(await blockchain.getCumulativeDifficulty()).toBe(7n);
     });
     
     test('should reject reorganization with invalid median time', async () => {
@@ -484,7 +537,7 @@ describe('consensus mechanism', () => {
       
       // create main chain blocks
       for (let i = 1; i <= 5; i++) {
-        const coinbase = createCoinbaseTransaction(miner1Address, testnet.initialReward, 0n);
+        const coinbase = createCoinbaseTransaction(testnet.chainId, miner1Address, testnet.initialReward, 0n);
         const block = new BlockClass(
           i,
           baseTimestamp + (i * 1000),
@@ -493,6 +546,7 @@ describe('consensus mechanism', () => {
           testnet.initialDifficulty,
             'miner1'
         );
+        await blockchain.prepareBlock(block);
         block.mine();
         
         const result = await blockchain.addBlock(block);
@@ -509,9 +563,12 @@ describe('consensus mechanism', () => {
       
       const forkBlocks: BlockClass[] = [];
       previousHash = block3!.hash;
+      let forkStates = new Map([
+        [miner1Address, { balance: testnet.initialReward * 3n, nonce: 0 }]
+      ]);
       
       // create first fork block with valid time
-      const coinbase1 = createCoinbaseTransaction(miner2Address, testnet.initialReward, 0n);
+      const coinbase1 = createCoinbaseTransaction(testnet.chainId, miner2Address, testnet.initialReward, 0n);
       const forkBlock1 = new BlockClass(
         4,
         baseTimestamp + 4100,
@@ -520,11 +577,12 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner2'
       );
+      forkStates = await blockchain.prepareBlock(forkBlock1, forkStates);
       forkBlock1.mine();
       forkBlocks.push(forkBlock1);
       
       // create second fork block with timestamp that violates median time
-      const coinbase2 = createCoinbaseTransaction(miner2Address, testnet.initialReward, 0n);
+      const coinbase2 = createCoinbaseTransaction(testnet.chainId, miner2Address, testnet.initialReward, 0n);
       const forkBlock2 = new BlockClass(
         5,
         baseTimestamp - 10000, // way in the past, violates median time
@@ -533,6 +591,7 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner2'
       );
+      await blockchain.prepareBlock(forkBlock2, forkStates);
       forkBlock2.mine();
       forkBlocks.push(forkBlock2);
       

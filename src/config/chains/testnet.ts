@@ -32,7 +32,7 @@ export const testnet: ChainConfig = {
   addressPrefix: 0x6f,  // addresses start with 'm' or 'n' (testnet)
   
   // genesis
-  genesisTimestamp: 1700000000,
+  genesisTimestamp: 1_700_000_000_000,
   genesisNonce: 0,
   genesisMemo: 'bolt testnet genesis',
   

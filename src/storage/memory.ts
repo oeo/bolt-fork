@@ -1,4 +1,4 @@
-import { StorageAdapter, BlockCommit, ChainRewind } from './adapter';
+import { CanonicalTransition, StaleChainTipError, StorageAdapter } from './adapter';
 import { Block, Transaction, AccountState } from '../types';
 import { getLogger } from '../utils/logger';
 
@@ -87,47 +87,103 @@ export class MemoryAdapter extends StorageAdapter {
     logger.debug(`Saved block ${block.index} with hash ${block.hash}`);
   }
 
-  async commitBlock({ block, accountStates, cumulativeDifficulty }: BlockCommit): Promise<void> {
+  async transitionCanonicalChain({
+    expectedTip,
+    expectedCumulativeDifficulty,
+    ancestor,
+    blocks,
+    accountStates,
+    cumulativeDifficulty,
+  }: CanonicalTransition): Promise<void> {
     this.checkConnection();
-    await this.saveBlock(block);
-    for (const tx of block.transactions) await this.saveTransaction(tx);
-    for (const { address, state } of accountStates) {
-      await this.updateAccountState(address, state);
+    if (cumulativeDifficulty < 0n) throw new Error('Invalid cumulative difficulty');
+    const actualTip = { height: this.chainHeight, hash: this.latestBlock?.hash ?? null };
+    if (
+      actualTip.height !== expectedTip.height ||
+      actualTip.hash !== expectedTip.hash ||
+      this.cumulativeDifficulty !== expectedCumulativeDifficulty
+    ) {
+      throw new StaleChainTipError(actualTip);
     }
-    await this.updateCumulativeDifficulty(cumulativeDifficulty);
-  }
 
-  async rewindChain({ height, cumulativeDifficulty, accountStates }: ChainRewind): Promise<void> {
-    this.checkConnection();
-    for (const [index, block] of this.blocks) {
-      if (index <= height) continue;
-      this.blocks.delete(index);
-      this.blockHashes.delete(block.hash);
+    const ancestorBlock = ancestor.height >= 0 ? this.blocks.get(ancestor.height) : null;
+    const ancestorMatches = ancestor.height === -1
+      ? ancestor.hash === null
+      : ancestorBlock?.hash === ancestor.hash;
+    if (ancestor.height < -1 || ancestor.height > expectedTip.height || !ancestorMatches) {
+      throw new Error('Invalid canonical ancestor');
     }
-    this.chainHeight = height;
-    this.latestBlock = this.blocks.get(height) || null;
-    this.accounts.clear();
+
+    let previousHash = ancestor.hash;
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      if (block.index !== ancestor.height + i + 1 || block.previousHash !== (previousHash ?? '0'.repeat(64))) {
+        throw new Error('Invalid replacement chain');
+      }
+      previousHash = block.hash;
+    }
+
+    const nextBlocks = new Map(this.blocks);
+    const nextBlockHashes = new Map(this.blockHashes);
+    for (const [height, block] of nextBlocks) {
+      if (height <= ancestor.height) continue;
+      nextBlocks.delete(height);
+      nextBlockHashes.delete(block.hash);
+    }
+    for (const block of blocks) {
+      const storedBlock = structuredClone(block);
+      nextBlocks.set(block.index, storedBlock);
+      nextBlockHashes.set(block.hash, block.index);
+    }
+
+    const nextTransactions = new Map<string, Transaction>();
+    const nextTxByAddress = new Map<string, Set<string>>();
+    for (const block of nextBlocks.values()) {
+      for (const tx of block.transactions) {
+        nextTransactions.set(tx.hash, tx);
+        if (tx.from) {
+          if (!nextTxByAddress.has(tx.from)) nextTxByAddress.set(tx.from, new Set());
+          nextTxByAddress.get(tx.from)!.add(tx.hash);
+        }
+        if (!nextTxByAddress.has(tx.to)) nextTxByAddress.set(tx.to, new Set());
+        nextTxByAddress.get(tx.to)!.add(tx.hash);
+      }
+    }
+
+    const nextAccounts = new Map<string, AccountState>();
     for (const { address, state } of accountStates) {
-      this.accounts.set(address, state);
+      if (nextAccounts.has(address)) throw new Error(`Duplicate account state: ${address}`);
+      nextAccounts.set(address, { ...state });
     }
+
+    const finalHeight = blocks.at(-1)?.index ?? ancestor.height;
+    this.blocks = nextBlocks;
+    this.blockHashes = nextBlockHashes;
+    this.transactions = nextTransactions;
+    this.txByAddress = nextTxByAddress;
+    this.accounts = nextAccounts;
+    this.chainHeight = finalHeight;
+    this.latestBlock = nextBlocks.get(finalHeight) ?? null;
     this.cumulativeDifficulty = cumulativeDifficulty;
   }
   
   async getBlock(height: number): Promise<Block | null> {
     this.checkConnection();
-    return this.blocks.get(height) || null;
+    const block = this.blocks.get(height);
+    return block ? structuredClone(block) : null;
   }
   
   async getBlockByHash(hash: string): Promise<Block | null> {
     this.checkConnection();
     const height = this.blockHashes.get(hash);
     if (height === undefined) return null;
-    return this.blocks.get(height) || null;
+    const block = this.blocks.get(height);
+    return block ? structuredClone(block) : null;
   }
   
   async getLatestBlock(): Promise<Block | null> {
     this.checkConnection();
-    return this.latestBlock;
+    return this.latestBlock ? structuredClone(this.latestBlock) : null;
   }
   
   async getBlockRange(start: number, end: number): Promise<Block[]> {
@@ -136,7 +192,7 @@ export class MemoryAdapter extends StorageAdapter {
     
     for (let i = start; i <= end; i++) {
       const block = this.blocks.get(i);
-      if (block) blocks.push(block);
+      if (block) blocks.push(structuredClone(block));
     }
     
     return blocks;
@@ -151,7 +207,8 @@ export class MemoryAdapter extends StorageAdapter {
   
   async getAccountState(address: string): Promise<AccountState | null> {
     this.checkConnection();
-    return this.accounts.get(address) || null;
+    const state = this.accounts.get(address);
+    return state ? { ...state } : null;
   }
   
   async updateAccountState(address: string, state: AccountState): Promise<void> {

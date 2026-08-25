@@ -10,6 +10,8 @@ import { generatePrivateKey, derivePublicKey } from '../../src/crypto/signature'
 import { generateFromPrivateKey } from '../../src/crypto/address';
 
 describe('Transaction Class', () => {
+  const chainId = 1057;
+  const addressPrefix = 0x00;
   const privateKey = generatePrivateKey();
   const publicKey = derivePublicKey(privateKey);
   const { address: senderAddress } = generateFromPrivateKey(privateKey);
@@ -18,6 +20,7 @@ describe('Transaction Class', () => {
   describe('Regular transaction', () => {
     it('should create and sign transaction', async () => {
       const tx = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n, // 0.01 BOLT
@@ -37,6 +40,7 @@ describe('Transaction Class', () => {
     
     it('should verify signed transaction', async () => {
       const tx = await createSignedTransaction(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -51,6 +55,7 @@ describe('Transaction Class', () => {
     
     it('should fail verification with tampered data', async () => {
       const tx = await createSignedTransaction(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -69,6 +74,7 @@ describe('Transaction Class', () => {
     it('should reject a signature from a key that does not own sender address', async () => {
       const otherPrivateKey = generatePrivateKey();
       const tx = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -80,11 +86,12 @@ describe('Transaction Class', () => {
       await tx.sign(otherPrivateKey);
 
       expect(await tx.verify()).toBe(false);
-      expect(tx.validate().valid).toBe(false);
+      expect(tx.validate(chainId, addressPrefix).valid).toBe(false);
     });
     
     it('should validate correct transaction', async () => {
       const tx = await createSignedTransaction(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -93,12 +100,45 @@ describe('Transaction Class', () => {
         privateKey
       );
       
-      const result = tx.validate();
+      const result = tx.validate(chainId, addressPrefix);
       expect(result.valid).toBe(true);
+    });
+
+    it('should reject wrong chain ID', async () => {
+      const tx = await createSignedTransaction(
+        chainId,
+        senderAddress,
+        recipientAddress,
+        1000000n,
+        1,
+        1000n,
+        privateKey
+      );
+
+      const result = tx.validate(chainId + 1, addressPrefix);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('chain ID');
+    });
+
+    it('should reject wrong address prefix', async () => {
+      const tx = await createSignedTransaction(
+        chainId,
+        senderAddress,
+        recipientAddress,
+        1000000n,
+        1,
+        1000n,
+        privateKey
+      );
+
+      const result = tx.validate(chainId, 0x6f);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('address');
     });
     
     it('should reject unsigned regular transaction', () => {
       const tx = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -109,7 +149,7 @@ describe('Transaction Class', () => {
       
       tx.hash = tx.calculateHash(); // set hash but no signature
       
-      const result = tx.validate();
+      const result = tx.validate(chainId, addressPrefix);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('signed');
     });
@@ -118,6 +158,7 @@ describe('Transaction Class', () => {
   describe('Coinbase transaction', () => {
     it('should create coinbase transaction', () => {
       const coinbase = createCoinbaseTransaction(
+        chainId,
         recipientAddress,
         5000000000n, // 50 BOLT
         3000n, // fees from other transactions
@@ -125,6 +166,8 @@ describe('Transaction Class', () => {
       );
       
       expect(coinbase.from).toBeNull();
+      expect(coinbase.chainId).toBe(chainId);
+      expect(coinbase.kind).toBe('coinbase');
       expect(coinbase.to).toBe(recipientAddress);
       expect(coinbase.amount).toBe(5000003000n);
       expect(coinbase.nonce).toBe(0);
@@ -134,18 +177,20 @@ describe('Transaction Class', () => {
     
     it('should validate coinbase transaction', () => {
       const coinbase = createCoinbaseTransaction(
+        chainId,
         recipientAddress,
         5000000000n,
         0n,
         Date.now()
       );
       
-      const result = coinbase.validate();
+      const result = coinbase.validate(chainId, addressPrefix);
       expect(result.valid).toBe(true);
     });
     
     it('should reject coinbase with non-zero nonce', () => {
       const coinbase = new TransactionClass(
+        chainId,
         null,
         recipientAddress,
         5000000000n,
@@ -156,13 +201,14 @@ describe('Transaction Class', () => {
       
       coinbase.hash = coinbase.calculateHash();
       
-      const result = coinbase.validate();
+      const result = coinbase.validate(chainId, addressPrefix);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('nonce');
     });
     
     it('should reject coinbase with fee', () => {
       const coinbase = new TransactionClass(
+        chainId,
         null,
         recipientAddress,
         5000000000n,
@@ -173,13 +219,14 @@ describe('Transaction Class', () => {
       
       coinbase.hash = coinbase.calculateHash();
       
-      const result = coinbase.validate();
+      const result = coinbase.validate(chainId, addressPrefix);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('fee');
     });
     
     it('should not allow signing coinbase', async () => {
       const coinbase = createCoinbaseTransaction(
+        chainId,
         recipientAddress,
         5000000000n,
         0n,
@@ -201,6 +248,7 @@ describe('Transaction Class', () => {
   describe('Transaction validation', () => {
     it('should reject negative amounts', () => {
       const tx = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         -1000n, // negative
@@ -209,13 +257,14 @@ describe('Transaction Class', () => {
         Date.now()
       );
       
-      const result = tx.validate();
+      const result = tx.validate(chainId, addressPrefix);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('amount');
     });
     
     it('should reject invalid addresses', () => {
       const tx = new TransactionClass(
+        chainId,
         'invalid_address',
         recipientAddress,
         1000000n,
@@ -224,13 +273,14 @@ describe('Transaction Class', () => {
         Date.now()
       );
       
-      const result = tx.validate();
+      const result = tx.validate(chainId, addressPrefix);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('address');
     });
     
     it('should reject future timestamps', async () => {
       const tx = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -242,7 +292,7 @@ describe('Transaction Class', () => {
       // sign it first so we get past signature check
       await tx.sign(privateKey);
       
-      const result = tx.validate();
+      const result = tx.validate(chainId, addressPrefix);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('future');
     });
@@ -251,6 +301,7 @@ describe('Transaction Class', () => {
   describe('Account validation', () => {
     it('should validate against sufficient balance', () => {
       const tx = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -269,6 +320,7 @@ describe('Transaction Class', () => {
     
     it('should reject insufficient balance', () => {
       const tx = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -288,6 +340,7 @@ describe('Transaction Class', () => {
     
     it('should reject invalid nonce', () => {
       const tx = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -307,6 +360,7 @@ describe('Transaction Class', () => {
     
     it('should skip account validation for coinbase', () => {
       const coinbase = createCoinbaseTransaction(
+        chainId,
         recipientAddress,
         5000000000n,
         0n,
@@ -321,6 +375,7 @@ describe('Transaction Class', () => {
   describe('Serialization', () => {
     it('should serialize and deserialize', async () => {
       const tx = await createSignedTransaction(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -333,6 +388,8 @@ describe('Transaction Class', () => {
       const deserialized = TransactionClass.deserialize(serialized);
       
       expect(deserialized.hash).toBe(tx.hash);
+      expect(deserialized.chainId).toBe(chainId);
+      expect(deserialized.kind).toBe('transfer');
       expect(deserialized.from).toBe(tx.from);
       expect(deserialized.to).toBe(tx.to);
       expect(deserialized.amount).toBe(tx.amount);
@@ -341,6 +398,7 @@ describe('Transaction Class', () => {
     
     it('should convert between object and class', () => {
       const tx = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -353,14 +411,31 @@ describe('Transaction Class', () => {
       const restored = TransactionClass.fromObject(obj);
       
       expect(restored.from).toBe(tx.from);
+      expect(restored.chainId).toBe(chainId);
+      expect(restored.kind).toBe('transfer');
       expect(restored.to).toBe(tx.to);
       expect(restored.amount).toBe(tx.amount);
+    });
+
+    it('should reject legacy transaction objects', () => {
+      const tx = new TransactionClass(
+        chainId,
+        senderAddress,
+        recipientAddress,
+        1000000n,
+        1,
+        1000n
+      ).toObject();
+
+      expect(() => TransactionClass.fromObject({ ...tx, chainId: undefined } as any)).toThrow('chain ID');
+      expect(() => TransactionClass.fromObject({ ...tx, kind: undefined } as any)).toThrow('kind');
     });
   });
   
   describe('Transaction pool validation', () => {
     it('should validate clean pool', async () => {
       const tx1 = await createSignedTransaction(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -370,6 +445,7 @@ describe('Transaction Class', () => {
       );
       
       const tx2 = await createSignedTransaction(
+        chainId,
         senderAddress,
         recipientAddress,
         2000000n,
@@ -384,6 +460,7 @@ describe('Transaction Class', () => {
     
     it('should reject duplicate transactions', async () => {
       const tx = await createSignedTransaction(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -399,6 +476,7 @@ describe('Transaction Class', () => {
     
     it('should reject duplicate nonces', async () => {
       const tx1 = await createSignedTransaction(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -408,6 +486,7 @@ describe('Transaction Class', () => {
       );
       
       const tx2 = await createSignedTransaction(
+        chainId,
         senderAddress,
         recipientAddress,
         2000000n,
@@ -426,6 +505,7 @@ describe('Transaction Class', () => {
   describe('Utility methods', () => {
     it('should identify coinbase', () => {
       const coinbase = createCoinbaseTransaction(
+        chainId,
         recipientAddress,
         5000000000n,
         0n,
@@ -433,6 +513,7 @@ describe('Transaction Class', () => {
       );
       
       const regular = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,
@@ -452,6 +533,7 @@ describe('Transaction Class', () => {
     
     it('should get transaction size', () => {
       const tx = new TransactionClass(
+        chainId,
         senderAddress,
         recipientAddress,
         1000000n,

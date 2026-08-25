@@ -15,6 +15,7 @@ export class BlockClass {
   public previousHash: string;
   public hash: string;
   public merkleRoot: string;
+  public stateRoot: string;
   public difficulty: number;
   public nonce: number;
   public transactions: Transaction[];
@@ -26,7 +27,8 @@ export class BlockClass {
     previousHash: string,
     transactions: Transaction[],
     difficulty: number,
-    miner?: string
+    miner?: string,
+    stateRoot: string = ''
   ) {
     this.index = index;
     this.timestamp = timestamp;
@@ -34,6 +36,7 @@ export class BlockClass {
     this.transactions = transactions;
     this.difficulty = difficulty;
     this.miner = miner;
+    this.stateRoot = stateRoot;
     this.nonce = 0;
     
     // calculate merkle root from transactions
@@ -60,7 +63,8 @@ export class BlockClass {
       obj.previousHash,
       transactions,
       obj.difficulty,
-      obj.miner
+      obj.miner,
+      obj.stateRoot
     );
     
     block.hash = obj.hash;
@@ -80,6 +84,7 @@ export class BlockClass {
       previousHash: this.previousHash,
       hash: this.hash,
       merkleRoot: this.merkleRoot,
+      stateRoot: this.stateRoot,
       difficulty: this.difficulty,
       nonce: this.nonce,
       transactions: this.transactions,
@@ -108,6 +113,7 @@ export class BlockClass {
       this.timestamp.toString(),
       this.previousHash,
       this.merkleRoot,
+      this.stateRoot,
       this.difficulty.toString(),
       this.nonce.toString()
     ].join(':');
@@ -342,21 +348,23 @@ export class BlockClass {
  * create genesis block
  */
 export function createGenesisBlock(
-  difficulty: number = 1,
-  timestamp: number = Date.now(),
-  algorithm: HashAlgorithm = 'sha256'
+  difficulty: number,
+  timestamp: number,
+  stateRoot: string,
+  nonce: number
 ): BlockClass {
   const genesis = new BlockClass(
     0,
     timestamp,
     '0'.repeat(64),
     [],
-    difficulty
+    difficulty,
+    undefined,
+    stateRoot
   );
   
-  // genesis block has special nonce
-  genesis.nonce = 0;
-  genesis.hash = genesis.calculateHash(algorithm);
+  genesis.nonce = nonce;
+  genesis.hash = genesis.calculateHash('sha256');
   
   return genesis;
 }

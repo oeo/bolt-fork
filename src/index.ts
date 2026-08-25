@@ -174,7 +174,7 @@ class BoltIPFSNode {
     
     // create mining service if enabled
     if (this.config.miningEnabled) {
-      const minerAddress = this.config.minerAddress || generateAddress().address;
+      const minerAddress = this.config.minerAddress || generateAddress(chainConfig.addressPrefix).address;
       this.miner = new MiningService({
         blockchain: this.blockchain,
         mempool: this.mempool,

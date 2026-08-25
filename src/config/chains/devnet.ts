@@ -32,7 +32,7 @@ export const devnet: ChainConfig = {
   addressPrefix: 0xef,  // custom prefix for local development
   
   // genesis
-  genesisTimestamp: Math.floor(Date.now() / 1000),  // current time
+  genesisTimestamp: 1_700_000_001_000,
   genesisNonce: 0,
   genesisMemo: 'bolt devnet - local development',
   

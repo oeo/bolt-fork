@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeAll } from 'bun:test';
 import { BlockClass, createGenesisBlock } from '../../src/core/block';
 import { Transaction } from '../../src/types';
+import { calculateStateRoot } from '../../src/core/block-executor';
 import { calculateTransactionHash } from '../../src/crypto/signature';
+import { config as chainConfig } from '../../src/config/chain';
 
 describe('Block Class', () => {
   let genesis: BlockClass;
   
   beforeAll(() => {
-    genesis = createGenesisBlock(1, 1234567890);
+    genesis = createGenesisBlock(1, 1234567890, calculateStateRoot(new Map()), 0);
   });
   
   describe('Genesis block', () => {
@@ -15,6 +17,8 @@ describe('Block Class', () => {
       expect(genesis.index).toBe(0);
       expect(genesis.previousHash).toBe('0'.repeat(64));
       expect(genesis.transactions.length).toBe(0);
+      expect(genesis.stateRoot).toBe(calculateStateRoot(new Map()));
+      expect(genesis.hash).toBe('de6b4d90545b16d726760849fe263df4ad7bbe44bc975ae63b3d813f61c732f5');
       expect(genesis.difficulty).toBe(1);
       expect(genesis.hash).toBeTruthy();
     });
@@ -28,6 +32,8 @@ describe('Block Class', () => {
   describe('Block creation', () => {
     it('should create block with transactions', () => {
       const tx1: Transaction = {
+        chainId: chainConfig.chainId,
+        kind: 'transfer',
         hash: 'tx1',
         from: 'addr1',
         to: 'addr2',
@@ -38,6 +44,8 @@ describe('Block Class', () => {
       };
       
       const tx2: Transaction = {
+        chainId: chainConfig.chainId,
+        kind: 'transfer',
         hash: 'tx2',
         from: 'addr2',
         to: 'addr3',
@@ -328,6 +336,8 @@ describe('Block Class', () => {
   describe('Coinbase transactions', () => {
     it('should validate correct coinbase', () => {
       const coinbase: Transaction = {
+        chainId: chainConfig.chainId,
+        kind: 'coinbase',
         hash: 'coinbase',
         from: null,
         to: 'miner_address',
@@ -338,6 +348,8 @@ describe('Block Class', () => {
       };
       
       const regularTx: Transaction = {
+        chainId: chainConfig.chainId,
+        kind: 'transfer',
         hash: 'tx1',
         from: 'addr1',
         to: 'addr2',
@@ -361,6 +373,8 @@ describe('Block Class', () => {
     
     it('should reject coinbase with wrong value', () => {
       const coinbase: Transaction = {
+        chainId: chainConfig.chainId,
+        kind: 'coinbase',
         hash: 'coinbase',
         from: null,
         to: 'miner_address',
@@ -389,6 +403,8 @@ describe('Block Class', () => {
         Date.now(),
         genesis.hash,
         [{
+          chainId: chainConfig.chainId,
+          kind: 'transfer',
           hash: 'tx1',
           from: 'addr1',
           to: 'addr2',
@@ -406,7 +422,9 @@ describe('Block Class', () => {
     });
 
     it('should reject a second coinbase transaction', () => {
-      const first = {
+      const first: Transaction = {
+        chainId: chainConfig.chainId,
+        kind: 'coinbase',
         hash: 'coinbase1',
         from: null,
         to: 'miner_address',
@@ -415,7 +433,12 @@ describe('Block Class', () => {
         fee: 0n,
         timestamp: Date.now()
       };
-      const second = { ...first, hash: 'coinbase2' };
+      const second: Transaction = {
+        ...first,
+        chainId: chainConfig.chainId,
+        kind: 'coinbase',
+        hash: 'coinbase2'
+      };
       const block = new BlockClass(
         1,
         Date.now(),
@@ -431,6 +454,8 @@ describe('Block Class', () => {
     
     it('should calculate total fees', () => {
       const tx1: Transaction = {
+        chainId: chainConfig.chainId,
+        kind: 'transfer',
         hash: 'tx1',
         from: 'addr1',
         to: 'addr2',
@@ -441,6 +466,8 @@ describe('Block Class', () => {
       };
       
       const tx2: Transaction = {
+        chainId: chainConfig.chainId,
+        kind: 'transfer',
         hash: 'tx2',
         from: 'addr2',
         to: 'addr3',
@@ -466,6 +493,8 @@ describe('Block Class', () => {
   describe('Utility methods', () => {
     it('should check if transaction exists', () => {
       const tx: Transaction = {
+        chainId: chainConfig.chainId,
+        kind: 'transfer',
         hash: 'tx123',
         from: 'addr1',
         to: 'addr2',

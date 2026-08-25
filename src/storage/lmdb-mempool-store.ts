@@ -38,26 +38,26 @@ export class LMDBMempoolStore {
     const serialized = this.serializeTransaction(tx);
     const timestamp = Math.floor(Date.now() / 1000);
     
-    await this.lmdb.transaction(() => {
+    this.lmdb.transactionSync(() => {
       // add to main storage
-      this.lmdb.mempool.put(tx.hash, serialized);
+      this.lmdb.mempool.putSync(tx.hash, serialized);
       
       // add to fee index with composite key
       const feeKey = this.createFeeKey(tx.fee, tx.hash);
-      this.lmdb.mempoolByFee.put(feeKey, tx.hash);
+      this.lmdb.mempoolByFee.putSync(feeKey, tx.hash);
       
       // add to time index with composite key
       const timeKey = this.createTimeKey(timestamp, tx.hash);
-      this.lmdb.mempoolByTime.put(timeKey, tx.hash);
+      this.lmdb.mempoolByTime.putSync(timeKey, tx.hash);
       
       // add to address indexes with composite keys
       if (tx.from) {
         const fromKey = this.createAddressKey(tx.from, tx.hash);
-        this.lmdb.mempoolByAddress.put(fromKey, tx.hash);
+        this.lmdb.mempoolByAddress.putSync(fromKey, tx.hash);
       }
       if (tx.to) {
         const toKey = this.createAddressKey(tx.to, tx.hash);
-        this.lmdb.mempoolByAddress.put(toKey, tx.hash);
+        this.lmdb.mempoolByAddress.putSync(toKey, tx.hash);
       }
     });
     
@@ -74,18 +74,18 @@ export class LMDBMempoolStore {
     
     const tx = this.deserializeTransaction(txData);
     
-    await this.lmdb.transaction(async () => {
+    this.lmdb.transactionSync(() => {
       // remove from main storage
-      await this.lmdb.mempool.remove(txHash);
+      this.lmdb.mempool.removeSync(txHash);
       
       // remove from fee index
       const feeKey = this.createFeeKey(tx.fee, txHash);
-      await this.lmdb.mempoolByFee.remove(feeKey);
+      this.lmdb.mempoolByFee.removeSync(feeKey);
       
       // remove from time index (need to search for timestamp)
-      for await (const { key, value } of this.lmdb.mempoolByTime.getRange()) {
-        if (value === txHash) {
-          await this.lmdb.mempoolByTime.remove(key);
+      for (const { key, value } of this.lmdb.mempoolByTime.getRange()) {
+        if (value.toString() === txHash) {
+          this.lmdb.mempoolByTime.removeSync(key);
           break;
         }
       }
@@ -93,11 +93,11 @@ export class LMDBMempoolStore {
       // remove from address indexes
       if (tx.from) {
         const fromKey = this.createAddressKey(tx.from, txHash);
-        await this.lmdb.mempoolByAddress.remove(fromKey);
+        this.lmdb.mempoolByAddress.removeSync(fromKey);
       }
       if (tx.to) {
         const toKey = this.createAddressKey(tx.to, txHash);
-        await this.lmdb.mempoolByAddress.remove(toKey);
+        this.lmdb.mempoolByAddress.removeSync(toKey);
       }
     });
     
@@ -110,26 +110,26 @@ export class LMDBMempoolStore {
   async removeTransactions(txHashes: string[]): Promise<void> {
     if (txHashes.length === 0) return;
     
-    await this.lmdb.transaction(async () => {
+    this.lmdb.transactionSync(() => {
       for (const hash of txHashes) {
-        const txData = await this.lmdb.mempool.get(hash);
+        const txData = this.lmdb.mempool.get(hash);
         if (!txData) continue;
         
         const tx = this.deserializeTransaction(txData);
         
         // remove from all indexes
-        await this.lmdb.mempool.remove(hash);
+        this.lmdb.mempool.removeSync(hash);
         
         const feeKey = this.createFeeKey(tx.fee, hash);
-        await this.lmdb.mempoolByFee.remove(feeKey);
+        this.lmdb.mempoolByFee.removeSync(feeKey);
         
         if (tx.from) {
           const fromKey = this.createAddressKey(tx.from, hash);
-          await this.lmdb.mempoolByAddress.remove(fromKey);
+          this.lmdb.mempoolByAddress.removeSync(fromKey);
         }
         if (tx.to) {
           const toKey = this.createAddressKey(tx.to, hash);
-          await this.lmdb.mempoolByAddress.remove(toKey);
+          this.lmdb.mempoolByAddress.removeSync(toKey);
         }
       }
     });
@@ -249,11 +249,11 @@ export class LMDBMempoolStore {
    * clear all transactions from mempool
    */
   async clear(): Promise<void> {
-    await this.lmdb.transaction(async () => {
-      await this.lmdb.mempool.clearAsync();
-      await this.lmdb.mempoolByFee.clearAsync();
-      await this.lmdb.mempoolByTime.clearAsync();
-      await this.lmdb.mempoolByAddress.clearAsync();
+    this.lmdb.transactionSync(() => {
+      this.lmdb.mempool.clearSync();
+      this.lmdb.mempoolByFee.clearSync();
+      this.lmdb.mempoolByTime.clearSync();
+      this.lmdb.mempoolByAddress.clearSync();
     });
     
     logger.info('mempool cleared');

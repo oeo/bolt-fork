@@ -32,7 +32,7 @@ export const mainnet: ChainConfig = {
   addressPrefix: 0x00,  // addresses start with '1'
   
   // genesis
-  genesisTimestamp: 1757000000,
+  genesisTimestamp: 1_757_000_000_000,
   genesisNonce: 0,
   genesisMemo: 'we will craft citadels in the clouds or bury vaults within the ashes.',
   

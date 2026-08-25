@@ -6,7 +6,7 @@ import { NETWORK_MAGIC } from '../constants';
 const logger = getLogger(__filename);
 
 // protocol version
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 3;
 
 // message types
 export enum MessageType {
@@ -512,8 +512,7 @@ export class Protocol {
    */
   serializeHeaders(headers: any[]): Uint8Array {
     const encoder = new TextEncoder();
-    // each header: height(4) + hash(32) + prevHash(32) + merkleRoot(32) + timestamp(8) + difficulty(4) + nonce(8) = 120 bytes
-    const buffer = new ArrayBuffer(4 + headers.length * 120);
+    const buffer = new ArrayBuffer(4 + headers.length * 152);
     const view = new DataView(buffer);
     
     view.setUint32(0, headers.length, false);
@@ -537,6 +536,10 @@ export class Protocol {
       // merkle root (as hex string)
       const merkleBytes = Buffer.from(header.merkleRoot, 'hex');
       new Uint8Array(buffer, offset, 32).set(merkleBytes);
+      offset += 32;
+
+      const stateBytes = Buffer.from(header.stateRoot, 'hex');
+      new Uint8Array(buffer, offset, 32).set(stateBytes);
       offset += 32;
       
       // timestamp
@@ -565,7 +568,7 @@ export class Protocol {
     const decoder = new TextDecoder();
     
     const count = view.getUint32(0, false);
-    if (data.length < 4 + count * 120) return null;
+    if (data.length < 4 + count * 152) return null;
     
     const headers: any[] = [];
     let offset = 4;
@@ -585,6 +588,10 @@ export class Protocol {
       const merkleBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
       const merkleRoot = Buffer.from(merkleBytes).toString('hex');
       offset += 32;
+
+      const stateBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
+      const stateRoot = Buffer.from(stateBytes).toString('hex');
+      offset += 32;
       
       const timestamp = Number(view.getBigUint64(offset, false));
       offset += 8;
@@ -600,6 +607,7 @@ export class Protocol {
         hash,
         previousHash,
         merkleRoot,
+        stateRoot,
         timestamp,
         difficulty,
         nonce
@@ -617,6 +625,11 @@ export class Protocol {
     const { serialize } = require('../utils/bigint');
     const json = serialize(block);
     return new TextEncoder().encode(json);
+  }
+
+  serializeTransaction(transaction: Transaction): Uint8Array {
+    const { serialize } = require('../utils/bigint');
+    return new TextEncoder().encode(serialize(transaction));
   }
 
   /**
@@ -649,7 +662,8 @@ export class Protocol {
       blockData.previousHash,
       transactions,           // correct: transactions as 4th parameter
       blockData.difficulty,
-      blockData.miner
+      blockData.miner,
+      blockData.stateRoot
     );
     
     // set the calculated fields
@@ -658,6 +672,13 @@ export class Protocol {
     block.nonce = blockData.nonce;
     
     return block;
+  }
+
+  deserializeTransaction(data: Uint8Array): Transaction {
+    const { deserialize } = require('../utils/bigint');
+    const { TransactionClass } = require('../core/transaction');
+    const transaction = deserialize(new TextDecoder().decode(data));
+    return TransactionClass.fromObject(transaction).toObject();
   }
 
   /**
@@ -723,6 +744,9 @@ export class Protocol {
       case MessageType.BLOCK:
         payloadBytes = this.serializeBlock(payload);
         break;
+      case MessageType.TX:
+        payloadBytes = this.serializeTransaction(payload);
+        break;
       default:
         throw new Error(`serialization not implemented for ${command}`);
     }
@@ -763,7 +787,8 @@ export class Protocol {
     
     // deserialize payload based on type
     let decodedPayload: any;
-    switch (header.type) {
+    try {
+      switch (header.type) {
       case MessageType.VERSION:
         decodedPayload = this.deserializeVersion(payload);
         break;
@@ -792,9 +817,16 @@ export class Protocol {
       case MessageType.BLOCK:
         decodedPayload = this.deserializeBlock(payload);
         break;
-      default:
-        logger.warn(`deserialization not implemented for ${command}`);
-        decodedPayload = payload;
+      case MessageType.TX:
+        decodedPayload = this.deserializeTransaction(payload);
+        break;
+        default:
+          logger.warn(`deserialization not implemented for ${command}`);
+          decodedPayload = payload;
+      }
+    } catch (error) {
+      logger.warn(`invalid ${command} payload`, error);
+      return null;
     }
     
     return { command, payload: decodedPayload };

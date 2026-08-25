@@ -6,6 +6,7 @@ export interface Block {
   previousHash: string;
   hash: string;
   merkleRoot: string;
+  stateRoot: string;
   difficulty: number;
   nonce: number;
   transactions: Transaction[];
@@ -13,6 +14,8 @@ export interface Block {
 }
 
 export interface Transaction {
+  chainId: number;
+  kind: 'transfer' | 'coinbase';
   hash: string;
   from: string | null; // null for coinbase transactions
   to: string;
@@ -85,6 +88,7 @@ export interface BlockTemplate {
   height: number;
   previousHash: string;
   merkleRootPlaceholder: string;
+  stateRoot: string;
   timestamp: number;
   difficulty: number;
   
@@ -117,6 +121,7 @@ export interface BlockSubmission {
 }
 
 export interface BlockTemplateRequest {
+  payoutAddress: string;
   capabilities?: string[];
   longpollId?: string;
   maxVersionBits?: number;

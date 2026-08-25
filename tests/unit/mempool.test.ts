@@ -3,6 +3,7 @@ import { Mempool, MempoolConfig } from '../../src/core/mempool';
 import { MemoryAdapter } from '../../src/storage/memory';
 import { TransactionClass, createSignedTransaction, getTransactionSize } from '../../src/core/transaction';
 import { generateAddress } from '../../src/crypto/address';
+import { config as chainConfig } from '../../src/config/chain';
 import { hexToBytes } from '@noble/hashes/utils';
 
 describe('Mempool', () => {
@@ -10,13 +11,16 @@ describe('Mempool', () => {
   let storage: MemoryAdapter;
   
   // test addresses and keys
-  const alice = generateAddress();
-  const bob = generateAddress();
-  const charlie = generateAddress();
+  const alice = generateAddress(chainConfig.addressPrefix);
+  const bob = generateAddress(chainConfig.addressPrefix);
+  const charlie = generateAddress(chainConfig.addressPrefix);
   
   beforeEach(async () => {
     storage = new MemoryAdapter();
     await storage.connect();
+    for (const account of [alice, bob, charlie]) {
+      await storage.updateAccountState(account.address, { balance: 100_000_000n, nonce: 0 });
+    }
     
     const config: MempoolConfig = {
       maxSize: 100,
@@ -33,6 +37,7 @@ describe('Mempool', () => {
   describe('addTransaction', () => {
     it('should add valid transaction to mempool', async () => {
       const tx = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -49,6 +54,7 @@ describe('Mempool', () => {
     
     it('should reject duplicate transactions', async () => {
       const tx = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -64,6 +70,7 @@ describe('Mempool', () => {
     
     it('should reject invalid transactions', async () => {
       const tx = new TransactionClass(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -75,9 +82,81 @@ describe('Mempool', () => {
       
       await expect(mempool.addTransaction(tx)).rejects.toThrow('Invalid transaction');
     });
+
+    it('should reject coinbase transactions', async () => {
+      const tx = new TransactionClass(
+        chainConfig.chainId,
+        null,
+        alice.address,
+        1000000n,
+        0,
+        0n
+      );
+
+      await expect(mempool.addTransaction(tx)).rejects.toThrow('Coinbase');
+    });
+
+    it('should reject cryptographically invalid signatures', async () => {
+      const tx = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        bob.address,
+        1000000n,
+        0,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      tx.signature = `${tx.signature!.startsWith('00') ? '01' : '00'}${tx.signature!.slice(2)}`;
+      tx.hash = tx.calculateHash();
+
+      await expect(mempool.addTransaction(tx)).rejects.toThrow('signature');
+    });
+
+    it('should serialize same-nonce admission', async () => {
+      const transactions = await Promise.all([bob.address, charlie.address].map(to =>
+        createSignedTransaction(
+          chainConfig.chainId,
+          alice.address,
+          to,
+          1000000n,
+          0,
+          1000n,
+          hexToBytes(alice.privateKey)
+        )
+      ));
+
+      const results = await Promise.allSettled(transactions.map(tx => mempool.addTransaction(tx)));
+      expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+      expect(mempool.getStats().size).toBe(1);
+    });
+
+    it('should reject pending overspend', async () => {
+      const first = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        bob.address,
+        60_000_000n,
+        0,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      const second = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        charlie.address,
+        60_000_000n,
+        1,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+
+      await mempool.addTransaction(first);
+      await expect(mempool.addTransaction(second)).rejects.toThrow('Insufficient balance');
+    });
     
     it('should reject transactions with insufficient fee', async () => {
       const tx = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -95,6 +174,7 @@ describe('Mempool', () => {
       });
       
       const tx = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -114,6 +194,7 @@ describe('Mempool', () => {
       
       // add two transactions with different fees
       const tx1 = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -123,6 +204,7 @@ describe('Mempool', () => {
       );
       
       const tx2 = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         charlie.address,
         2000000n,
@@ -136,6 +218,7 @@ describe('Mempool', () => {
       
       // add high fee transaction - should evict tx1
       const tx3 = await createSignedTransaction(
+        chainConfig.chainId,
         bob.address,
         charlie.address,
         3000000n,
@@ -155,6 +238,7 @@ describe('Mempool', () => {
   describe('removeTransaction', () => {
     it('should remove transaction from mempool', async () => {
       const tx = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -179,6 +263,7 @@ describe('Mempool', () => {
   describe('getTransactionsForBlock', () => {
     it('should return transactions sorted by fee', async () => {
       const tx1 = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -188,6 +273,7 @@ describe('Mempool', () => {
       );
       
       const tx2 = await createSignedTransaction(
+        chainConfig.chainId,
         bob.address,
         charlie.address,
         2000000n,
@@ -197,6 +283,7 @@ describe('Mempool', () => {
       );
       
       const tx3 = await createSignedTransaction(
+        chainConfig.chainId,
         charlie.address,
         alice.address,
         3000000n,
@@ -226,6 +313,7 @@ describe('Mempool', () => {
     
     it('should respect block size limit', async () => {
       const tx1 = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -235,6 +323,7 @@ describe('Mempool', () => {
       );
       
       const tx2 = await createSignedTransaction(
+        chainConfig.chainId,
         bob.address,
         charlie.address,
         2000000n,
@@ -259,6 +348,7 @@ describe('Mempool', () => {
   describe('getStats', () => {
     it('should calculate mempool statistics', async () => {
       const tx1 = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -268,6 +358,7 @@ describe('Mempool', () => {
       );
       
       const tx2 = await createSignedTransaction(
+        chainConfig.chainId,
         bob.address,
         charlie.address,
         2000000n,
@@ -303,6 +394,7 @@ describe('Mempool', () => {
   describe('validateAgainstState', () => {
     it('should remove transactions with invalid nonce', async () => {
       const tx1 = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -310,7 +402,7 @@ describe('Mempool', () => {
         1000n,
         hexToBytes(alice.privateKey)
       );
-      
+      await storage.updateAccountState(alice.address, { balance: 100_000_000n, nonce: 5 });
       await mempool.addTransaction(tx1);
       
       // mock state functions
@@ -324,6 +416,7 @@ describe('Mempool', () => {
     
     it('should remove transactions with insufficient balance', async () => {
       const tx1 = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         10000000n, // large amount
@@ -345,6 +438,7 @@ describe('Mempool', () => {
     
     it('should keep valid transactions', async () => {
       const tx1 = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -368,6 +462,7 @@ describe('Mempool', () => {
   describe('removeBlockTransactions', () => {
     it('should remove transactions that are in a block', async () => {
       const tx1 = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -377,6 +472,7 @@ describe('Mempool', () => {
       );
       
       const tx2 = await createSignedTransaction(
+        chainConfig.chainId,
         bob.address,
         charlie.address,
         2000000n,
@@ -399,6 +495,7 @@ describe('Mempool', () => {
   describe('clear', () => {
     it('should clear all transactions', async () => {
       const tx1 = await createSignedTransaction(
+        chainConfig.chainId,
         alice.address,
         bob.address,
         1000000n,

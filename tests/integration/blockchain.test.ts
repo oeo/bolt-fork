@@ -50,9 +50,9 @@ describe('Blockchain Integration', () => {
   describe('address generation', () => {
     it('should generate valid bolt addresses', () => {
       // generate a few addresses to showcase address format
-      const addr1 = generateAddress();
-      const addr2 = generateAddress();
-      const addr3 = generateAddress();
+      const addr1 = generateAddress(testConfig.addressPrefix);
+      const addr2 = generateAddress(testConfig.addressPrefix);
+      const addr3 = generateAddress(testConfig.addressPrefix);
       
       console.log('Example Bolt addresses:');
       console.log('  Address 1:', addr1.address);
@@ -101,6 +101,21 @@ describe('Blockchain Integration', () => {
       const blocks = await storage.getBlockRange(0, 10);
       expect(blocks.length).toBe(1);
     });
+
+    it('should reject obsolete storage versions', async () => {
+      await storage.saveChainMetadata('storageVersion', '1');
+      const reloaded = new Blockchain(storage, testConfig);
+      await expect(reloaded.initialize()).rejects.toThrow('incompatible');
+    });
+
+    it('should reject storage from another chain', async () => {
+      const reloaded = new Blockchain(storage, { ...testConfig, chainId: testConfig.chainId + 1 });
+      await expect(reloaded.initialize()).rejects.toThrow('incompatible');
+    });
+
+    it('should reject configurable consensus hashing', () => {
+      expect(() => new Blockchain(storage, { ...testConfig, hashAlgorithm: 'scrypt' })).toThrow('sha256');
+    });
   });
   
   describe('block addition', () => {
@@ -110,7 +125,7 @@ describe('Blockchain Integration', () => {
       expect(previousBlock).toBeTruthy();
       
       // generate valid miner address
-      const miner = generateAddress();
+      const miner = generateAddress(testConfig.addressPrefix);
       const minerAddress = miner.address;
       const block = new BlockClass(
         1,
@@ -121,13 +136,10 @@ describe('Blockchain Integration', () => {
         minerAddress
       );
       
-      // mine the block
-      const mineResult = block.mine('sha256', 1000000);
-      expect(mineResult.success).toBe(true);
-      
       // add coinbase transaction
       const blockReward = blockchain.getBlockReward(1);
       const coinbase = new TransactionClass(
+        testConfig.chainId,
         null,
         minerAddress,
         blockReward,
@@ -137,7 +149,9 @@ describe('Blockchain Integration', () => {
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();
-      block.hash = block.calculateHash();
+      await blockchain.prepareBlock(block);
+      const mineResult = block.mine('sha256', 1000000);
+      expect(mineResult.success).toBe(true);
       
       // add to blockchain
       const result = await blockchain.addBlock(block);
@@ -173,6 +187,7 @@ describe('Blockchain Integration', () => {
     
     it('should reject block with wrong difficulty', async () => {
       const previousBlock = await blockchain.getLatestBlock();
+      const minerAddress = generateAddress(testConfig.addressPrefix).address;
       const block = new BlockClass(
         1,
         Date.now(),
@@ -183,8 +198,9 @@ describe('Blockchain Integration', () => {
       
       // add coinbase transaction and mine block to pass structure validation
       const coinbase = new TransactionClass(
+        testConfig.chainId,
         null,
-        '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
+        minerAddress,
         blockchain.getBlockReward(1),
         0,
         0n,
@@ -192,6 +208,7 @@ describe('Blockchain Integration', () => {
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();
+      await blockchain.prepareBlock(block);
       block.mine('sha256', 1000000);
       
       const result = await blockchain.addBlock(block);
@@ -201,7 +218,7 @@ describe('Blockchain Integration', () => {
     
     it('should reject block with invalid coinbase', async () => {
       const previousBlock = await blockchain.getLatestBlock();
-      const miner = generateAddress();
+      const miner = generateAddress(testConfig.addressPrefix);
       const minerAddress = miner.address;
       
       const block = new BlockClass(
@@ -213,12 +230,13 @@ describe('Blockchain Integration', () => {
         minerAddress
       );
       
-      // add coinbase with wrong amount
+      // add coinbase before corrupting amount
       const wrongReward = 1000n * 100000000n; // too much
       const coinbase = new TransactionClass(
+        testConfig.chainId,
         null,
         minerAddress,
-        wrongReward,
+        blockchain.getBlockReward(1),
         0,
         0n,
         Date.now()
@@ -227,7 +245,9 @@ describe('Blockchain Integration', () => {
       block.merkleRoot = block.calculateMerkleRoot();
       
       // mine the block
+      await blockchain.prepareBlock(block);
       block.mine('sha256', 1000000);
+      block.transactions[0].amount = wrongReward;
       
       const result = await blockchain.addBlock(block);
       expect(result.valid).toBe(false);
@@ -237,7 +257,7 @@ describe('Blockchain Integration', () => {
   
   describe('account operations', () => {
     it('should track account balances', async () => {
-      const miner = generateAddress();
+      const miner = generateAddress(testConfig.addressPrefix);
       const minerAddress = miner.address;
       
       // mine a block
@@ -253,6 +273,7 @@ describe('Blockchain Integration', () => {
       
       const blockReward = blockchain.getBlockReward(1);
       const coinbase = new TransactionClass(
+        testConfig.chainId,
         null,
         minerAddress,
         blockReward,
@@ -262,6 +283,7 @@ describe('Blockchain Integration', () => {
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();
+      await blockchain.prepareBlock(block);
       block.mine('sha256', 1000000);
       
       await blockchain.addBlock(block);
@@ -277,9 +299,9 @@ describe('Blockchain Integration', () => {
     
     it('should process transactions correctly', async () => {
       // setup wallets
-      const miner = generateAddress();
-      const alice = generateAddress();
-      const bob = generateAddress();
+      const miner = generateAddress(testConfig.addressPrefix);
+      const alice = generateAddress(testConfig.addressPrefix);
+      const bob = generateAddress(testConfig.addressPrefix);
       
       // mine first block to get funds
       const previousBlock = await blockchain.getLatestBlock();
@@ -294,6 +316,7 @@ describe('Blockchain Integration', () => {
       
       const blockReward = blockchain.getBlockReward(1);
       const coinbase1 = new TransactionClass(
+        testConfig.chainId,
         null,
         miner.address,
         blockReward,
@@ -303,6 +326,7 @@ describe('Blockchain Integration', () => {
       );
       block1.transactions = [coinbase1.toObject()];
       block1.merkleRoot = block1.calculateMerkleRoot();
+      await blockchain.prepareBlock(block1);
       block1.mine('sha256', 1000000);
       
       const result1 = await blockchain.addBlock(block1);
@@ -316,6 +340,7 @@ describe('Blockchain Integration', () => {
       const minerNonce = await blockchain.getNonce(miner.address);
       
       const tx1 = await createSignedTransaction(
+        testConfig.chainId,
         miner.address,
         alice.address,
         transferAmount,
@@ -335,6 +360,7 @@ describe('Blockchain Integration', () => {
       );
       
       const coinbase2 = new TransactionClass(
+        testConfig.chainId,
         null,
         bob.address,
         blockReward + fee, // reward + tx fee
@@ -344,6 +370,7 @@ describe('Blockchain Integration', () => {
       );
       block2.transactions = [coinbase2.toObject(), tx1.toObject()];
       block2.merkleRoot = block2.calculateMerkleRoot();
+      await blockchain.prepareBlock(block2);
       block2.mine('sha256', 1000000);
       
       const result2 = await blockchain.addBlock(block2);
@@ -370,6 +397,7 @@ describe('Blockchain Integration', () => {
   describe('difficulty adjustment', () => {
     it('should maintain difficulty within adjustment interval', async () => {
       // mine blocks up to just before adjustment
+      const minerAddress = generateAddress(testConfig.addressPrefix).address;
       for (let i = 1; i < testConfig.difficultyAdjustmentInterval; i++) {
         const previousBlock = await blockchain.getLatestBlock();
         const block = new BlockClass(
@@ -378,13 +406,14 @@ describe('Blockchain Integration', () => {
           previousBlock!.hash,
           [],
           1,
-            '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' // valid base58 address
+            minerAddress
         );
         
         const blockReward = blockchain.getBlockReward(i);
         const coinbase = new TransactionClass(
+          testConfig.chainId,
           null,
-          '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', // valid base58 address
+          minerAddress,
           blockReward,
           0,
           0n,
@@ -392,6 +421,7 @@ describe('Blockchain Integration', () => {
         );
         block.transactions = [coinbase.toObject()];
         block.merkleRoot = block.calculateMerkleRoot();
+        await blockchain.prepareBlock(block);
         block.mine('sha256', 1000000);
         
         const result = await blockchain.addBlock(block);
@@ -432,6 +462,7 @@ describe('Blockchain Integration', () => {
   describe('chain operations', () => {
     it('should iterate through chain', async () => {
       // mine a few blocks
+      const minerAddress = generateAddress(testConfig.addressPrefix).address;
       for (let i = 1; i <= 3; i++) {
         const previousBlock = await blockchain.getLatestBlock();
         const block = new BlockClass(
@@ -440,13 +471,14 @@ describe('Blockchain Integration', () => {
           previousBlock!.hash,
           [],
           1,
-            '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' // valid base58 address
+            minerAddress
         );
         
         const blockReward = blockchain.getBlockReward(i);
         const coinbase = new TransactionClass(
+          testConfig.chainId,
           null,
-          '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', // valid base58 address
+          minerAddress,
           blockReward,
           0,
           0n,
@@ -454,6 +486,7 @@ describe('Blockchain Integration', () => {
         );
         block.transactions = [coinbase.toObject()];
         block.merkleRoot = block.calculateMerkleRoot();
+        await blockchain.prepareBlock(block);
         block.mine('sha256', 1000000);
         
         const result = await blockchain.addBlock(block);
@@ -475,7 +508,7 @@ describe('Blockchain Integration', () => {
     
     it('should calculate all balances correctly', async () => {
       // use a valid base58 address for testing
-      const minerAddress = '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'; // satoshi's address for testing
+      const minerAddress = generateAddress(testConfig.addressPrefix).address;
       
       // mine 3 blocks
       for (let i = 1; i <= 3; i++) {
@@ -491,6 +524,7 @@ describe('Blockchain Integration', () => {
         
         const blockReward = blockchain.getBlockReward(i);
         const coinbase = new TransactionClass(
+          testConfig.chainId,
           null,
           minerAddress,
           blockReward,
@@ -500,6 +534,7 @@ describe('Blockchain Integration', () => {
         );
         block.transactions = [coinbase.toObject()];
         block.merkleRoot = block.calculateMerkleRoot();
+        await blockchain.prepareBlock(block);
         block.mine('sha256', 1000000);
         
         const result = await blockchain.addBlock(block);
@@ -522,19 +557,21 @@ describe('Blockchain Integration', () => {
     it('should verify chain integrity', async () => {
       // mine a block
       const previousBlock = await blockchain.getLatestBlock();
+      const minerAddress = generateAddress(testConfig.addressPrefix).address;
       const block = new BlockClass(
         1,
         Date.now(),
         previousBlock!.hash,
         [],
         1,
-        '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' // valid base58 address
+        minerAddress
       );
       
       const blockReward = blockchain.getBlockReward(1);
       const coinbase = new TransactionClass(
+        testConfig.chainId,
         null,
-        '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', // valid base58 address
+        minerAddress,
         blockReward,
         0,
         0n,
@@ -542,6 +579,7 @@ describe('Blockchain Integration', () => {
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();
+      await blockchain.prepareBlock(block);
       block.mine('sha256', 1000000);
       
       await blockchain.addBlock(block);
@@ -558,19 +596,21 @@ describe('Blockchain Integration', () => {
       
       // mine a block
       const previousBlock = await blockchain.getLatestBlock();
+      const minerAddress = generateAddress(testConfig.addressPrefix).address;
       const block = new BlockClass(
         1,
         Date.now(),
         previousBlock!.hash,
         [],
         1,
-        '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' // valid base58 address
+        minerAddress
       );
       
       const blockReward = blockchain.getBlockReward(1);
       const coinbase = new TransactionClass(
+        testConfig.chainId,
         null,
-        '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', // valid base58 address
+        minerAddress,
         blockReward,
         0,
         0n,
@@ -578,6 +618,7 @@ describe('Blockchain Integration', () => {
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();
+      await blockchain.prepareBlock(block);
       block.mine('sha256', 1000000);
       
       await blockchain.addBlock(block);
@@ -590,7 +631,7 @@ describe('Blockchain Integration', () => {
   
   describe('block template', () => {
     it('should create valid block template', async () => {
-      const minerAddress = '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'; // valid base58 address
+      const minerAddress = generateAddress(testConfig.addressPrefix).address;
       const template = await blockchain.createBlockTemplate([], minerAddress);
       
       expect(template.height).toBe(1);
@@ -607,14 +648,15 @@ describe('Blockchain Integration', () => {
     
     it('should include transactions in template', async () => {
       // create wallets for the transactions
-      const alice = generateAddress();
-      const bob = generateAddress();
-      const charlie = generateAddress();
-      const dave = generateAddress();
-      const miner = generateAddress();
+      const alice = generateAddress(testConfig.addressPrefix);
+      const bob = generateAddress(testConfig.addressPrefix);
+      const charlie = generateAddress(testConfig.addressPrefix);
+      const dave = generateAddress(testConfig.addressPrefix);
+      const miner = generateAddress(testConfig.addressPrefix);
       
       // create some transactions
       const tx1 = new TransactionClass(
+        testConfig.chainId,
         alice.address,
         bob.address,
         1000000n,
@@ -624,6 +666,7 @@ describe('Blockchain Integration', () => {
       );
       
       const tx2 = new TransactionClass(
+        testConfig.chainId,
         charlie.address,
         dave.address,
         2000000n,

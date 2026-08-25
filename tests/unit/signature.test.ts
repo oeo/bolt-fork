@@ -11,10 +11,14 @@ import {
   generatePrivateKey,
   derivePublicKey,
   isValidPrivateKey,
-  isValidPublicKey
+  isValidPublicKey,
+  type TransactionData
 } from '../../src/crypto/signature';
 
 describe('Signature Functions', () => {
+  const chainId = 1057;
+  const senderAddress = '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa';
+  const recipientAddress = '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2';
   
   describe('sign and verify', () => {
     it('should sign and verify message', async () => {
@@ -66,9 +70,11 @@ describe('Signature Functions', () => {
   describe('transaction signing', () => {
     it('should sign and verify transaction', async () => {
       const privateKey = generatePrivateKey();
-      const txData = {
-        from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
-        to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
+      const txData: TransactionData = {
+        chainId,
+        kind: 'transfer',
+        from: senderAddress,
+        to: recipientAddress,
         amount: 1000000000n, // 10 BOLT
         nonce: 1,
         fee: 10000n,
@@ -85,9 +91,11 @@ describe('Signature Functions', () => {
     
     it('should fail verification with modified transaction data', async () => {
       const privateKey = generatePrivateKey();
-      const txData = {
-        from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
-        to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
+      const txData: TransactionData = {
+        chainId,
+        kind: 'transfer',
+        from: senderAddress,
+        to: recipientAddress,
         amount: 1000000000n,
         nonce: 1,
         fee: 10000n,
@@ -101,13 +109,37 @@ describe('Signature Functions', () => {
       const isValid = await verifyTransaction(modifiedTx, signature, publicKey);
       expect(isValid).toBe(false);
     });
+
+    it('should bind signatures and hashes to chain ID', async () => {
+      const privateKey = generatePrivateKey();
+      const txData: TransactionData = {
+        chainId,
+        kind: 'transfer',
+        from: senderAddress,
+        to: recipientAddress,
+        amount: 1000000000n,
+        nonce: 1,
+        fee: 10000n,
+        timestamp: 1234567890
+      };
+      const otherChainTx = { ...txData, chainId: chainId + 1 };
+
+      const signed = await signTransaction(txData, privateKey);
+      const otherChainSigned = await signTransaction(otherChainTx, privateKey);
+
+      expect(otherChainSigned.signature).not.toBe(signed.signature);
+      expect(calculateTransactionHash(otherChainTx)).not.toBe(calculateTransactionHash(txData));
+      expect(await verifyTransaction(otherChainTx, signed.signature, signed.publicKey)).toBe(false);
+    });
   });
   
   describe('serializeTransactionData', () => {
     it('should serialize deterministically', () => {
-      const txData = {
-        from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
-        to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
+      const txData: TransactionData = {
+        chainId,
+        kind: 'transfer',
+        from: senderAddress,
+        to: recipientAddress,
         amount: 1000000000n,
         nonce: 1,
         fee: 10000n,
@@ -117,17 +149,29 @@ describe('Signature Functions', () => {
       const serialized1 = serializeTransactionData(txData);
       const serialized2 = serializeTransactionData(txData);
       
-      expect(serialized1).toBe(serialized2);
-      expect(serialized1).toContain('1000000000');
-      expect(serialized1).toContain('1234567890');
+      expect(serialized1).toEqual(serialized2);
+      expect(bytesToHex(serialized1)).toBe(
+        '0000000900000013626f6c743a7472616e73616374696f6e3a76310000000431303537' +
+        '000000087472616e73666572000000223141317a5031655035514765666932444d505466' +
+        '544c35534c6d7637446976664e6100000022314276424d53455973745765747154466e35' +
+        '4175346d3447466737784a614e564e320000000a313030303030303030300000000131' +
+        '0000000531303030300000000a31323334353637383930'
+      );
+      const content = new TextDecoder().decode(serialized1);
+      expect(content).toContain(chainId.toString());
+      expect(content).toContain('transfer');
+      expect(content).toContain('1000000000');
+      expect(content).toContain('1234567890');
     });
   });
   
   describe('calculateTransactionHash', () => {
     it('should calculate consistent hash', () => {
-      const txData = {
-        from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
-        to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
+      const txData: TransactionData = {
+        chainId,
+        kind: 'transfer',
+        from: senderAddress,
+        to: recipientAddress,
         amount: 1000000000n,
         nonce: 1,
         fee: 10000n,
@@ -138,13 +182,16 @@ describe('Signature Functions', () => {
       const hash2 = calculateTransactionHash(txData);
       
       expect(hash1).toBe(hash2);
+      expect(hash1).toBe('aaace1a1335bb204f989d49b3f6f92672d5b6ca0d88a8e5caa1519cdaab32868');
       expect(hash1.length).toBe(64); // sha256 hex
     });
     
     it('should include signature in hash if provided', () => {
-      const txData = {
-        from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
-        to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
+      const txData: TransactionData = {
+        chainId,
+        kind: 'transfer',
+        from: senderAddress,
+        to: recipientAddress,
         amount: 1000000000n,
         nonce: 1,
         fee: 10000n,
@@ -152,15 +199,35 @@ describe('Signature Functions', () => {
       };
       
       const hashWithoutSig = calculateTransactionHash(txData);
-      const hashWithSig = calculateTransactionHash(txData, 'fakesignature');
-      
+      const hashWithSig = calculateTransactionHash(txData, 'ab'.repeat(64));
+
       expect(hashWithoutSig).not.toBe(hashWithSig);
+    });
+
+    it('should hash signature bytes independent of hex casing', () => {
+      const txData = {
+        chainId,
+        kind: 'transfer' as const,
+        from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
+        to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
+        amount: 1000000000n,
+        nonce: 1,
+        fee: 10000n,
+        timestamp: 1234567890
+      };
+      const signature = 'ab'.repeat(64);
+
+      expect(calculateTransactionHash(txData, signature)).toBe(
+        calculateTransactionHash(txData, signature.toUpperCase())
+      );
     });
     
     it('should handle coinbase transactions', () => {
-      const coinbaseTx = {
+      const coinbaseTx: TransactionData = {
+        chainId,
+        kind: 'coinbase',
         from: null,
-        to: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
+        to: senderAddress,
         amount: 5000000000n, // 50 BOLT reward
         nonce: 0,
         fee: 0n,

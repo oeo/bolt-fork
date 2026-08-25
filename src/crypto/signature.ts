@@ -1,6 +1,18 @@
 import * as secp256k1 from '@noble/secp256k1';
 import { generateAddress } from './address';
 import { hash, hexToBytes, bytesToHex } from './hash';
+import { encodeCanonicalFields } from '../utils/serialization';
+
+export interface TransactionData {
+  chainId: number;
+  kind: 'transfer' | 'coinbase';
+  from: string | null;
+  to: string;
+  amount: bigint;
+  nonce: number;
+  fee: bigint;
+  timestamp: number;
+}
 
 // configure secp256k1 with crypto functions using bun's native crypto
 secp256k1.etc.hmacSha256Sync = (k: Uint8Array, ...m: Uint8Array[]) => {
@@ -78,14 +90,7 @@ export async function verify(
  * sign transaction data
  */
 export async function signTransaction(
-  txData: {
-    from: string;
-    to: string;
-    amount: bigint;
-    nonce: number;
-    fee: bigint;
-    timestamp: number;
-  },
+  txData: TransactionData,
   privateKey: Uint8Array | string
 ): Promise<{
   signature: string;
@@ -114,14 +119,7 @@ export async function signTransaction(
  * verify transaction signature
  */
 export async function verifyTransaction(
-  txData: {
-    from: string;
-    to: string;
-    amount: bigint;
-    nonce: number;
-    fee: bigint;
-    timestamp: number;
-  },
+  txData: TransactionData,
   signature: string | Uint8Array,
   publicKey: string | Uint8Array
 ): Promise<boolean> {
@@ -135,45 +133,38 @@ export async function verifyTransaction(
 /**
  * serialize transaction data for signing
  */
-export function serializeTransactionData(txData: {
-  from: string;
-  to: string;
-  amount: bigint;
-  nonce: number;
-  fee: bigint;
-  timestamp: number;
-}): string {
-  // deterministic serialization
-  return [
-    txData.from,
+export function serializeTransactionData(txData: TransactionData): Uint8Array {
+  return encodeCanonicalFields([
+    'bolt:transaction:v1',
+    txData.chainId.toString(),
+    txData.kind,
+    txData.from ?? '',
     txData.to,
     txData.amount.toString(),
     txData.nonce.toString(),
     txData.fee.toString(),
     txData.timestamp.toString()
-  ].join(':');
+  ]);
 }
 
 /**
  * calculate transaction hash
  */
 export function calculateTransactionHash(
-  txData: {
-    from: string | null;
-    to: string;
-    amount: bigint;
-    nonce: number;
-    fee: bigint;
-    timestamp: number;
-  },
+  txData: TransactionData,
   signature?: string
 ): string {
-  // include signature in hash if provided
-  const dataToHash = signature
-    ? serializeTransactionData(txData as any) + ':' + signature
-    : serializeTransactionData(txData as any);
-  
-  return hash(dataToHash, 'sha256');
+  const serialized = serializeTransactionData(txData);
+  if (!signature) return hash(serialized, 'sha256');
+  if (!/^[0-9a-fA-F]{128}$/.test(signature)) {
+    throw new Error('Invalid transaction signature');
+  }
+
+  const encodedSignature = encodeCanonicalFields([hexToBytes(signature.toLowerCase())]);
+  const signed = new Uint8Array(serialized.length + encodedSignature.length);
+  signed.set(serialized);
+  signed.set(encodedSignature, serialized.length);
+  return hash(signed, 'sha256');
 }
 
 /**

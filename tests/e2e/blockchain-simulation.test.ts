@@ -30,7 +30,7 @@ class BlockchainActor {
   
   constructor(name: string, blockchain: Blockchain, mempool: Mempool) {
     this.name = name;
-    this.keyInfo = generateAddress();
+    this.keyInfo = generateAddress(chainConfig.addressPrefix);
     this.blockchain = blockchain;
     this.mempool = mempool;
   }
@@ -59,6 +59,7 @@ class BlockchainActor {
     
     // create and sign transaction
     const tx = new TransactionClass(
+      chainConfig.chainId,
       this.keyInfo.address,
       to,
       amountWatts,
@@ -121,7 +122,7 @@ class Miner extends BlockchainActor {
     this.miningService = new MiningService({
       blockchain,
       mempool,
-      minerAddress: generateAddress().address,
+      minerAddress: generateAddress(chainConfig.addressPrefix).address,
       autoStart: false
     });
   }
@@ -188,6 +189,7 @@ class Miner extends BlockchainActor {
     );
     
     // in devnet, difficulty 1 means any hash is valid
+    await this.blockchain.prepareBlock(block);
     block.nonce = Math.floor(Math.random() * 1000000);
     block.hash = block.calculateHash();
     
@@ -226,6 +228,8 @@ describe('Blockchain E2E Simulation', () => {
     await blockchain.initialize();
     
     mempool = new Mempool(storage, {
+      chainId: chainConfig.chainId,
+      addressPrefix: chainConfig.addressPrefix,
       maxSize: 1000,
       maxSizeBytes: 10_000_000,
       minFeePerByte: 1n
@@ -346,6 +350,7 @@ describe('Blockchain E2E Simulation', () => {
     
     // try to send again with same nonce (double spend attempt)
     const tx2 = new TransactionClass(
+      chainConfig.chainId,
       alice.keyInfo.address,
       charlie.keyInfo.address,
       60n * WATTS_PER_BOLT,
@@ -362,13 +367,10 @@ describe('Blockchain E2E Simulation', () => {
     await new Promise(resolve => setTimeout(resolve, 500));
     miner1.stopMining();
     
-    // try to send more than remaining balance (will be added to mempool but won't be mined)
-    const tx3 = await alice.sendTransaction(charlie.keyInfo.address, 50, 0.001);
-    
-    // try to mine the invalid transaction
-    miner1.startMining();
-    await new Promise(resolve => setTimeout(resolve, 500));
-    miner1.stopMining();
+    // reject spending more than remaining balance
+    await expect(
+      alice.sendTransaction(charlie.keyInfo.address, 50, 0.001)
+    ).rejects.toThrow('Insufficient balance');
     
     // verify only first transaction went through, not the second
     await bob.updateBalance();
@@ -377,8 +379,7 @@ describe('Blockchain E2E Simulation', () => {
     expect(bob.balance).toBe(60n * WATTS_PER_BOLT);
     expect(charlie.balance).toBe(0n); // charlie shouldn't receive anything
     
-    // the invalid transaction should still be in mempool
-    expect(mempool.hasTransaction(tx3.hash)).toBe(true);
+    expect(mempool.getStats().size).toBe(0);
     
     logger.info('✓ Double spending prevented');
   }, 10000);
@@ -468,11 +469,18 @@ describe('Blockchain E2E Simulation', () => {
     // this test would require network simulation which we don't have yet
     // but we can test the concept with parallel chains
     
-    // fund alice
-    await storage.updateAccountState(alice.keyInfo.address, {
-      balance: 1000n * WATTS_PER_BOLT,
-      nonce: 0
-    });
+    // fund alice through consensus state
+    const fundingTemplate = await blockchain.createBlockTemplate([], alice.keyInfo.address);
+    const fundingBlock = new BlockClass(
+      fundingTemplate.height,
+      fundingTemplate.timestamp,
+      fundingTemplate.previousHash,
+      fundingTemplate.transactions,
+      fundingTemplate.difficulty
+    );
+    await blockchain.prepareBlock(fundingBlock);
+    fundingBlock.hash = fundingBlock.calculateHash();
+    expect((await blockchain.addBlock(fundingBlock)).valid).toBe(true);
     
     // create competing transactions
     const tx1 = await alice.sendTransaction(bob.keyInfo.address, 100, 0.001);
@@ -611,7 +619,7 @@ describe('GetBlockTemplate Integration', () => {
     blockchain = new Blockchain(storage, chainConfig);
     await blockchain.initialize();
     
-    mempool = new Mempool(storage);
+    mempool = new Mempool(storage, chainConfig);
     await mempool.initialize();
     
     gbtService = new GetBlockTemplateService(blockchain, mempool, storage);
@@ -624,21 +632,23 @@ describe('GetBlockTemplate Integration', () => {
   
   test('should handle mining pool scenario', async () => {
     logger.info('\n=== Test: Mining pool with GBT ===');
+    const payoutAddress = generateAddress(chainConfig.addressPrefix).address;
     
     // simulate mining pool getting work
-    const template1 = await gbtService.getBlockTemplate();
+    const template1 = await gbtService.getBlockTemplate({ payoutAddress });
     expect(template1).toBeDefined();
     expect(template1.height).toBe(1);
     
     // add some transactions
-    const alice = generateAddress();
+    const alice = generateAddress(chainConfig.addressPrefix);
     await storage.updateAccountState(alice.address, {
       balance: 1000n * WATTS_PER_BOLT,
       nonce: 0
     });
     
-    const bob = generateAddress();
+    const bob = generateAddress(chainConfig.addressPrefix);
     const tx = new TransactionClass(
+      chainConfig.chainId,
       alice.address,
       bob.address,
       100n * WATTS_PER_BOLT,
@@ -650,7 +660,7 @@ describe('GetBlockTemplate Integration', () => {
     
     // pool should get new template with transaction
     await gbtService['invalidateAllTemplates'](); // force refresh
-    const template2 = await gbtService.getBlockTemplate();
+    const template2 = await gbtService.getBlockTemplate({ payoutAddress });
     
     expect(template2.transactions).toHaveLength(1);
     expect(template2.totalFees).toBe(100000n);

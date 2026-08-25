@@ -1,15 +1,23 @@
 import { Block, Transaction, AccountState } from '../types';
 
-export interface BlockCommit {
-  block: Block;
+export interface ChainPoint {
+  height: number;
+  hash: string | null;
+}
+
+export interface CanonicalTransition {
+  expectedTip: ChainPoint;
+  expectedCumulativeDifficulty: bigint;
+  ancestor: ChainPoint;
+  blocks: Block[];
   accountStates: Array<{ address: string; state: AccountState }>;
   cumulativeDifficulty: bigint;
 }
 
-export interface ChainRewind {
-  height: number;
-  cumulativeDifficulty: bigint;
-  accountStates: Array<{ address: string; state: AccountState }>;
+export class StaleChainTipError extends Error {
+  constructor(public readonly actualTip: ChainPoint) {
+    super(`Chain tip changed to ${actualTip.height}:${actualTip.hash ?? 'null'}`);
+  }
 }
 
 /**
@@ -50,9 +58,7 @@ export abstract class StorageAdapter {
    */
   abstract saveBlock(block: Block): Promise<void>;
 
-  abstract commitBlock(commit: BlockCommit): Promise<void>;
-
-  abstract rewindChain(rewind: ChainRewind): Promise<void>;
+  abstract transitionCanonicalChain(transition: CanonicalTransition): Promise<void>;
   
   /**
    * get a block by its height/index

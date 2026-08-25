@@ -53,7 +53,7 @@ describe('MiningService', () => {
     blockchain = new Blockchain(storage, testConfig);
     await blockchain.initialize();
     
-    mempool = new Mempool(storage);
+    mempool = new Mempool(storage, testConfig);
     await mempool.initialize();
   });
   
@@ -95,7 +95,7 @@ describe('MiningService', () => {
     });
     
     it('should start when properly configured', () => {
-      const miner = generateAddress();
+      const miner = generateAddress(testConfig.addressPrefix);
       process.env.ENABLE_MINING = 'true';
       process.env.MINER_ADDRESS = miner.address;
       
@@ -112,7 +112,7 @@ describe('MiningService', () => {
   
   describe('mining', () => {
     it('should mine a block', async () => {
-      const miner = generateAddress();
+      const miner = generateAddress(testConfig.addressPrefix);
       process.env.ENABLE_MINING = 'true';
       process.env.MINER_ADDRESS = miner.address;
       
@@ -143,9 +143,9 @@ describe('MiningService', () => {
     
     it('should include mempool transactions', async () => {
       // create some test transactions
-      const alice = generateAddress();
-      const bob = generateAddress();
-      const miner = generateAddress();
+      const alice = generateAddress(testConfig.addressPrefix);
+      const bob = generateAddress(testConfig.addressPrefix);
+      const miner = generateAddress(testConfig.addressPrefix);
       
       // give alice some balance first
       await storage.updateAccountState(alice.address, {
@@ -155,6 +155,7 @@ describe('MiningService', () => {
       
       // create transaction
       const tx = await createSignedTransaction(
+        testConfig.chainId,
         alice.address,
         bob.address,
         1_000_000_000n, // 10 BOLT
@@ -195,7 +196,7 @@ describe('MiningService', () => {
     });
     
     it('should handle mining failures gracefully', async () => {
-      const miner = generateAddress();
+      const miner = generateAddress(testConfig.addressPrefix);
       process.env.ENABLE_MINING = 'true';
       process.env.MINER_ADDRESS = miner.address;
       process.env.MINING_MAX_ITERATIONS = '1'; // limit iterations
@@ -222,7 +223,7 @@ describe('MiningService', () => {
   
   describe('statistics', () => {
     it('should track mining statistics', async () => {
-      const miner = generateAddress();
+      const miner = generateAddress(testConfig.addressPrefix);
       process.env.ENABLE_MINING = 'true';
       process.env.MINER_ADDRESS = miner.address;
       
@@ -249,7 +250,7 @@ describe('MiningService', () => {
   
   describe('lifecycle', () => {
     it('should stop mining when requested', async () => {
-      const miner = generateAddress();
+      const miner = generateAddress(testConfig.addressPrefix);
       process.env.ENABLE_MINING = 'true';
       process.env.MINER_ADDRESS = miner.address;
       

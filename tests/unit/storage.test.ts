@@ -23,6 +23,7 @@ describe('Storage Adapter', () => {
       previousHash: '0'.repeat(64),
       hash: '1'.repeat(64),
       merkleRoot: '2'.repeat(64),
+      stateRoot: '3'.repeat(64),
       difficulty: 10,
       nonce: 12345,
       transactions: [],
@@ -110,6 +111,8 @@ describe('Storage Adapter', () => {
   
   describe('Transaction operations', () => {
     const tx: Transaction = {
+      chainId: 1057,
+      kind: 'transfer',
       hash: 'tx123',
       from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
       to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
@@ -131,6 +134,8 @@ describe('Storage Adapter', () => {
     it('should get transactions by address', async () => {
       const tx2: Transaction = {
         ...tx,
+        chainId: 1057,
+        kind: 'transfer',
         hash: 'tx456',
         from: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
         to: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'
@@ -147,6 +152,8 @@ describe('Storage Adapter', () => {
     
     it('should handle coinbase transactions', async () => {
       const coinbase: Transaction = {
+        chainId: 1057,
+        kind: 'coinbase',
         hash: 'coinbase123',
         from: null, // coinbase has no sender
         to: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
@@ -166,6 +173,8 @@ describe('Storage Adapter', () => {
   
   describe('Mempool operations', () => {
     const tx: Transaction = {
+      chainId: 1057,
+      kind: 'transfer',
       hash: 'mempool123',
       from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
       to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',

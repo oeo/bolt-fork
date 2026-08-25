@@ -1,4 +1,4 @@
-import { StorageAdapter, BlockCommit, ChainRewind } from './adapter';
+import { CanonicalTransition, StaleChainTipError, StorageAdapter } from './adapter';
 import { LMDBManager } from './lmdb-manager';
 import { LMDBBlockchainStore } from './lmdb-blockchain-store';
 import { LMDBStateStore } from './lmdb-state-store';
@@ -58,27 +58,63 @@ export class LMDBAdapter extends StorageAdapter {
     return this.blockchainStore.addBlock(block);
   }
 
-  async commitBlock({ block, accountStates, cumulativeDifficulty }: BlockCommit): Promise<void> {
-    await this.manager.transaction(() => {
-      this.blockchainStore.writeBlock(block);
-      this.stateStore.writeAccounts(accountStates.map(({ address, state }) => ({
-        address,
-        ...state,
-      })));
-      this.manager.metadata.put('cumulativeDifficulty', cumulativeDifficulty.toString());
-    });
-  }
+  async transitionCanonicalChain({
+    expectedTip,
+    expectedCumulativeDifficulty,
+    ancestor,
+    blocks,
+    accountStates,
+    cumulativeDifficulty,
+  }: CanonicalTransition): Promise<void> {
+    if (cumulativeDifficulty < 0n) throw new Error('Invalid cumulative difficulty');
+    if (new Set(accountStates.map(({ address }) => address)).size !== accountStates.length) {
+      throw new Error('Duplicate account state');
+    }
+    this.manager.transactionSync(() => {
+      const storedHeight = this.manager.metadata.get('chainHeight');
+      const storedHash = this.manager.metadata.get('chainTip');
+      const actualTip = {
+        height: storedHeight === undefined ? -1 : Number(storedHeight.toString()),
+        hash: storedHash === undefined ? null : storedHash.toString(),
+      };
+      const storedDifficulty = this.manager.metadata.get('cumulativeDifficulty');
+      const actualDifficulty = storedDifficulty === undefined ? 0n : BigInt(storedDifficulty.toString());
+      if (
+        actualTip.height !== expectedTip.height ||
+        actualTip.hash !== expectedTip.hash ||
+        actualDifficulty !== expectedCumulativeDifficulty
+      ) {
+        throw new StaleChainTipError(actualTip);
+      }
 
-  async rewindChain({ height, cumulativeDifficulty, accountStates }: ChainRewind): Promise<void> {
-    await this.manager.transaction(() => {
-      this.blockchainStore.writeRemoveBlocksAbove(height);
+      const ancestorBlock = ancestor.height >= 0 ? this.blockchainStore.readBlock(ancestor.height) : null;
+      const ancestorMatches = ancestor.height === -1
+        ? ancestor.hash === null
+        : ancestorBlock?.hash === ancestor.hash;
+      if (ancestor.height < -1 || ancestor.height > expectedTip.height || !ancestorMatches) {
+        throw new Error('Invalid canonical ancestor');
+      }
+
+      let previousHash = ancestor.hash;
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (block.index !== ancestor.height + i + 1 || block.previousHash !== (previousHash ?? '0'.repeat(64))) {
+          throw new Error('Invalid replacement chain');
+        }
+        previousHash = block.hash;
+      }
+
+      this.blockchainStore.writeRemoveBlocksAbove(ancestor.height);
+      for (const block of blocks) this.blockchainStore.writeBlock(block);
       this.stateStore.clearAccounts();
       this.stateStore.writeAccounts(accountStates.map(({ address, state }) => ({
         address,
         ...state,
       })));
-      this.manager.metadata.put('cumulativeDifficulty', cumulativeDifficulty.toString());
+      this.manager.metadata.putSync('cumulativeDifficulty', cumulativeDifficulty.toString());
     });
+    this.blockchainStore.clearCache();
+    this.stateStore.clearCache();
   }
 
   async getBlock(index: number): Promise<Block | null> {

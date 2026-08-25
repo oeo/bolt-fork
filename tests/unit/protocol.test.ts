@@ -7,6 +7,9 @@ import {
   PROTOCOL_VERSION,
 } from '../../src/network/protocol';
 import { NETWORK_MAGIC } from '../../src/constants';
+import { createCoinbaseTransaction } from '../../src/core/transaction';
+import { SyncManager } from '../../src/network/sync-manager';
+import { EventEmitter } from 'events';
 
 describe('network protocol', () => {
   let protocol: Protocol;
@@ -16,6 +19,10 @@ describe('network protocol', () => {
   });
 
   describe('message serialization', () => {
+    it('should use the chain-bound protocol version', () => {
+      expect(PROTOCOL_VERSION).toBe(3);
+    });
+
     it('should serialize and deserialize messages with correct header', () => {
       const payload = new Uint8Array([1, 2, 3, 4, 5]);
       const message = protocol.serializeMessage(MessageType.PING, payload);
@@ -72,9 +79,62 @@ describe('network protocol', () => {
       expect(result!.payload.length).toBe(payload.length);
       expect(result!.payload).toEqual(payload);
     });
+
+    it('should round-trip chain-bound transactions', () => {
+      const transaction = createCoinbaseTransaction(
+        1057,
+        '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
+        5000000000n,
+        0n,
+        1234567890
+      ).toObject();
+
+      const decoded = protocol.decodeMessage(protocol.encodeMessage('tx', transaction));
+      expect(decoded?.command).toBe('tx');
+      expect(decoded?.payload).toEqual(transaction);
+    });
+
+    it('should reject malformed transaction payloads without throwing', () => {
+      const message = protocol.serializeMessage(MessageType.TX, new TextEncoder().encode('{'));
+      expect(() => protocol.decodeMessage(message)).not.toThrow();
+      expect(protocol.decodeMessage(message)).toBeNull();
+    });
   });
 
   describe('version message', () => {
+    it('should disconnect peers using an obsolete protocol version', () => {
+      let disconnected = false;
+      let sent = false;
+      const connectionManager = Object.assign(new EventEmitter(), {
+        disconnect: () => { disconnected = true; },
+        updatePeerInfo: () => {},
+        sendMessage: () => { sent = true; }
+      });
+      const discoveryService = Object.assign(new EventEmitter(), {
+        getPeer: () => null
+      });
+      new SyncManager({
+        blockchain: {} as any,
+        connectionManager: connectionManager as any,
+        protocol,
+        discoveryService: discoveryService as any
+      });
+      const message = protocol.encodeMessage('version', {
+        version: PROTOCOL_VERSION - 1,
+        services: 1n,
+        timestamp: 1234567890,
+        addrRecv: '127.0.0.1',
+        addrFrom: '127.0.0.1',
+        nonce: 1n,
+        userAgent: 'obsolete',
+        startHeight: 0
+      });
+
+      connectionManager.emit('message:received', 'peer', message);
+      expect(disconnected).toBe(true);
+      expect(sent).toBe(false);
+    });
+
     it('should serialize and deserialize version message', () => {
       const versionMsg = {
         version: PROTOCOL_VERSION,
@@ -118,6 +178,23 @@ describe('network protocol', () => {
 
       expect(deserialized).not.toBeNull();
       expect(deserialized!.userAgent).toBe(versionMsg.userAgent);
+    });
+  });
+
+  describe('headers message', () => {
+    it('should round-trip state roots', () => {
+      const headers = [{
+        height: 1,
+        hash: '1'.repeat(64),
+        previousHash: '2'.repeat(64),
+        merkleRoot: '3'.repeat(64),
+        stateRoot: '4'.repeat(64),
+        timestamp: 1234567890,
+        difficulty: 10,
+        nonce: 7
+      }];
+
+      expect(protocol.deserializeHeaders(protocol.serializeHeaders(headers))).toEqual(headers);
     });
   });
 

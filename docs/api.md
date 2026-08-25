@@ -113,6 +113,8 @@ submit a signed transaction
 **request body:**
 ```json
 {
+  "chainId": 1058,
+  "kind": "transfer",
   "hash": "tx123...",
   "from": "B1abc...",
   "to": "B1def...",
@@ -126,6 +128,8 @@ submit a signed transaction
 ```
 
 **validation:**
+- requires the configured chain id
+- requires sender and recipient addresses from the configured chain
 - verifies sender has sufficient balance (amount + fee)
 - checks nonce matches expected value
 - validates transaction signature
@@ -225,6 +229,8 @@ get all mempool transactions
 {
   "transactions": [
     {
+      "chainId": 1058,
+      "kind": "transfer",
       "hash": "tx123...",
       "from": "B1abc...",
       "to": "B1def...",
@@ -374,6 +380,8 @@ future websocket endpoints for real-time updates:
 curl -X POST http://localhost:7333/transactions \
   -H "Content-Type: application/json" \
   -d '{
+    "chainId": 1058,
+    "kind": "transfer",
     "hash": "abc123...",
     "from": "B1sender...",
     "to": "B1receiver...",

@@ -30,7 +30,7 @@ describe('Chain Configuration', () => {
     });
 
     it('should have correct genesis block', () => {
-      expect(mainnet.genesisTimestamp).toBe(1757000000);
+      expect(mainnet.genesisTimestamp).toBe(1_757_000_000_000);
       expect(mainnet.genesisNonce).toBe(0);
       expect(mainnet.genesisMemo).toBe('we will craft citadels in the clouds or bury vaults within the ashes.');
     });
@@ -105,6 +105,11 @@ describe('Chain Configuration', () => {
   });
 
   describe('config validation', () => {
+    it('should use fixed millisecond genesis timestamps', () => {
+      expect(testnet.genesisTimestamp).toBe(1_700_000_000_000);
+      expect(devnet.genesisTimestamp).toBe(1_700_000_001_000);
+    });
+
     it('should have non-zero minimum difficulty', () => {
       [mainnet, testnet, devnet].forEach(config => {
         expect(config.minDifficulty).toBeGreaterThan(0);

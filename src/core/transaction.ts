@@ -16,6 +16,8 @@ const logger = getLogger(__filename);
  * transaction class with validation and signing
  */
 export class TransactionClass {
+  public chainId: number;
+  public kind: 'transfer' | 'coinbase';
   public hash: string;
   public from: string | null; // null for coinbase
   public to: string;
@@ -27,6 +29,7 @@ export class TransactionClass {
   public timestamp: number;
 
   constructor(
+    chainId: number,
     from: string | null,
     to: string,
     amount: bigint,
@@ -34,6 +37,8 @@ export class TransactionClass {
     fee: bigint,
     timestamp: number = Date.now()
   ) {
+    this.chainId = chainId;
+    this.kind = from === null ? 'coinbase' : 'transfer';
     this.from = from;
     this.to = to;
     this.amount = amount;
@@ -54,7 +59,15 @@ export class TransactionClass {
    * create transaction from plain object
    */
   static fromObject(obj: Transaction): TransactionClass {
+    if (!Number.isSafeInteger(obj.chainId)) {
+      throw new Error('Invalid transaction chain ID');
+    }
+    if (obj.kind !== 'transfer' && obj.kind !== 'coinbase') {
+      throw new Error('Invalid transaction kind');
+    }
+
     const tx = new TransactionClass(
+      obj.chainId,
       obj.from,
       obj.to,
       BigInt(obj.amount),
@@ -62,6 +75,10 @@ export class TransactionClass {
       BigInt(obj.fee),
       obj.timestamp
     );
+
+    if (obj.kind !== tx.kind) {
+      throw new Error('Invalid transaction kind');
+    }
 
     tx.hash = obj.hash;
     tx.signature = obj.signature;
@@ -75,6 +92,8 @@ export class TransactionClass {
    */
   toObject(): Transaction {
     return {
+      chainId: this.chainId,
+      kind: this.kind,
       hash: this.hash,
       from: this.from,
       to: this.to,
@@ -93,6 +112,8 @@ export class TransactionClass {
   calculateHash(): string {
     return calculateTransactionHash(
       {
+        chainId: this.chainId,
+        kind: this.kind,
         from: this.from,
         to: this.to,
         amount: this.amount,
@@ -114,6 +135,8 @@ export class TransactionClass {
 
     const { signature, publicKey } = await signTransaction(
       {
+        chainId: this.chainId,
+        kind: this.kind,
         from: this.from,
         to: this.to,
         amount: this.amount,
@@ -150,6 +173,8 @@ export class TransactionClass {
 
     return verifyTransaction(
       {
+        chainId: this.chainId,
+        kind: this.kind,
         from: this.from,
         to: this.to,
         amount: this.amount,
@@ -165,7 +190,16 @@ export class TransactionClass {
   /**
    * validate transaction structure and data
    */
-  validate(): ValidationResult {
+  validate(expectedChainId: number, addressPrefix: number): ValidationResult {
+    if (!Number.isSafeInteger(this.chainId) || this.chainId !== expectedChainId) {
+      return { valid: false, error: `Invalid chain ID: expected ${expectedChainId}, got ${this.chainId}` };
+    }
+
+    const expectedKind = this.from === null ? 'coinbase' : 'transfer';
+    if (this.kind !== expectedKind) {
+      return { valid: false, error: 'Invalid transaction kind' };
+    }
+
     // if hash not set yet (unsigned tx), calculate it
     if (!this.hash) {
       this.hash = this.calculateHash();
@@ -178,11 +212,11 @@ export class TransactionClass {
     }
 
     // check addresses
-    if (!validateAddress(this.to)) {
+    if (!validateAddress(this.to, addressPrefix)) {
       return { valid: false, error: 'Invalid recipient address' };
     }
 
-    if (this.from !== null && !validateAddress(this.from)) {
+    if (this.from !== null && !validateAddress(this.from, addressPrefix)) {
       return { valid: false, error: 'Invalid sender address' };
     }
 
@@ -309,12 +343,14 @@ export class TransactionClass {
  * create coinbase transaction
  */
 export function createCoinbaseTransaction(
+  chainId: number,
   minerAddress: string,
   blockReward: bigint,
   fees: bigint,
   timestamp: number = Date.now()
 ): TransactionClass {
   const coinbase = new TransactionClass(
+    chainId,
     null, // coinbase has no sender
     minerAddress,
     blockReward + fees,
@@ -340,6 +376,7 @@ export function getTransactionSize(tx: Transaction): number {
  * create and sign regular transaction
  */
 export async function createSignedTransaction(
+  chainId: number,
   from: string,
   to: string,
   amount: bigint,
@@ -348,7 +385,7 @@ export async function createSignedTransaction(
   privateKey: Uint8Array | string,
   timestamp: number = Date.now()
 ): Promise<TransactionClass> {
-  const tx = new TransactionClass(from, to, amount, nonce, fee, timestamp);
+  const tx = new TransactionClass(chainId, from, to, amount, nonce, fee, timestamp);
   await tx.sign(privateKey);
   return tx;
 }

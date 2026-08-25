@@ -148,6 +148,7 @@ export class MiningService extends EventEmitter {
       
       const difficulty = await this.blockchain.getDifficulty();
       const blockReward = this.blockchain.getBlockReward(height);
+      const chainConfig = this.blockchain.getConfig();
       
       // get blockchain config
       
@@ -162,6 +163,7 @@ export class MiningService extends EventEmitter {
       
       // create coinbase
       const coinbase = createCoinbaseTransaction(
+        chainConfig.chainId,
         this.minerAddress,
         blockReward,
         totalFees,
@@ -177,6 +179,7 @@ export class MiningService extends EventEmitter {
         difficulty,
         this.minerAddress
       );
+      await this.blockchain.prepareBlock(block);
       
       logger.debug(`Mining block ${height}`, {
         transactions: transactions.length,
@@ -185,7 +188,6 @@ export class MiningService extends EventEmitter {
       });
       
       // mine with limited iterations
-      const chainConfig = this.blockchain.getConfig();
       const miningResult = block.mine(chainConfig.hashAlgorithm, this.maxIterations);
       
       // calculate hash rate (hashes per second)

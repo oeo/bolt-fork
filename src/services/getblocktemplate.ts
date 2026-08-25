@@ -9,6 +9,8 @@ import type { Blockchain } from '../core/blockchain';
 import type { Mempool } from '../core/mempool';
 import type { StorageAdapter } from '../storage/adapter';
 import { BlockClass } from '../core/block';
+import { createCoinbaseTransaction } from '../core/transaction';
+import { validateAddress } from '../crypto/address';
 import { hash } from '../crypto/hash';
 import { createHash } from 'crypto';
 import { serialize, deserialize } from '../utils/bigint';
@@ -19,7 +21,7 @@ const logger = getLogger(__filename);
 const TEMPLATE_KEYS = {
   template: (id: string) => `gbt:template:${id}`,
   activeTemplates: 'gbt:active',
-  currentTemplate: 'gbt:current',
+  currentTemplate: (payoutAddress: string) => `gbt:current:${payoutAddress}`,
   expiryIndex: (timestamp: number) => `gbt:expires:${timestamp}`,
   mempoolHash: 'gbt:mempool:hash',
   longpoll: (id: string) => `gbt:longpoll:${id}`,
@@ -62,9 +64,13 @@ export class GetBlockTemplateService {
   }
   
   // main gbt interface
-  async getBlockTemplate(request: BlockTemplateRequest = {}): Promise<BlockTemplate> {
+  async getBlockTemplate(request: BlockTemplateRequest): Promise<BlockTemplate> {
+    const chainConfig = this.blockchain.getChainConfig();
+    if (!validateAddress(request.payoutAddress, chainConfig.addressPrefix)) {
+      throw new Error('Invalid payout address');
+    }
     // check for existing valid template
-    const existing = await this.getCurrentTemplate();
+    const existing = await this.getCurrentTemplate(request.payoutAddress);
     
     // handle longpoll request
     if (request.longpollId && existing) {
@@ -73,7 +79,7 @@ export class GetBlockTemplateService {
     
     // generate new template if needed
     if (!existing || await this.shouldRefreshTemplate(existing)) {
-      return this.generateNewTemplate();
+      return this.generateNewTemplate(request.payoutAddress);
     }
     
     return existing;
@@ -101,15 +107,18 @@ export class GetBlockTemplateService {
     
     // submit to blockchain
     try {
-      await this.blockchain.addBlock(block);
-      return { valid: true };
+      const result = await this.blockchain.addBlock(block);
+      if (!result.valid) return result;
+      await this.mempool.removeBlockTransactions(template.transactions);
+      await this.invalidateAllTemplates();
+      return result;
     } catch (error: any) {
       return { valid: false, error: error.message };
     }
   }
   
   // template generation
-  private async generateNewTemplate(): Promise<BlockTemplate> {
+  private async generateNewTemplate(payoutAddress: string): Promise<BlockTemplate> {
     const height = await this.blockchain.getHeight();
     const previousBlock = await this.blockchain.getLatestBlock();
     const difficulty = await this.blockchain.getDifficulty();
@@ -129,20 +138,24 @@ export class GetBlockTemplateService {
     const blockReward = this.blockchain.calculateBlockReward(height + 1);
     
     // create coinbase transaction
-    const coinbaseTransaction: Transaction = {
-      hash: '',
-      from: '0'.repeat(34), // null address
-      to: 'miner-address', // this will be replaced by actual miner
-      amount: blockReward + totalFees,
-      nonce: 0,
-      timestamp: Date.now(),
-      signature: '',
-      fee: 0n
-    };
-    
-    // calculate merkle root placeholder
+    const timestamp = Date.now();
+    const coinbaseTransaction = createCoinbaseTransaction(
+      chainConfig.chainId,
+      payoutAddress,
+      blockReward,
+      totalFees,
+      timestamp
+    ).toObject();
     const allTransactions = [coinbaseTransaction, ...transactions];
-    const merkleRoot = this.calculateMerkleRoot(allTransactions);
+    const candidate = new BlockClass(
+      height + 1,
+      timestamp,
+      previousBlock.hash,
+      allTransactions,
+      difficulty,
+      payoutAddress
+    );
+    await this.blockchain.prepareBlock(candidate);
     
     // generate template id
     const templateId = this.generateTemplateId();
@@ -166,8 +179,9 @@ export class GetBlockTemplateService {
       version: 1,
       height: height + 1,
       previousHash: previousBlock.hash,
-      merkleRootPlaceholder: merkleRoot,
-      timestamp: Date.now(),
+      merkleRootPlaceholder: candidate.merkleRoot,
+      stateRoot: candidate.stateRoot,
+      timestamp,
       difficulty,
       
       target,
@@ -203,8 +217,8 @@ export class GetBlockTemplateService {
   }
   
   // get current active template
-  private async getCurrentTemplate(): Promise<BlockTemplate | null> {
-    const templateId = await this.storage.getCustomData(TEMPLATE_KEYS.currentTemplate);
+  private async getCurrentTemplate(payoutAddress: string): Promise<BlockTemplate | null> {
+    const templateId = await this.storage.getCustomData(TEMPLATE_KEYS.currentTemplate(payoutAddress));
     if (!templateId) return null;
     
     return this.getTemplate(templateId);
@@ -259,7 +273,10 @@ export class GetBlockTemplateService {
     await this.storage.addToSet(TEMPLATE_KEYS.activeTemplates, template.templateId);
     
     // set as current template
-    await this.storage.setCustomData(TEMPLATE_KEYS.currentTemplate, template.templateId);
+    await this.storage.setCustomData(
+      TEMPLATE_KEYS.currentTemplate(template.coinbaseTransaction.to),
+      template.templateId
+    );
     
     // add to expiry index
     await this.storage.addToSet(
@@ -394,37 +411,15 @@ export class GetBlockTemplateService {
       submission.timestamp || template.timestamp,
       template.previousHash,
       [template.coinbaseTransaction, ...template.transactions],
-      template.difficulty
+      template.difficulty,
+      template.coinbaseTransaction.to,
+      template.stateRoot
     );
     
     block.nonce = submission.nonce;
+    block.hash = block.calculateHash();
     
     return block;
-  }
-  
-  // calculate merkle root of transactions
-  private calculateMerkleRoot(transactions: Transaction[]): string {
-    if (transactions.length === 0) {
-      return '0'.repeat(64);
-    }
-    
-    let hashes = transactions.map(tx => 
-      tx.hash || hash(serialize(tx), 'sha256')
-    );
-    
-    while (hashes.length > 1) {
-      const newHashes: string[] = [];
-      
-      for (let i = 0; i < hashes.length; i += 2) {
-        const left = hashes[i];
-        const right = hashes[i + 1] || left;
-        newHashes.push(hash(left + right, 'sha256'));
-      }
-      
-      hashes = newHashes;
-    }
-    
-    return hashes[0];
   }
   
   // convert difficulty to target hex string
@@ -490,6 +485,11 @@ export class GetBlockTemplateService {
         // remove expired template
         await this.storage.deleteCustomData(TEMPLATE_KEYS.template(templateId));
         await this.storage.removeFromSet(TEMPLATE_KEYS.activeTemplates, templateId);
+        if (template) {
+          await this.storage.deleteCustomData(
+            TEMPLATE_KEYS.currentTemplate(template.coinbaseTransaction.to)
+          );
+        }
         
         logger.debug('Cleaned up expired template', { templateId });
       }
@@ -528,8 +528,13 @@ export class GetBlockTemplateService {
       
       if (changeSignificance > TEMPLATE_CONFIG.mempoolChangeThreshold) {
         logger.info('Significant mempool change detected, refreshing templates');
+        const payouts = new Set<string>();
+        for (const templateId of await this.storage.getSetMembers(TEMPLATE_KEYS.activeTemplates)) {
+          const template = await this.getTemplate(templateId);
+          if (template) payouts.add(template.coinbaseTransaction.to);
+        }
         await this.invalidateAllTemplates();
-        await this.generateNewTemplate();
+        for (const payoutAddress of payouts) await this.generateNewTemplate(payoutAddress);
       }
     }
   }
@@ -539,11 +544,16 @@ export class GetBlockTemplateService {
     const activeTemplates = await this.storage.getSetMembers(TEMPLATE_KEYS.activeTemplates);
     
     for (const templateId of activeTemplates) {
+      const template = await this.getTemplate(templateId);
+      if (template) {
+        await this.storage.deleteCustomData(
+          TEMPLATE_KEYS.currentTemplate(template.coinbaseTransaction.to)
+        );
+      }
       await this.storage.deleteCustomData(TEMPLATE_KEYS.template(templateId));
     }
     
     await this.storage.deleteCustomData(TEMPLATE_KEYS.activeTemplates);
-    await this.storage.deleteCustomData(TEMPLATE_KEYS.currentTemplate);
     
     logger.info('Invalidated all templates');
   }
