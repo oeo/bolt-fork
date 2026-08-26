@@ -7,10 +7,9 @@ bolt uses bun test suites for unit, integration, and end-to-end behavior. bats c
 - unit tests isolate consensus, protocol, storage, and utility behavior.
 - integration tests verify boundaries between bolt components.
 - end-to-end tests verify complete application flows in bun.
-- bats currently starts one deployed node and verifies genesis persistence across restart. multi-node communication coverage remains a release gate.
+- a bun integration test opens authenticated tcp connections between two nodes and verifies block synchronization and transaction relay.
+- bats currently starts one deployed node and verifies genesis persistence across restart. multi-node deployment coverage remains a release gate.
 - docker coverage belongs in bats, not bun suites.
-
-suites stored with `.disabled` or `.skip` names are dormant. they do not run and are not release gates.
 
 ## local checks
 

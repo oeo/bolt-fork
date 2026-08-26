@@ -8,13 +8,13 @@ import { encodeCanonicalFields } from '../utils/serialization';
 const logger = getLogger(__filename);
 
 // protocol version
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 export const PROTOCOL_HEADER_SIZE = 56;
 export const PROTOCOL_AUTH_TAG_OFFSET = 24;
 export const PROTOCOL_AUTH_TAG_SIZE = 32;
 const MAX_INVENTORY_ITEMS = 500;
 const MAX_LOCATOR_HASHES = 101;
-const MAX_HEADERS = 2000;
+export const MAX_HEADERS = 2000;
 
 export function getNetworkMagic(chainId: number): number {
   if (!Number.isInteger(chainId) || chainId < 0 || chainId > 0xffffffff) {
@@ -398,7 +398,7 @@ export class Protocol {
     
     const count = view.getUint32(0, false);
     if (count > MAX_INVENTORY_ITEMS) return null;
-    if (data.length < 4 + count * 36) return null;
+    if (data.length !== 4 + count * 36) return null;
     
     const items: InvItem[] = [];
     let offset = 4;
@@ -431,7 +431,7 @@ export class Protocol {
    * deserialize ping/pong message
    */
   deserializePing(data: Uint8Array): bigint | null {
-    if (data.length < 8) return null;
+    if (data.length !== 8) return null;
     const view = new DataView(data.buffer, data.byteOffset, 8);
     return view.getBigUint64(0, false);
   }
@@ -529,7 +529,7 @@ export class Protocol {
     
     const count = view.getUint32(0, false);
     if (count > MAX_LOCATOR_HASHES) return null;
-    if (data.length < 4 + count * 32 + 32) return null;
+    if (data.length !== 4 + count * 32 + 32) return null;
     
     const locator: string[] = [];
     let offset = 4;
@@ -560,7 +560,7 @@ export class Protocol {
     // skip version (4 bytes)
     const count = view.getUint32(4, false);
     if (count > MAX_LOCATOR_HASHES) return null;
-    if (data.length < 8 + count * 32 + 32) return null;
+    if (data.length !== 8 + count * 32 + 32) return null;
     
     const locator: string[] = [];
     let offset = 8;
@@ -585,8 +585,7 @@ export class Protocol {
    */
   serializeHeaders(headers: any[]): Uint8Array {
     if (headers.length > MAX_HEADERS) throw new Error('header limit exceeded');
-    const encoder = new TextEncoder();
-    const buffer = new ArrayBuffer(4 + headers.length * 152);
+    const buffer = new ArrayBuffer(4 + headers.length * 156);
     const view = new DataView(buffer);
     
     view.setUint32(0, headers.length, false);
@@ -621,8 +620,8 @@ export class Protocol {
       offset += 8;
       
       // difficulty
-      view.setUint32(offset, header.difficulty, false);
-      offset += 4;
+      view.setBigUint64(offset, BigInt(header.difficulty), false);
+      offset += 8;
       
       // nonce
       view.setBigUint64(offset, BigInt(header.nonce), false);
@@ -639,11 +638,9 @@ export class Protocol {
     if (data.length < 4) return null;
     
     const view = new DataView(data.buffer, data.byteOffset);
-    const decoder = new TextDecoder();
-    
     const count = view.getUint32(0, false);
     if (count > MAX_HEADERS) return null;
-    if (data.length < 4 + count * 152) return null;
+    if (data.length !== 4 + count * 156) return null;
     
     const headers: any[] = [];
     let offset = 4;
@@ -668,14 +665,21 @@ export class Protocol {
       const stateRoot = Buffer.from(stateBytes).toString('hex');
       offset += 32;
       
-      const timestamp = Number(view.getBigUint64(offset, false));
+      const timestampValue = view.getBigUint64(offset, false);
       offset += 8;
       
-      const difficulty = view.getUint32(offset, false);
-      offset += 4;
-      
-      const nonce = Number(view.getBigUint64(offset, false));
+      const difficultyValue = view.getBigUint64(offset, false);
       offset += 8;
+      
+      const nonceValue = view.getBigUint64(offset, false);
+      offset += 8;
+
+      if (timestampValue > BigInt(Number.MAX_SAFE_INTEGER) ||
+          difficultyValue > BigInt(Number.MAX_SAFE_INTEGER) ||
+          nonceValue > BigInt(Number.MAX_SAFE_INTEGER) || difficultyValue < 1n) return null;
+      const timestamp = Number(timestampValue);
+      const difficulty = Number(difficultyValue);
+      const nonce = Number(nonceValue);
       
       headers.push({
         height,
@@ -870,10 +874,12 @@ export class Protocol {
       case MessageType.VERACK:
         decodedPayload = this.deserializeVerack(payload);
         break;
-      case MessageType.PING:
-      case MessageType.PONG:
-        decodedPayload = { nonce: this.deserializePing(payload) };
-        break;
+        case MessageType.PING:
+        case MessageType.PONG: {
+          const nonce = this.deserializePing(payload);
+          decodedPayload = nonce === null ? null : { nonce };
+          break;
+        }
       case MessageType.INV:
         decodedPayload = this.deserializeInv(payload);
         break;

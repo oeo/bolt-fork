@@ -103,7 +103,8 @@ describe('Blockchain Integration', () => {
     });
 
     it('should reject obsolete storage versions', async () => {
-      await storage.saveChainMetadata('storageVersion', '1');
+      expect(await storage.getChainMetadata('storageVersion')).toBe('6');
+      await storage.saveChainMetadata('storageVersion', '5');
       const reloaded = new Blockchain(storage, testConfig);
       await expect(reloaded.initialize()).rejects.toThrow('incompatible');
     });
@@ -172,7 +173,7 @@ describe('Blockchain Integration', () => {
       const block = new BlockClass(
         1,
         Date.now(),
-        'invalid_hash',
+        'f'.repeat(64),
         [],
         1,
       );

@@ -2,7 +2,14 @@ import { EventEmitter } from 'events';
 import { Block, Transaction, AccountState, BlockTemplate, ValidationResult } from '../types';
 import { PersistedMempoolEntry, StaleChainTipError, StorageAdapter } from '../storage/adapter';
 import { ChainConfig } from '../config/chain';
-import { BlockClass, createGenesisBlock } from './block';
+import {
+  BlockClass,
+  createGenesisBlock,
+  validateBlockHeader,
+  validateBlockHeaderMedianTime,
+  validateBlockHeaderPrevious,
+  type BlockHeader,
+} from './block';
 import { TransactionClass, createCoinbaseTransaction } from './transaction';
 import { getDifficultyAdjustment, shouldAdjustDifficulty, DifficultyConfig, calculateBlockWork, calculateCumulativeDifficulty } from './difficulty';
 import { HashAlgorithm, hash } from '../crypto/hash';
@@ -16,7 +23,7 @@ import {
 } from './mempool';
 
 const logger = getLogger(__filename);
-const STORAGE_VERSION = '5';
+const STORAGE_VERSION = '6';
 
 /**
  * main blockchain orchestration class
@@ -49,7 +56,7 @@ export class Blockchain extends EventEmitter {
     this.difficultyConfig = {
       adjustmentInterval: config.difficultyAdjustmentInterval,
       targetBlockTime: config.targetBlockTime,
-      maxAdjustmentFactor: 4,
+      maxAdjustmentFactor: config.maxDifficultyAdjustment,
       minDifficulty: config.minDifficulty
     };
   }
@@ -141,7 +148,7 @@ export class Blockchain extends EventEmitter {
     logger.debug(`Adding block ${block.index} to blockchain`);
 
     // validate block structure
-    const structureValidation = block.validate(this.hashAlgorithm);
+    const structureValidation = block.validate(this.hashAlgorithm, this.config.maxTimeDrift * 1000);
     if (!structureValidation.valid) {
       return structureValidation;
     }
@@ -180,7 +187,7 @@ export class Blockchain extends EventEmitter {
     }
 
     // validate median time
-    const pastBlocks = await this.getPastBlocks(11);
+    const pastBlocks = await this.getPastBlocks(this.config.medianTimeBlocks);
     const medianValidation = block.validateMedianTime(pastBlocks);
     if (!medianValidation.valid) {
       return medianValidation;
@@ -367,6 +374,69 @@ export class Blockchain extends EventEmitter {
     return this.storage.getCumulativeDifficulty();
   }
 
+  async validateHeaderChain(headers: BlockHeader[], maxReorgDepth = Number.MAX_SAFE_INTEGER): Promise<{
+    valid: boolean;
+    error?: string;
+    ancestor?: Block;
+    cumulativeDifficulty?: bigint;
+  }> {
+    if (headers.length === 0) return { valid: false, error: 'Empty header chain' };
+    const ancestor = await this.storage.getBlockByHash(headers[0].previousHash);
+    if (!ancestor || (await this.storage.getBlock(ancestor.index))?.hash !== ancestor.hash) {
+      return { valid: false, error: 'Header chain has no canonical ancestor' };
+    }
+    const currentHeight = await this.getHeight();
+    if (currentHeight - ancestor.index > maxReorgDepth) {
+      return { valid: false, error: 'Header chain exceeds reorganization depth' };
+    }
+
+    const candidate = new Map<number, BlockHeader>();
+    const getHeader = async (height: number): Promise<BlockHeader | null> =>
+      candidate.get(height) ?? (height <= ancestor.index ? this.storage.getBlock(height) : null);
+    let cumulativeDifficulty = await this.storage.getCumulativeDifficulty();
+    for (let height = ancestor.index + 1; height <= currentHeight; height++) {
+      const block = await this.storage.getBlock(height);
+      if (!block) return { valid: false, error: `Missing canonical block ${height}` };
+      cumulativeDifficulty -= calculateBlockWork(block.difficulty);
+    }
+
+    let previous: BlockHeader = ancestor;
+    for (const header of headers) {
+      const structure = validateBlockHeader(
+        header,
+        this.config.maxTimeDrift * 1000,
+        this.hashAlgorithm
+      );
+      if (!structure.valid) return structure;
+      const linkage = validateBlockHeaderPrevious(header, previous);
+      if (!linkage.valid) return linkage;
+
+      const pastHeaders: BlockHeader[] = [];
+      for (let height = Math.max(0, header.index - this.config.medianTimeBlocks); height < header.index; height++) {
+        const past = await getHeader(height);
+        if (past) pastHeaders.push(past);
+      }
+      const median = validateBlockHeaderMedianTime(header, pastHeaders);
+      if (!median.valid) return median;
+      const expectedDifficulty = await getDifficultyAdjustment(
+        header.index,
+        getHeader,
+        this.difficultyConfig
+      );
+      if (header.difficulty !== expectedDifficulty) {
+        return {
+          valid: false,
+          error: `Invalid difficulty: expected ${expectedDifficulty}, got ${header.difficulty}`
+        };
+      }
+
+      candidate.set(header.index, header);
+      cumulativeDifficulty += calculateBlockWork(header.difficulty);
+      previous = header;
+    }
+    return { valid: true, ancestor, cumulativeDifficulty };
+  }
+
   /**
    * get latest block
    */
@@ -390,6 +460,10 @@ export class Blockchain extends EventEmitter {
 
   async hasBlock(hash: string): Promise<boolean> {
     return (await this.storage.getBlockByHash(hash)) !== null;
+  }
+
+  async hasTransaction(hash: string): Promise<boolean> {
+    return (await this.storage.getTransaction(hash)) !== null;
   }
 
   /**
@@ -460,7 +534,7 @@ export class Blockchain extends EventEmitter {
       const blockClass = BlockClass.fromObject(block);
 
       // validate block structure
-      const validation = blockClass.validate(this.hashAlgorithm);
+      const validation = blockClass.validate(this.hashAlgorithm, this.config.maxTimeDrift * 1000);
       if (!validation.valid) {
         return { valid: false, error: `Block ${block.index}: ${validation.error}` };
       }
@@ -560,7 +634,7 @@ export class Blockchain extends EventEmitter {
   private async handleCompetingBlockUnlocked(block: BlockClass, peerId?: string): Promise<ValidationResult> {
     logger.info(`Handling competing block ${block.index} with hash ${block.hash}`);
 
-    const structureValidation = block.validate(this.hashAlgorithm);
+    const structureValidation = block.validate(this.hashAlgorithm, this.config.maxTimeDrift * 1000);
     if (!structureValidation.valid) return structureValidation;
     const sizeValidation = block.validateSize(this.config.maxBlockSize);
     if (!sizeValidation.valid) return sizeValidation;
@@ -674,7 +748,7 @@ export class Blockchain extends EventEmitter {
     for (let i = 0; i < newBlocks.length; i++) {
       const block = newBlocks[i];
       const blockClass = BlockClass.fromObject(block);
-      const structureValidation = blockClass.validate(this.hashAlgorithm);
+      const structureValidation = blockClass.validate(this.hashAlgorithm, this.config.maxTimeDrift * 1000);
       if (!structureValidation.valid) return false;
       const sizeValidation = blockClass.validateSize(this.config.maxBlockSize);
       if (!sizeValidation.valid) return false;
@@ -687,7 +761,7 @@ export class Blockchain extends EventEmitter {
       if (!blockClass.validatePreviousBlock(BlockClass.fromObject(previousBlock)).valid) return false;
 
       const pastBlocks: BlockClass[] = [];
-      for (let height = Math.max(0, block.index - 11); height < block.index; height++) {
+      for (let height = Math.max(0, block.index - this.config.medianTimeBlocks); height < block.index; height++) {
         const pastBlock = await getCandidateBlock(height);
         if (pastBlock) pastBlocks.push(BlockClass.fromObject(pastBlock));
       }

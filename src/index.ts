@@ -5,7 +5,6 @@ import { Mempool } from './core/mempool';
 import { NetworkOrchestrator, NetworkMode } from './network/network-orchestrator';
 import { ApiServer } from './api/server';
 import { MiningService } from './services/mining';
-import { SyncService } from './services/sync';
 import { getMetricsService } from './services/metrics';
 import { createStorage } from './storage';
 import { config as chainConfig } from './config/chain';
@@ -53,7 +52,6 @@ class BoltIPFSNode {
   private networkOrchestrator?: NetworkOrchestrator;
   private api!: ApiServer;
   private miner?: MiningService;
-  private syncService!: SyncService;
   private metrics: any; // will use singleton
   private metricsServer: any;
   private running: boolean = false;
@@ -158,13 +156,12 @@ class BoltIPFSNode {
     // setup network orchestrator event handlers
     this.setupNetworkHandlers();
     
-    // create api server with storage and sync service
+    // create api server
     this.api = new ApiServer({
       port: this.config.apiPort,
       blockchain: this.blockchain,
       mempool: this.mempool,
       storage: this.storage,
-      syncService: this.syncService
     });
     
     // get metrics service singleton
@@ -242,29 +239,6 @@ class BoltIPFSNode {
   }
   
   private setupNetworkHandlers(): void {
-    // handle blocks received from network
-    this.networkOrchestrator!.on('block:received', async (block: any) => {
-      try {
-        logger.debug(`received block ${block.index} via network`);
-        const added = await this.blockchain.addBlock(block);
-        if (added) {
-          logger.info(`added block ${block.index} to chain`);
-        }
-      } catch (error: any) {
-        logger.error('error handling block:', error);
-      }
-    });
-    
-    // handle transactions received from network
-    this.networkOrchestrator!.on('transaction:received', async (tx: any) => {
-      try {
-        logger.debug(`received transaction ${tx.hash} via network`);
-        await this.mempool.addTransaction(tx);
-      } catch (error: any) {
-        logger.error('error handling transaction:', error);
-      }
-    });
-    
     // handle sync completion
     this.networkOrchestrator!.on('sync:complete', () => {
       logger.info('blockchain sync complete');
@@ -303,8 +277,6 @@ class BoltIPFSNode {
             if (this.networkOrchestrator) {
               const stats = this.networkOrchestrator.getNetworkStats();
               isSyncing = stats.sync?.isSyncing || false;
-            } else if (this.syncService) {
-              isSyncing = this.syncService.isSyncing();
             }
             this.metrics.updateNodeHealth(true, isSyncing, this.config.role);
             
@@ -349,12 +321,6 @@ class BoltIPFSNode {
     });
     logger.info(`Metrics server started on port ${this.config.metricsPort}`);
     
-    // start sync service (only for legacy IPFS mode)
-    if (this.syncService) {
-      this.syncService.start();
-      logger.info('Sync service started');
-    }
-    
     // start mining if enabled
     if (this.miner) {
       this.miner.start();
@@ -394,11 +360,8 @@ class BoltIPFSNode {
         // note: transaction processing metrics are recorded when the tx is included in a block
         // this avoids double-counting for transactions that enter mempool then get mined
         
-        if (this.networkOrchestrator) {
-          await this.networkOrchestrator.broadcastTransaction(tx);
-        }
       } catch (error: any) {
-        logger.error('Failed to broadcast transaction:', error.message);
+        logger.error('Failed to record mempool transaction:', error.message);
       }
     });
     
@@ -455,12 +418,6 @@ class BoltIPFSNode {
       logger.info('Mining service stopped');
     }
     
-    // stop sync service
-    if (this.syncService) {
-      this.syncService.stop();
-      logger.info('Sync service stopped');
-    }
-
     if (this.networkOrchestrator) {
       await this.networkOrchestrator.stop();
       logger.info('Network services stopped');

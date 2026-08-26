@@ -95,8 +95,8 @@ export function getExpectedTime(
  * get actual time taken for a range of blocks
  */
 export function getActualTime(
-  firstBlock: Block | BlockClass,
-  lastBlock: Block | BlockClass
+  firstBlock: Pick<Block, 'timestamp'>,
+  lastBlock: Pick<Block, 'timestamp'>
 ): number {
   const actualTime = lastBlock.timestamp - firstBlock.timestamp;
   
@@ -138,7 +138,7 @@ export function getAverageBlockTime(
  */
 export async function getDifficultyAdjustment(
   blockHeight: number,
-  getBlockFn: (height: number) => Promise<Block | BlockClass | null>,
+  getBlockFn: (height: number) => Promise<Pick<Block, 'timestamp' | 'difficulty'> | null>,
   config: DifficultyConfig = DEFAULT_DIFFICULTY_CONFIG
 ): Promise<number> {
   // check if adjustment is needed

@@ -5,6 +5,8 @@ import type { Block } from '../core/block';
 import { BlockClass } from '../core/block';
 import type { ConnectionManager } from './connection-manager';
 import {
+  InvType,
+  MAX_HEADERS,
   PROTOCOL_VERSION,
   type Protocol,
   type VerackMessage,
@@ -17,6 +19,9 @@ import { publicKeyMatchesAddress, validateAddress } from '../crypto/address';
 import { sign, verify } from '../crypto/signature';
 import { encodeCanonicalFields } from '../utils/serialization';
 import { getSharedSecret } from '@noble/secp256k1';
+import type { InventoryManager } from './inventory-manager';
+import type { TransactionRelay } from './transaction-relay';
+import type { BlockHeader } from '../core/block';
 
 const logger = getLogger(__filename);
 
@@ -28,9 +33,15 @@ export interface SyncManagerConfig {
   chainConfig: ChainConfig;
   genesisHash: string;
   identity: NodeIdentity;
+  inventoryManager?: InventoryManager;
+  transactionRelay?: TransactionRelay;
   batchSize?: number;
   syncTimeout?: number;
-  maxRetries?: number;
+  maxReorgDepth?: number;
+  maxCandidateBlockBytes?: number;
+  maxHeaderCandidates?: number;
+  maxTransactionRequests?: number;
+  maxTransactionRequestsPerPeer?: number;
   handshakeClockSkew?: number;
   maxQueuedMessageBytes?: number;
   maxTotalQueuedMessageBytes?: number;
@@ -46,6 +57,26 @@ interface HandshakeState {
   versionSent?: Promise<boolean>;
 }
 
+interface PendingRequest {
+  peerId: string;
+  sessionId: string;
+  deadline: number;
+}
+
+interface HeaderRequest extends PendingRequest {
+  headers: BlockHeader[];
+}
+
+interface SyncCandidate extends PendingRequest {
+  ancestor: Block;
+  headers: BlockHeader[];
+  cumulativeDifficulty: bigint;
+  canonicalTipHash: string;
+  blocks: Block[];
+  blockBytes: number;
+  nextBlock: number;
+}
+
 export enum SyncState {
   IDLE = 'idle',
   SYNCING = 'syncing',
@@ -59,17 +90,17 @@ export class SyncManager extends EventEmitter {
   private config: SyncManagerConfig;
   private syncState: SyncState = SyncState.IDLE;
   private syncTarget: PeerEndpoint | null = null;
-  private currentSyncHeight: number = 0;
   private targetHeight: number = 0;
   private syncTimer: any;
-  private retryCount: number = 0;
-  private requestedBlocks: Set<number> = new Set();
   private blockTimeout: any;
+  private headerRequests = new Map<string, HeaderRequest>();
+  private transactionRequests = new Map<string, PendingRequest>();
+  private activeSync: SyncCandidate | null = null;
+  private validatingHeaders = false;
   private handshakes = new Map<string, HandshakeState>();
   private messageQueues = new Map<string, Promise<void>>();
   private queuedMessageBytes = new Map<string, number>();
   private totalQueuedMessageBytes = 0;
-  private syncStarting = false;
   private acceptingMessages = true;
   private backgroundTasks = new Set<Promise<unknown>>();
   private lifecycleController = new AbortController();
@@ -79,7 +110,11 @@ export class SyncManager extends EventEmitter {
     this.config = {
       batchSize: 10,
       syncTimeout: 30000,
-      maxRetries: 3,
+      maxReorgDepth: 100,
+      maxCandidateBlockBytes: 16 * config.chainConfig.maxBlockSize,
+      maxHeaderCandidates: MAX_HEADERS * 2,
+      maxTransactionRequests: 500,
+      maxTransactionRequestsPerPeer: 50,
       handshakeClockSkew: 120000,
       maxQueuedMessageBytes: 2 * config.chainConfig.maxBlockSize,
       maxTotalQueuedMessageBytes: 4 * config.chainConfig.maxBlockSize,
@@ -113,6 +148,10 @@ export class SyncManager extends EventEmitter {
     
     // handle peer connections
     this.config.connectionManager.on('peer:connected', (sessionId: string, inbound: boolean) => {
+      if (!this.acceptingMessages) {
+        this.config.connectionManager.disconnect(sessionId, 'sync manager stopped');
+        return;
+      }
       logger.info(`peer connected: ${sessionId}`);
       const state: HandshakeState = {
         inbound,
@@ -131,11 +170,16 @@ export class SyncManager extends EventEmitter {
 
     this.config.connectionManager.on('connection:closed', (sessionId: string, peerId?: string) => {
       this.handshakes.delete(sessionId);
+      this.headerRequests.delete(sessionId);
+      for (const [hash, request] of this.transactionRequests) {
+        if (request.sessionId === sessionId) this.transactionRequests.delete(hash);
+      }
+      if (this.activeSync?.sessionId === sessionId) this.abortSync('sync peer disconnected');
     });
 
     this.on('peer:ready', (peerId: string) => {
       const peer = this.config.discoveryService.getPeer(peerId);
-      if (peer) this.runTask(this.checkIfSyncNeeded(peer), `sync check failed for ${peer.nodeId}`);
+      this.runTask(this.requestHeaders(peerId), `header request failed for ${peerId}`);
     });
   }
 
@@ -158,7 +202,7 @@ export class SyncManager extends EventEmitter {
           this.config.connectionManager.disconnect(peerId, 'invalid protocol message');
           return;
         }
-        await this.handleMessage(peerId, message.command, message.payload);
+        await this.handleMessage(peerId, sessionId, message.command, message.payload);
       })
       .catch(error => {
         logger.warn(`message handling failed for ${peerId}`, error);
@@ -214,13 +258,13 @@ export class SyncManager extends EventEmitter {
     }
     this.syncState = SyncState.IDLE;
     this.syncTarget = null;
-    this.requestedBlocks.clear();
-    this.retryCount = 0;
+    this.activeSync = null;
+    this.headerRequests.clear();
+    this.transactionRequests.clear();
     this.messageQueues.clear();
     this.queuedMessageBytes.clear();
     this.totalQueuedMessageBytes = 0;
     this.handshakes.clear();
-    this.syncStarting = false;
   }
   
   /**
@@ -228,165 +272,108 @@ export class SyncManager extends EventEmitter {
    */
   private async checkIfSyncNeeded(peer: PeerEndpoint): Promise<void> {
     if (!this.acceptingMessages) return;
-    const ourHeight = await this.config.blockchain.getHeight();
-    if (!this.acceptingMessages) return;
-    logger.info(`sync check: our height=${ourHeight}, peer ${peer.nodeId} height=${peer.height}`);
-    
-    if (peer.height > ourHeight) {
-      logger.info(`peer has higher chain (${peer.height} vs ${ourHeight})`);
-      
-      if ((this.syncState === SyncState.IDLE || this.syncState === SyncState.SYNCED) && !this.syncStarting) {
-        logger.info(`starting sync with ${peer.nodeId}`);
-        this.syncStarting = true;
-        try {
-          await this.startSyncWithPeer(peer);
-        } catch (error) {
-          logger.warn(`failed to start sync with ${peer.nodeId}`, error);
-          this.syncState = SyncState.IDLE;
-          this.syncTarget = null;
-        } finally {
-          this.syncStarting = false;
-        }
-      } else {
-        logger.debug(`already syncing, state: ${this.syncState}`);
-      }
-    }
-  }
-  
-  /**
-   * start syncing with a specific peer
-   */
-  private async startSyncWithPeer(peer: PeerEndpoint): Promise<void> {
-    if (!this.acceptingMessages) return;
-    const currentHeight = await this.config.blockchain.getHeight();
-    if (!this.acceptingMessages) return;
-    logger.info(`starting sync with ${peer.nodeId} from height ${currentHeight} to ${peer.height}`);
-
     if (!this.config.connectionManager.isAuthenticated(peer.nodeId)) {
-      logger.info(`connecting to sync peer ${peer.nodeId}`);
       const connected = await this.awaitOrStop(this.config.connectionManager.connectToPeer(peer));
       if (connected === undefined || !this.acceptingMessages) return;
-      if (!connected) {
-        logger.error(`failed to connect to sync target ${peer.nodeId}`);
-      }
       return;
     }
+    await this.requestHeaders(peer.nodeId);
+  }
 
-    this.syncState = SyncState.SYNCING;
-    this.syncTarget = peer;
-    this.currentSyncHeight = currentHeight;
-    this.targetHeight = peer.height;
-    this.retryCount = 0;
-    this.requestedBlocks.clear();
-    
-    // start requesting blocks sequentially
-    this.requestNextBatch();
-  }
-  
-  /**
-   * request next batch of blocks sequentially
-   */
-  private requestNextBatch(): void {
-    if (!this.acceptingMessages || this.syncState !== SyncState.SYNCING || !this.syncTarget) {
+  private async requestHeaders(peerId: string, headers: BlockHeader[] = []): Promise<void> {
+    if (!this.acceptingMessages || this.activeSync || (this.validatingHeaders && headers.length === 0)) return;
+    const connection = this.config.connectionManager.getConnection(peerId);
+    if (!connection?.authenticated || this.headerRequests.has(connection.id)) return;
+    const reservation = {
+      peerId,
+      sessionId: connection.id,
+      deadline: Date.now() + this.config.syncTimeout!,
+      headers
+    };
+    this.headerRequests.set(connection.id, reservation);
+    const locator = await this.buildBlockLocator(headers.at(-1));
+    if (!this.acceptingMessages || this.headerRequests.get(connection.id) !== reservation ||
+        this.config.connectionManager.getConnection(peerId)?.id !== connection.id) {
+      if (this.headerRequests.get(connection.id) === reservation) this.headerRequests.delete(connection.id);
       return;
     }
-    
-    const startHeight = this.currentSyncHeight + 1;
-    const endHeight = Math.min(startHeight + this.config.batchSize! - 1, this.targetHeight);
-    
-    if (startHeight > this.targetHeight) {
-      // sync complete
-      logger.info(`sync complete at height ${this.currentSyncHeight}`);
-      this.syncState = SyncState.SYNCED;
-      this.emit('sync:complete');
-      return;
-    }
-    
-    logger.info(`requesting blocks ${startHeight} to ${endHeight} from ${this.syncTarget.nodeId}`);
-    
-    // request blocks by height
-    const items = [];
-    for (let height = startHeight; height <= endHeight; height++) {
-      this.requestedBlocks.add(height);
-      // we need to request by height, but protocol expects hash
-      // for now, request sequential blocks starting from our current tip
-      items.push({ type: 3, height }); // type 3 = block by height (custom extension)
-    }
-    
-    // fallback: if protocol doesn't support height-based requests,
-    // we'll need to use getblocks with locator
-    this.runTask(
-      this.requestBlocksWithLocator(startHeight, endHeight),
-      `failed to request blocks ${startHeight}-${endHeight}`
-    );
-    
-    // set timeout for batch
-    this.blockTimeout = setTimeout(() => {
-      this.handleBatchTimeout();
-    }, this.config.syncTimeout);
-  }
-  
-  /**
-   * request blocks using block locator (standard bitcoin protocol)
-   */
-  private async requestBlocksWithLocator(startHeight: number, endHeight: number): Promise<void> {
-    if (!this.acceptingMessages || !this.syncTarget) return;
-    
-    const locator = await this.buildBlockLocator();
-    if (!this.acceptingMessages || !this.syncTarget) return;
-    
-    const message = this.config.protocol.encodeMessage('getblocks', {
-      locator: locator,
+    const sent = this.config.connectionManager.sendMessage(peerId, this.config.protocol.encodeMessage('getheaders', {
+      locator,
       stopHash: '0'.repeat(64)
-    });
-    
-    this.config.connectionManager.sendMessage(this.syncTarget.nodeId, message);
+    }));
+    if (!sent) this.headerRequests.delete(connection.id);
   }
-  
-  /**
-   * build simple block locator starting from our current height
-   */
-  private async buildBlockLocator(): Promise<string[]> {
+
+  private async buildBlockLocator(candidateTip?: BlockHeader): Promise<string[]> {
     const locator: string[] = [];
-    const currentHeight = await this.config.blockchain.getHeight();
-    
-    // add current tip
-    const tipBlock = await this.config.blockchain.getBlock(currentHeight);
-    if (tipBlock) {
-      locator.push(tipBlock.hash);
+    if (candidateTip) locator.push(candidateTip.hash);
+    let height = await this.config.blockchain.getHeight();
+    let step = 1;
+    while (height >= 0 && locator.length < 101) {
+      const block = await this.config.blockchain.getBlock(height);
+      if (block && !locator.includes(block.hash)) locator.push(block.hash);
+      if (height === 0) break;
+      height = Math.max(0, height - step);
+      if (locator.length > 10) step *= 2;
     }
-    
-    // add genesis
-    const genesis = await this.config.blockchain.getBlock(0);
-    if (genesis && genesis.hash !== tipBlock?.hash) {
-      locator.push(genesis.hash);
-    }
-    
     return locator;
   }
-  
-  /**
-   * handle batch timeout - retry or give up
-   */
-  private handleBatchTimeout(): void {
-    if (this.retryCount < this.config.maxRetries!) {
-      this.retryCount++;
-      logger.warn(`batch timeout, retrying (${this.retryCount}/${this.config.maxRetries})`);
-      this.requestedBlocks.clear();
-      this.requestNextBatch();
-    } else {
-      logger.error(`sync failed after ${this.config.maxRetries} retries, giving up`);
-      this.syncState = SyncState.IDLE;
-      this.syncTarget = null;
-      this.retryCount = 0;
-      this.requestedBlocks.clear();
+
+  private requestNextBlock(): void {
+    const sync = this.activeSync;
+    if (!this.acceptingMessages || !sync) return;
+    const header = sync.headers[sync.nextBlock];
+    if (!header) {
+      this.runTask(this.finishSync(sync), 'failed to finish sync');
+      return;
     }
+    const sent = this.config.connectionManager.sendMessage(sync.peerId, this.config.protocol.encodeMessage('getdata', [
+      { type: InvType.BLOCK, hash: header.hash }
+    ]));
+    if (!sent) return this.abortSync('failed to request block');
+    sync.deadline = Date.now() + this.config.syncTimeout!;
+    this.blockTimeout = setTimeout(() => {
+      if (this.activeSync === sync) {
+        this.config.connectionManager.disconnect(sync.peerId, 'block request timed out');
+        this.abortSync('block request timed out');
+      }
+    }, this.config.syncTimeout);
+  }
+
+  private async finishSync(sync: SyncCandidate): Promise<void> {
+    if (this.activeSync !== sync) return;
+    const currentTip = await this.config.blockchain.getLatestBlock();
+    if (sync.ancestor.hash !== sync.canonicalTipHash) {
+      const reorganized = await this.config.blockchain.reorganize(
+        sync.ancestor.index,
+        sync.blocks
+      );
+      if (!reorganized) return this.abortSync('candidate reorganization rejected');
+    } else if (currentTip?.hash !== sync.headers.at(-1)?.hash) {
+      return this.abortSync('canonical tip changed during sync');
+    }
+
+    this.activeSync = null;
+    this.syncState = SyncState.SYNCED;
+    this.syncTarget = null;
+    this.emit('sync:complete');
+    if (sync.headers.length === MAX_HEADERS) await this.requestHeaders(sync.peerId);
+    else await this.config.transactionRelay?.syncMempool(sync.peerId);
+  }
+
+  private abortSync(reason: string): void {
+    logger.warn(reason);
+    if (this.blockTimeout) clearTimeout(this.blockTimeout);
+    this.blockTimeout = null;
+    this.activeSync = null;
+    this.syncState = SyncState.IDLE;
+    this.syncTarget = null;
   }
   
   /**
    * handle incoming message from peer
    */
-  private async handleMessage(peerId: string, command: string, payload: any): Promise<void> {
+  private async handleMessage(peerId: string, sessionId: string, command: string, payload: any): Promise<void> {
     logger.debug(`received ${command} from ${peerId}`);
     
     switch (command) {
@@ -397,16 +384,23 @@ export class SyncManager extends EventEmitter {
         await this.handleVerack(peerId, payload);
         break;
       case 'block':
-        await this.handleBlock(peerId, payload);
+        await this.handleBlock(peerId, sessionId, payload);
+        break;
+      case 'headers':
+        await this.handleHeaders(peerId, sessionId, payload);
+        break;
+      case 'tx':
+        await this.handleTransaction(peerId, sessionId, payload);
         break;
       case 'inv':
-        await this.handleInv(peerId, payload);
+        await this.handleInv(peerId, sessionId, payload);
         break;
       case 'ping':
         this.handlePing(peerId, payload);
         break;
       case 'getdata':
         await this.handleGetdata(peerId, payload);
+        this.config.transactionRelay?.handleGetData(peerId, payload);
         break;
       case 'getheaders':
         await this.handleGetHeaders(peerId, payload);
@@ -510,90 +504,167 @@ export class SyncManager extends EventEmitter {
   /**
    * handle block message - the core of our simple sync
    */
-  private async handleBlock(peerId: string, block: Block): Promise<void> {
+  private async handleBlock(peerId: string, sessionId: string, block: Block): Promise<void> {
     logger.info(`received block ${block.index} (${block.hash.substring(0, 8)}...) from ${peerId}`);
-    
-    // ignore blocks if we're not syncing or from wrong peer
-    if (this.syncState !== SyncState.SYNCING || !this.syncTarget || peerId !== this.syncTarget.nodeId) {
-      logger.debug(`ignoring block from ${peerId}, not syncing with this peer`);
-      return;
+    const sync = this.activeSync;
+    const expected = sync?.headers[sync.nextBlock];
+    if (!sync || sync.peerId !== peerId || sync.sessionId !== sessionId || expected?.hash !== block.hash) return;
+    if (this.blockTimeout) clearTimeout(this.blockTimeout);
+    this.blockTimeout = null;
+
+    const blockClass = BlockClass.fromObject(block);
+    if (block.index !== expected.index || block.previousHash !== expected.previousHash ||
+        block.merkleRoot !== expected.merkleRoot || block.stateRoot !== expected.stateRoot ||
+        block.timestamp !== expected.timestamp || block.difficulty !== expected.difficulty ||
+        block.nonce !== expected.nonce) {
+      this.config.connectionManager.disconnect(peerId, 'block does not match validated header');
+      return this.abortSync('block does not match validated header');
     }
-    
-    // check if this block is the next one we expect
-    const expectedHeight = this.currentSyncHeight + 1;
-    if (block.index !== expectedHeight) {
-      logger.warn(`received block ${block.index} but expected ${expectedHeight}, ignoring out-of-order block`);
-      return;
-    }
-    
-    // try to add block to blockchain
-    try {
-      const blockClass = BlockClass.fromObject(block);
+
+    if (sync.ancestor.hash === sync.canonicalTipHash) {
       const result = await this.config.blockchain.addBlock(blockClass);
-      if (result.valid) {
-        this.currentSyncHeight = block.index;
-        this.requestedBlocks.delete(block.index);
-        
-        logger.info(`added block ${block.index} to chain, progress: ${block.index}/${this.targetHeight}`);
-        
-        // clear timeout since we received a valid block
-        if (this.blockTimeout) {
-          clearTimeout(this.blockTimeout);
-          this.blockTimeout = null;
-        }
-        
-        // reset retry count on successful block
-        this.retryCount = 0;
-        
-        // request next batch if we haven't reached target
-        if (this.currentSyncHeight < this.targetHeight) {
-          this.requestNextBatch();
-        } else {
-          // sync complete!
-          logger.info(`sync complete! reached height ${this.currentSyncHeight}`);
-          this.syncState = SyncState.SYNCED;
-          this.emit('sync:complete');
-        }
-      } else {
-        logger.error(`failed to add block ${block.index}: ${result.error}`);
-        // this might be an orphan - emit event for orphan pool
-        this.emit('block:orphaned', block);
+      if (!result.valid) {
+        this.config.connectionManager.disconnect(peerId, 'invalid synchronized block');
+        return this.abortSync(result.error || 'invalid synchronized block');
       }
-    } catch (error) {
-      logger.error(`error processing block ${block.index}:`, error);
-      // continue with next block request on error
-      this.requestNextBatch();
+    } else {
+      const structure = blockClass.validate('sha256', this.config.chainConfig.maxTimeDrift * 1000);
+      const size = blockClass.getSize();
+      if (!structure.valid || size > this.config.chainConfig.maxBlockSize ||
+          sync.blockBytes + size > this.config.maxCandidateBlockBytes!) {
+        this.config.connectionManager.disconnect(peerId, 'invalid candidate block');
+        return this.abortSync(structure.error || 'candidate block byte limit exceeded');
+      }
+      sync.blocks.push(blockClass.toObject());
+      sync.blockBytes += size;
     }
+
+    sync.nextBlock++;
+    this.emit('block:received', blockClass);
+    this.requestNextBlock();
+  }
+
+  private async handleHeaders(peerId: string, sessionId: string, payload: any[]): Promise<void> {
+    const request = this.headerRequests.get(sessionId);
+    if (!request || request.peerId !== peerId) return;
+    const headers: BlockHeader[] = payload.map(header => ({
+      index: header.height,
+      timestamp: header.timestamp,
+      previousHash: header.previousHash,
+      hash: header.hash,
+      merkleRoot: header.merkleRoot,
+      stateRoot: header.stateRoot,
+      difficulty: header.difficulty,
+      nonce: header.nonce
+    }));
+    if (headers.length === 0) {
+      this.headerRequests.delete(sessionId);
+      const localTip = await this.config.blockchain.getLatestBlock();
+      const peer = this.config.discoveryService.getPeer(peerId);
+      if (request.headers.length === 0 && localTip && peer?.tipHash === localTip.hash) {
+        await this.config.transactionRelay?.syncMempool(peerId);
+      }
+      return;
+    }
+    if (request.headers.length + headers.length > this.config.maxHeaderCandidates!) {
+      this.headerRequests.delete(sessionId);
+      return this.config.connectionManager.disconnect(peerId, 'header candidate limit exceeded');
+    }
+    const combined = [...request.headers, ...headers];
+    const pendingHeaders = [...this.headerRequests.values()]
+      .reduce((total, pending) => total + pending.headers.length, 0);
+    if (pendingHeaders - request.headers.length + combined.length +
+        (this.activeSync?.headers.length || 0) > this.config.maxHeaderCandidates!) {
+      this.headerRequests.delete(sessionId);
+      logger.warn(`global header candidate limit reached while processing ${peerId}`);
+      return;
+    }
+    const reservation = { ...request, headers: combined };
+    this.headerRequests.set(sessionId, reservation);
+    if (this.activeSync || this.validatingHeaders) {
+      this.headerRequests.delete(sessionId);
+      return;
+    }
+    this.validatingHeaders = true;
+
+    try {
+      const validation = await this.config.blockchain.validateHeaderChain(
+        combined,
+        this.config.maxReorgDepth
+      );
+      if (this.headerRequests.get(sessionId) !== reservation) return;
+      if (!validation.valid || !validation.ancestor || validation.cumulativeDifficulty === undefined) {
+        this.headerRequests.delete(sessionId);
+        return this.config.connectionManager.disconnect(peerId, validation.error || 'invalid header chain');
+      }
+      const currentWork = await this.config.blockchain.getCumulativeDifficulty();
+      if (this.headerRequests.get(sessionId) !== reservation) return;
+      if (validation.cumulativeDifficulty <= currentWork) {
+        this.headerRequests.delete(sessionId);
+        if (headers.length === MAX_HEADERS) await this.requestHeaders(peerId, combined);
+        return;
+      }
+
+      const tip = await this.config.blockchain.getLatestBlock();
+      if (this.headerRequests.get(sessionId) !== reservation) return;
+      if (!tip || this.activeSync) {
+        this.headerRequests.delete(sessionId);
+        return;
+      }
+      this.activeSync = {
+        peerId,
+        sessionId,
+        deadline: Date.now() + this.config.syncTimeout!,
+        ancestor: validation.ancestor,
+        headers: combined,
+        cumulativeDifficulty: validation.cumulativeDifficulty,
+        canonicalTipHash: tip.hash,
+        blocks: [],
+        blockBytes: 0,
+        nextBlock: 0
+      };
+      this.headerRequests.delete(sessionId);
+      this.syncState = SyncState.SYNCING;
+      this.syncTarget = this.config.discoveryService.getPeer(peerId) || null;
+      this.targetHeight = combined.at(-1)!.index;
+      this.requestNextBlock();
+    } finally {
+      this.validatingHeaders = false;
+    }
+  }
+
+  private async handleTransaction(peerId: string, sessionId: string, payload: any): Promise<void> {
+    const request = this.transactionRequests.get(payload.hash);
+    if (!request || request.peerId !== peerId || request.sessionId !== sessionId) return;
+    this.transactionRequests.delete(payload.hash);
+    await this.config.transactionRelay?.handleTransaction(peerId, payload);
   }
   
   /**
    * handle inventory message
    */
-  private async handleInv(peerId: string, items: any[]): Promise<void> {
+  private async handleInv(peerId: string, sessionId: string, items: any[]): Promise<void> {
     logger.debug(`received inv with ${items.length} items from ${peerId}`);
-    
-    // during sync, only process blocks from our sync target
-    if (this.syncState === SyncState.SYNCING && (!this.syncTarget || peerId !== this.syncTarget.nodeId)) {
-      return;
+    const needed = await this.config.inventoryManager?.handleInv(peerId, items) || [];
+    let peerRequests = 0;
+    for (const request of this.transactionRequests.values()) {
+      if (request.sessionId === sessionId) peerRequests++;
     }
-    
-    // request blocks we don't have
-    const needed: any[] = [];
-    for (const item of items) {
-      // type 2 = block
-      if (item.type === 2) {
-        const hasBlock = await this.config.blockchain.getBlockByHash(item.hash);
-        if (!hasBlock) {
-          needed.push(item);
-        }
+    const available = Math.min(
+      this.config.maxTransactionRequests! - this.transactionRequests.size,
+      this.config.maxTransactionRequestsPerPeer! - peerRequests
+    );
+    const transactions = needed
+      .filter(item => item.type === InvType.TX && !this.transactionRequests.has(item.hash))
+      .slice(0, Math.max(0, available));
+    if (transactions.length > 0) {
+      const deadline = Date.now() + this.config.syncTimeout!;
+      for (const item of transactions) this.transactionRequests.set(item.hash, { peerId, sessionId, deadline });
+      if (!this.config.connectionManager.sendMessage(peerId, this.config.protocol.encodeMessage('getdata', transactions))) {
+        for (const item of transactions) this.transactionRequests.delete(item.hash);
       }
     }
-    
-    if (needed.length > 0) {
-      logger.debug(`requesting ${needed.length} blocks via getdata`);
-      const getdata = this.config.protocol.encodeMessage('getdata', needed);
-      this.config.connectionManager.sendMessage(peerId, getdata);
-    }
+    if (needed.some(item => item.type === InvType.BLOCK)) await this.requestHeaders(peerId);
   }
   
   /**
@@ -649,7 +720,12 @@ export class SyncManager extends EventEmitter {
     
     // send headers response
     const message = this.config.protocol.encodeMessage('headers', headers);
-    this.config.connectionManager.sendMessage(peerId, message);
+    if (this.config.connectionManager.sendMessage(peerId, message)) {
+      this.config.inventoryManager?.markAnnounced(peerId, headers.map(header => ({
+        type: InvType.BLOCK,
+        hash: header.hash
+      })));
+    }
   }
   
   /**
@@ -698,7 +774,9 @@ export class SyncManager extends EventEmitter {
     if (inventory.length > 0) {
       logger.debug(`sending inventory of ${inventory.length} blocks to ${peerId}`);
       const message = this.config.protocol.encodeMessage('inv', inventory);
-      this.config.connectionManager.sendMessage(peerId, message);
+      if (this.config.connectionManager.sendMessage(peerId, message)) {
+        this.config.inventoryManager?.markAnnounced(peerId, inventory);
+      }
     }
   }
   
@@ -707,21 +785,19 @@ export class SyncManager extends EventEmitter {
    */
   private async handleGetdata(peerId: string, items: any[]): Promise<void> {
     logger.info(`received getdata request for ${items.length} items from ${peerId}`);
-    
-    for (const item of items) {
-      // type 2 = block, type 1 = transaction
-      if (item.type === 2) {
+    const blocks = items
+      .filter(item => item.type === InvType.BLOCK)
+      .slice(0, this.config.batchSize!);
+    for (const item of blocks) {
+      if (this.config.inventoryManager?.wasAnnouncedToPeer(peerId, item.type, item.hash)) {
         const block = await this.config.blockchain.getBlockByHash(item.hash);
         if (block) {
           logger.info(`sending block ${block.index} (${item.hash}) to ${peerId}`);
           const message = this.config.protocol.encodeMessage('block', block);
-          this.config.connectionManager.sendMessage(peerId, message);
+          if (!this.config.connectionManager.sendMessage(peerId, message)) return;
         } else {
           logger.warn(`requested block ${item.hash} not found`);
         }
-      } else if (item.type === 1) {
-        // handle transaction requests if needed
-        logger.debug(`transaction request for ${item.hash} - not implemented`);
       }
     }
   }
@@ -812,14 +888,19 @@ export class SyncManager extends EventEmitter {
    * periodic sync check
    */
   private async checkSync(): Promise<void> {
-    if (!this.acceptingMessages || this.syncState !== SyncState.IDLE) {
-      return; // already syncing
+    if (!this.acceptingMessages) return;
+    const now = Date.now();
+    for (const [sessionId, request] of this.headerRequests) {
+      if (request.deadline > now) continue;
+      this.headerRequests.delete(sessionId);
+      this.config.connectionManager.disconnect(request.peerId, 'header request timed out');
     }
-    
-    // find best peer
-    const bestPeer = this.config.discoveryService.getBestPeer();
-    if (bestPeer) {
-      await this.checkIfSyncNeeded(bestPeer);
+    for (const [hash, request] of this.transactionRequests) {
+      if (request.deadline <= now) this.transactionRequests.delete(hash);
+    }
+    if (this.activeSync || this.validatingHeaders) return;
+    for (const peer of this.config.discoveryService.getKnownPeers()) {
+      await this.checkIfSyncNeeded(peer);
     }
   }
 
@@ -853,6 +934,10 @@ export class SyncManager extends EventEmitter {
         }
       );
     });
+  }
+
+  isSyncing(): boolean {
+    return this.syncState === SyncState.SYNCING;
   }
   
   /**

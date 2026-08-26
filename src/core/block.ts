@@ -6,6 +6,99 @@ export type { Block } from '../types';
 
 const logger = getLogger(__filename);
 
+export interface BlockHeader {
+  index: number;
+  timestamp: number;
+  previousHash: string;
+  hash: string;
+  merkleRoot: string;
+  stateRoot: string;
+  difficulty: number;
+  nonce: number;
+}
+
+export function calculateBlockHeaderHash(
+  header: Omit<BlockHeader, 'hash'>,
+  algorithm: HashAlgorithm = 'sha256'
+): string {
+  return hash([
+    header.index.toString(),
+    header.timestamp.toString(),
+    header.previousHash,
+    header.merkleRoot,
+    header.stateRoot,
+    header.difficulty.toString(),
+    header.nonce.toString()
+  ].join(':'), algorithm);
+}
+
+export function validateBlockHeader(
+  header: BlockHeader,
+  maxFutureTime: number,
+  algorithm: HashAlgorithm = 'sha256'
+): ValidationResult {
+  if (!Number.isSafeInteger(header.index) || header.index < 0) {
+    return { valid: false, error: 'Invalid block index' };
+  }
+  if (!Number.isSafeInteger(header.timestamp) || header.timestamp < 0) {
+    return { valid: false, error: 'Invalid block timestamp' };
+  }
+  if (!Number.isSafeInteger(header.nonce) || header.nonce < 0) {
+    return { valid: false, error: 'Invalid block nonce' };
+  }
+  if (!Number.isSafeInteger(header.difficulty) || header.difficulty < 1) {
+    return { valid: false, error: 'Invalid block difficulty' };
+  }
+  if (header.timestamp > Date.now() + maxFutureTime) {
+    return { valid: false, error: 'Block timestamp too far in future' };
+  }
+  if (![header.previousHash, header.hash, header.merkleRoot]
+    .every(value => /^[0-9a-f]{64}$/.test(value))) {
+    return { valid: false, error: 'Invalid block header hash' };
+  }
+  if (header.stateRoot !== '' && !/^[0-9a-f]{64}$/.test(header.stateRoot)) {
+    return { valid: false, error: 'Invalid block state root' };
+  }
+  if (header.hash !== calculateBlockHeaderHash(header, algorithm)) {
+    return { valid: false, error: 'Invalid block hash' };
+  }
+  if (!hashMeetsDifficulty(header.hash, header.difficulty)) {
+    return { valid: false, error: 'Block does not meet difficulty target' };
+  }
+  return { valid: true };
+}
+
+export function validateBlockHeaderPrevious(
+  header: BlockHeader,
+  previous: BlockHeader
+): ValidationResult {
+  if (header.index !== previous.index + 1) {
+    return { valid: false, error: 'Invalid block index sequence' };
+  }
+  if (header.previousHash !== previous.hash) {
+    return { valid: false, error: 'Invalid previous hash link' };
+  }
+  if (header.timestamp <= previous.timestamp) {
+    return { valid: false, error: 'Block timestamp not after previous block' };
+  }
+  return { valid: true };
+}
+
+export function validateBlockHeaderMedianTime(
+  header: BlockHeader,
+  pastHeaders: BlockHeader[]
+): ValidationResult {
+  if (pastHeaders.length === 0) return { valid: true };
+  const timestamps = pastHeaders.map(block => block.timestamp).sort((a, b) => a - b);
+  const middle = Math.floor(timestamps.length / 2);
+  const median = timestamps.length % 2 === 0
+    ? (timestamps[middle - 1] + timestamps[middle]) / 2
+    : timestamps[middle];
+  return header.timestamp > median
+    ? { valid: true }
+    : { valid: false, error: 'Block timestamp not greater than median of past blocks' };
+}
+
 /**
  * block class with mining and validation
  */
@@ -108,17 +201,7 @@ export class BlockClass {
    * calculate block hash
    */
   calculateHash(algorithm: HashAlgorithm = 'sha256'): string {
-    const data = [
-      this.index.toString(),
-      this.timestamp.toString(),
-      this.previousHash,
-      this.merkleRoot,
-      this.stateRoot,
-      this.difficulty.toString(),
-      this.nonce.toString()
-    ].join(':');
-    
-    return hash(data, algorithm);
+    return calculateBlockHeaderHash(this, algorithm);
   }
   
   /**
@@ -156,83 +239,27 @@ export class BlockClass {
   /**
    * validate block structure and hash
    */
-  validate(algorithm: HashAlgorithm = 'sha256'): ValidationResult {
-    // check index
-    if (this.index < 0) {
-      return { valid: false, error: 'Invalid block index' };
-    }
-    
-    // check timestamp (not more than 2 hours in future)
-    const maxFutureTime = Date.now() + (2 * 60 * 60 * 1000);
-    if (this.timestamp > maxFutureTime) {
-      return { valid: false, error: 'Block timestamp too far in future' };
-    }
-    
+  validate(algorithm: HashAlgorithm = 'sha256', maxFutureTime = 2 * 60 * 60 * 1000): ValidationResult {
     // check merkle root
     const calculatedMerkleRoot = this.calculateMerkleRoot(algorithm);
     if (this.merkleRoot !== calculatedMerkleRoot) {
       return { valid: false, error: 'Invalid merkle root' };
     }
-    
-    // check hash calculation
-    const calculatedHash = this.calculateHash(algorithm);
-    if (this.hash !== calculatedHash) {
-      return { valid: false, error: 'Invalid block hash' };
-    }
-    
-    // check proof-of-work
-    if (!hashMeetsDifficulty(this.hash, this.difficulty)) {
-      return { valid: false, error: 'Block does not meet difficulty target' };
-    }
-    
-    return { valid: true };
+    return validateBlockHeader(this, maxFutureTime, algorithm);
   }
   
   /**
    * validate against previous block
    */
   validatePreviousBlock(previousBlock: BlockClass): ValidationResult {
-    // check index sequence
-    if (this.index !== previousBlock.index + 1) {
-      return { valid: false, error: 'Invalid block index sequence' };
-    }
-    
-    // check previous hash link
-    if (this.previousHash !== previousBlock.hash) {
-      return { valid: false, error: 'Invalid previous hash link' };
-    }
-    
-    // check timestamp (must be after previous block)
-    if (this.timestamp <= previousBlock.timestamp) {
-      return { valid: false, error: 'Block timestamp not after previous block' };
-    }
-    
-    return { valid: true };
+    return validateBlockHeaderPrevious(this, previousBlock);
   }
   
   /**
    * validate against median timestamp of past blocks
    */
   validateMedianTime(pastBlocks: BlockClass[]): ValidationResult {
-    if (pastBlocks.length === 0) {
-      return { valid: true };
-    }
-    
-    // get timestamps and sort them
-    const timestamps = pastBlocks.map(b => b.timestamp).sort((a, b) => a - b);
-    
-    // calculate median
-    const medianIndex = Math.floor(timestamps.length / 2);
-    const medianTime = timestamps.length % 2 === 0
-      ? (timestamps[medianIndex - 1] + timestamps[medianIndex]) / 2
-      : timestamps[medianIndex];
-    
-    // block timestamp must be greater than median
-    if (this.timestamp <= medianTime) {
-      return { valid: false, error: 'Block timestamp not greater than median of past blocks' };
-    }
-    
-    return { valid: true };
+    return validateBlockHeaderMedianTime(this, pastBlocks);
   }
   
   /**

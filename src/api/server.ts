@@ -24,7 +24,6 @@ export interface ApiServerConfig {
   mempool: Mempool;
   node?: BoltNode;
   storage: StorageAdapter;
-  syncService?: any; // SyncService instance
 }
 
 /**
@@ -34,7 +33,6 @@ export class ApiServer {
   private server: any;
   private config: ApiServerConfig;
   private started: boolean = false;
-  private startTime: number = 0;
 
   constructor(config: ApiServerConfig) {
     this.config = config;
@@ -59,7 +57,6 @@ export class ApiServer {
     });
 
     this.started = true;
-    this.startTime = Date.now();
     logger.info(`API server started on http://${host}:${port}`);
   }
 
@@ -134,24 +131,6 @@ export class ApiServer {
         const text = await req.text();
         const body = text ? deserialize(text) : {};
         result = await this.connectPeer(body.address);
-      }
-
-      // peer-to-peer endpoints
-      else if (path === '/peer/status' && method === 'GET') {
-        result = await this.getPeerStatus();
-      } else if (path === '/peer/blocks' && method === 'GET') {
-        const height = parseInt(url.searchParams.get('height') || '0');
-        result = await this.getPeerBlocks(height);
-      } else if (path === '/peer/blocks' && method === 'POST') {
-        const text = await req.text();
-        const block = deserialize(text);
-        result = await this.receivePeerBlock(block);
-      } else if (path === '/peer/transactions' && method === 'GET') {
-        result = await this.getPeerTransactions();
-      } else if (path === '/peer/transactions' && method === 'POST') {
-        const text = await req.text();
-        const transaction = deserialize(text);
-        result = await this.receivePeerTransaction(transaction);
       }
 
       // health check
@@ -445,171 +424,6 @@ export class ApiServer {
       connected: true,
       address
     };
-  }
-
-  // peer-to-peer endpoint implementations
-
-  /**
-   * get peer status for synchronization
-   */
-  private async getPeerStatus(): Promise<any> {
-    const height = await this.config.blockchain.getHeight();
-    const latestBlock = await this.config.blockchain.getLatestBlock();
-    const config = this.config.blockchain.getConfig();
-    
-    return {
-      nodeId: process.env.NODE_ID || 'unknown',
-      blockHeight: height,
-      latestBlockHash: latestBlock?.hash || null,
-      capabilities: [
-        process.env.NODE_ROLE === 'miner' ? 'mining' : 'full_node'
-      ],
-      timestamp: Date.now()
-    };
-  }
-  
-  /**
-   * get blocks for peer synchronization
-   */
-  private async getPeerBlocks(fromHeight: number): Promise<any> {
-    const currentHeight = await this.config.blockchain.getHeight();
-    const blocks = [];
-    
-    // limit to 100 blocks per request
-    const limit = Math.min(100, currentHeight - fromHeight + 1);
-    
-    for (let i = 0; i < limit; i++) {
-      const block = await this.config.blockchain.getBlock(fromHeight + i);
-      if (block) {
-        blocks.push(block);
-      }
-    }
-    
-    return blocks;
-  }
-  
-  /**
-   * receive block from peer
-   */
-  private async receivePeerBlock(block: any): Promise<any> {
-    try {
-      // convert to BlockClass and validate
-      const { BlockClass } = await import('../core/block');
-      const blockInstance = BlockClass.fromObject(block);
-      
-      // check if we're far behind and should sync instead of trying to process individual blocks
-      const currentHeight = await this.config.blockchain.getHeight();
-      
-      // if block is more than 10 blocks ahead, we should sync instead
-      if (block.index > currentHeight + 10) {
-        logger.info(`Received block ${block.index} but current height is ${currentHeight}, triggering sync`);
-        
-        // trigger sync to catch up
-        if (this.config.syncService) {
-          setImmediate(() => {
-            this.config.syncService.syncNow().catch((err: unknown) =>
-              logger.error('Failed to trigger sync:', err)
-            );
-          });
-        }
-        
-        return { 
-          success: false, 
-          error: 'Too far behind, sync in progress',
-          shouldSync: true 
-        };
-      }
-      
-      // first try to add normally
-      const result = await this.config.blockchain.addBlock(blockInstance);
-      
-      if (result.valid) {
-        // remove transactions from mempool
-        if (block.transactions && block.transactions.length > 0) {
-          for (const tx of block.transactions) {
-            await this.config.mempool.removeTransaction(tx.hash);
-          }
-        }
-        
-        logger.info(`Received and added block ${block.index} from peer`);
-        return { success: true, height: block.index };
-      } else if (result.error?.includes('Invalid previous hash') && block.index <= currentHeight + 1) {
-        // only consider reorganization if block is at or near our height
-        // AND we've been running for at least 30 seconds (to allow initial sync)
-        const uptime = Date.now() - this.startTime;
-        if (uptime < 30000) {
-          logger.info(`Block ${block.index} from peer has different previous hash, but ignoring reorg (uptime: ${uptime}ms)`);
-          
-          // trigger sync instead
-          if (this.config.syncService) {
-            setImmediate(() => {
-              this.config.syncService.syncNow().catch((err: unknown) =>
-                logger.error('Failed to trigger sync:', err)
-              );
-            });
-          }
-          
-          return { 
-            success: false, 
-            error: 'Node still syncing, reorganization deferred' 
-          };
-        }
-        
-        logger.info(`Block ${block.index} from peer has different previous hash, checking for reorganization`);
-        
-        // handle as competing block
-        const competingResult = await this.config.blockchain.handleCompetingBlock(blockInstance);
-        
-        if (competingResult.valid) {
-          logger.info(`Reorganized to accept block ${block.index} from competing chain`);
-          return { success: true };
-        } else {
-          logger.info(`Competing block ${block.index} rejected: ${competingResult.error}`);
-          
-          // still trigger sync to check for better chains
-          if (this.config.syncService) {
-            setImmediate(() => {
-              this.config.syncService.syncNow().catch((err: unknown) =>
-                logger.error('Failed to trigger sync after competing block:', err)
-              );
-            });
-          }
-          
-          return { success: false, error: competingResult.error || 'Competing chain has less work' };
-        }
-      } else {
-        logger.warn(`Rejected block ${block.index} from peer: ${result.error}`);
-        return { success: false, error: result.error };
-      }
-      
-    } catch (error: any) {
-      logger.error('Failed to process peer block:', error);
-      return { success: false, error: error.message };
-    }
-  }
-  
-  /**
-   * get mempool transactions for peer
-   */
-  private async getPeerTransactions(): Promise<any> {
-    return this.config.mempool.getTransactions();
-  }
-  
-  /**
-   * receive transaction from peer
-   */
-  private async receivePeerTransaction(transaction: any): Promise<any> {
-    try {
-      // add to mempool
-      await this.config.mempool.addTransaction(transaction);
-      
-      logger.debug(`Received transaction ${transaction.hash} from peer`);
-      return { success: true, hash: transaction.hash };
-      
-    } catch (error: any) {
-      logger.warn(`Failed to add peer transaction: ${error.message}`);
-      return { success: false, error: error.message };
-    }
   }
 
   /**

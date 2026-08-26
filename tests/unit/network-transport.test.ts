@@ -449,7 +449,11 @@ describe('authenticated peer handshake', () => {
     const discoveryA = Object.assign(new EventEmitter(), { getPeer: () => null });
     const discoveryB = Object.assign(new EventEmitter(), { getPeer: () => null });
     new SyncManager({
-      blockchain: { getHeight: async () => 0 } as any,
+      blockchain: {
+        getHeight: async () => 0,
+        getBlock: async () => null,
+        getLatestBlock: async () => null
+      } as any,
       connectionManager: managerA,
       protocol: protocolA,
       discoveryService: discoveryA as any,
@@ -458,7 +462,11 @@ describe('authenticated peer handshake', () => {
       identity: identityA
     });
     new SyncManager({
-      blockchain: { getHeight: async () => 0 } as any,
+      blockchain: {
+        getHeight: async () => 0,
+        getBlock: async () => null,
+        getLatestBlock: async () => null
+      } as any,
       connectionManager: managerB,
       protocol: protocolB,
       discoveryService: discoveryB as any,
@@ -664,6 +672,8 @@ describe('authenticated peer handshake', () => {
     const blocked = new Promise<void>(resolve => { release = resolve; });
     let heightReads = 0;
     const connectionManager = Object.assign(new EventEmitter(), {
+      isAuthenticated: () => true,
+      getConnection: () => ({ id: 'session', authenticated: true }),
       disconnect: () => {},
       sendMessage: () => true
     });
@@ -674,7 +684,8 @@ describe('authenticated peer handshake', () => {
           heightReads++;
           await blocked;
           return 0;
-        }
+        },
+        getBlock: async () => null
       } as any,
       connectionManager: connectionManager as any,
       protocol,
@@ -876,13 +887,52 @@ describe('transaction relay lifecycle', () => {
     });
 
     relay.start();
-    expect(mempool.listenerCount('transaction:added')).toBe(1);
-    expect(connectionManager.listenerCount('message:received')).toBe(1);
+    expect(mempool.listenerCount('transactionAdded')).toBe(1);
+    expect(connectionManager.listenerCount('message:received')).toBe(0);
     relay.stop();
-    expect(mempool.listenerCount('transaction:added')).toBe(0);
+    expect(mempool.listenerCount('transactionAdded')).toBe(0);
     expect(connectionManager.listenerCount('message:received')).toBe(0);
     relay.start();
-    expect(mempool.listenerCount('transaction:added')).toBe(1);
+    expect(mempool.listenerCount('transactionAdded')).toBe(1);
+    relay.stop();
+  });
+
+  it('admits remote transactions once and excludes their source from relay', async () => {
+    const mempool = Object.assign(new EventEmitter(), {
+      hasTransaction: () => false,
+      addTransaction: async function (tx: any) { this.emit('transactionAdded', tx); },
+      getTransaction: () => null
+    });
+    const connectionManager = Object.assign(new EventEmitter(), { getConnectedPeers: () => [] });
+    let excluded: Map<string, string> | undefined;
+    const inventoryManager = {
+      broadcastInventory: (_items: any[], peers: Map<string, string>) => { excluded = peers; },
+      wasAnnouncedToPeer: () => true
+    };
+    const relay = new TransactionRelay({
+      mempool: mempool as any,
+      connectionManager: connectionManager as any,
+      inventoryManager: inventoryManager as any,
+      protocol: createProtocol()
+    });
+    const hash = 'ab'.repeat(32);
+    relay.start();
+
+    expect(await relay.handleTransaction('source', {
+      chainId: mainnet.chainId,
+      kind: 'transfer',
+      hash,
+      from: createIdentity().address,
+      to: createIdentity().address,
+      amount: '1',
+      fee: '1',
+      nonce: 0,
+      timestamp: Date.now()
+    })).toBe(true);
+    (relay as any).processRelayQueue();
+
+    expect(excluded?.get(hash)).toBe('source');
+    expect(relay.getStats().recentTxCount).toBe(1);
     relay.stop();
   });
 });

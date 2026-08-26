@@ -10,6 +10,8 @@ const logger = getLogger(__filename);
 interface PeerInventory {
   blocks: Set<string>;
   transactions: Set<string>;
+  announcedBlocks: Set<string>;
+  announcedTransactions: Set<string>;
   lastUpdate: number;
 }
 
@@ -87,28 +89,27 @@ export class InventoryManager extends EventEmitter {
   /**
    * handle inventory message from peer
    */
-  async handleInv(peerId: string, items: InvItem[]): Promise<void> {
+  async handleInv(peerId: string, items: InvItem[]): Promise<InvItem[]> {
     logger.debug(`received inv with ${items.length} items from ${peerId}`);
     
     const inventory = this.getOrCreateInventory(peerId);
     const needed: InvItem[] = [];
     
     for (const item of items) {
-      const key = `${item.type}:${item.hash}`;
-      
       // track what peer has
       if (item.type === 2) { // block
-        inventory.blocks.add(item.hash);
+        this.track(inventory.blocks, item.hash);
         
         // check if we need this block
         if (!(await this.config.blockchain.hasBlock(item.hash))) {
           needed.push(item);
         }
       } else if (item.type === 1) { // transaction
-        inventory.transactions.add(item.hash);
+        this.track(inventory.transactions, item.hash);
         
         // check if we need this transaction
-        if (!this.config.mempool.hasTransaction(item.hash)) {
+        if (!this.config.mempool.hasTransaction(item.hash) &&
+            !(await this.config.blockchain.hasTransaction(item.hash))) {
           needed.push(item);
         }
       }
@@ -116,27 +117,19 @@ export class InventoryManager extends EventEmitter {
     
     inventory.lastUpdate = Date.now();
     
-    // request needed items
-    if (needed.length > 0) {
-      logger.info(`requesting ${needed.length} items from ${peerId}`);
-      const message = this.config.protocol.encodeMessage('getdata', needed);
-      this.config.connectionManager.sendMessage(peerId, message);
-    }
-    
     this.emit('inventory:updated', peerId, items);
+    return needed;
   }
   
   /**
    * announce our inventory to peers
    */
-  broadcastInventory(items: InvItem[]): void {
+  broadcastInventory(items: InvItem[], excludedPeers = new Map<string, string>()): void {
     if (items.length === 0) {
-      console.log('[INVENTORY] No items to broadcast');
       return;
     }
     
     const peers = this.config.connectionManager.getConnectedPeers();
-    console.log(`[INVENTORY] Broadcasting ${items.length} items to ${peers.length} peers: ${peers.join(', ')}`);
     logger.info(`broadcasting ${items.length} items to ${peers.length} peers`);
     
     for (const peerId of peers) {
@@ -144,6 +137,7 @@ export class InventoryManager extends EventEmitter {
       
       // filter items peer doesn't have
       const filtered = items.filter(item => {
+        if (excludedPeers.get(item.hash) === peerId) return false;
         if (!inventory) return true;
         
         if (item.type === 2) { // block
@@ -155,19 +149,18 @@ export class InventoryManager extends EventEmitter {
       });
       
       if (filtered.length > 0) {
-        console.log(`[INVENTORY] Sending inv with ${filtered.length} items to ${peerId}`);
         logger.debug(`sending inv with ${filtered.length} items to ${peerId}`);
         const message = this.config.protocol.encodeMessage('inv', filtered);
-        console.log(`[INVENTORY] Encoded message size: ${message.length} bytes`);
         const sent = this.config.connectionManager.sendMessage(peerId, message);
         if (!sent) {
-          console.log(`[INVENTORY] FAILED to send inv to ${peerId}`);
           logger.warn(`failed to send inv to ${peerId}`);
         } else {
-          console.log(`[INVENTORY] Successfully sent inv to ${peerId}`);
+          const tracked = this.getOrCreateInventory(peerId);
+          for (const item of filtered) {
+            const announced = item.type === 2 ? tracked.announcedBlocks : tracked.announcedTransactions;
+            this.track(announced, item.hash);
+          }
         }
-      } else {
-        console.log(`[INVENTORY] No items to send to ${peerId} after filtering`);
       }
     }
   }
@@ -176,11 +169,9 @@ export class InventoryManager extends EventEmitter {
    * announce new block to network
    */
   announceBlock(blockHash: string): void {
-    console.log(`[INVENTORY] announceBlock called for ${blockHash}`);
     // avoid duplicate announcements
     const key = `block:${blockHash}`;
     if (this.recentAnnouncements.has(key)) {
-      console.log(`[INVENTORY] Block ${blockHash} already announced recently`);
       return;
     }
     
@@ -229,6 +220,29 @@ export class InventoryManager extends EventEmitter {
     const inventory = this.peerInventory.get(peerId);
     return inventory?.transactions.has(txHash) || false;
   }
+
+  wasAnnouncedToPeer(peerId: string, type: number, hash: string): boolean {
+    const inventory = this.peerInventory.get(peerId);
+    return type === 2
+      ? inventory?.announcedBlocks.has(hash) || false
+      : inventory?.announcedTransactions.has(hash) || false;
+  }
+
+  markAnnounced(peerId: string, items: InvItem[]): void {
+    const inventory = this.getOrCreateInventory(peerId);
+    for (const item of items) {
+      const announced = item.type === 2 ? inventory.announcedBlocks : inventory.announcedTransactions;
+      this.track(announced, item.hash);
+    }
+  }
+
+  private track(hashes: Set<string>, hash: string): void {
+    hashes.delete(hash);
+    if (hashes.size >= this.config.maxInventorySize!) {
+      hashes.delete(hashes.values().next().value!);
+    }
+    hashes.add(hash);
+  }
   
   /**
    * get peers that have a specific block
@@ -270,6 +284,8 @@ export class InventoryManager extends EventEmitter {
       inventory = {
         blocks: new Set(),
         transactions: new Set(),
+        announcedBlocks: new Set(),
+        announcedTransactions: new Set(),
         lastUpdate: Date.now()
       };
       this.peerInventory.set(peerId, inventory);

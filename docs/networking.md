@@ -25,11 +25,11 @@ announcements contain:
 - optional `capabilities`
 - `signature`
 
-announcements are signed by the advertised node identity. validation binds the public key to `nodeId`, checks chain identity, bounds fields and sender rates, and accepts bracketed ipv6 endpoints. fresh announcements update the complete peer record and trigger bounded connection attempts. stale announcements are removed. peer selection currently compares announced height only.
+announcements are signed by the advertised node identity. validation binds the public key to `nodeId`, checks chain identity, bounds fields and sender rates, and accepts bracketed ipv6 endpoints. fresh announcements update the complete peer record and trigger bounded connection attempts. stale announcements are removed. advertised height and tip hash do not determine chain selection.
 
 ## tcp protocol
 
-current protocol version is `5`.
+current protocol version is `6`.
 
 ```text
 [magic:4][type:4][length:4][checksum:4][sequence:8][authentication-tag:32][payload:length]
@@ -47,31 +47,30 @@ the protocol serializes handshake, keepalive, inventory, block request, header r
 
 ## handshake
 
-each connection sends a signed `version`, then expects protocol version `5`. `version` binds protocol version, chain id, genesis hash, node id, public key, nonce, timestamp, user agent, and starting height. mismatched versions, stale timestamps, invalid signatures, and discovery identity mismatches are disconnected.
+each connection sends a signed `version`, then expects protocol version `6`. `version` binds protocol version, chain id, genesis hash, node id, public key, nonce, timestamp, user agent, and starting height. mismatched versions, stale timestamps, invalid signatures, and discovery identity mismatches are disconnected.
 
 peers answer with a signed `verack` that binds both identities, both nonces, and connection roles. secp256k1 ecdh derives directional frame authentication keys. application messages are rejected until reciprocal authentication completes. duplicate identities resolve to one deterministic connection.
 
 ## active block synchronization
 
-active sync is sequential and height-selected:
+`SyncManager` owns protocol dispatch and active synchronization. each authenticated peer starts header discovery with an exponential block locator. advertised height and cumulative work are not trusted.
 
-1. discovery chooses peer with highest announced height.
-2. sync sends `getblocks` to that peer.
-3. block locator contains current tip and genesis. genesis is omitted when it is already tip.
-4. peer returns block hashes through `inv`.
-5. receiver requests unknown block hashes through `getdata`.
-6. peer sends full `block` messages.
-7. receiver accepts only next expected height and validates block through `Blockchain.addBlock()`.
+1. receiver sends `getheaders` with canonical locator hashes.
+2. peer returns up to 2,000 contiguous headers after the first matching locator.
+3. `Blockchain.validateHeaderChain()` finds a canonical ancestor and validates header hashes, linkage, proof of work, configured difficulty adjustment, median time, future time, and cumulative work.
+4. equal-work or lower-work candidates stop without requesting block bodies.
+5. receiver requests each full block only after candidate work exceeds current canonical work.
+6. each response must match expected peer session, request deadline, and block hash.
+7. canonical extensions pass through `Blockchain.addBlock()`. forks remain buffered until the complete validated branch passes `Blockchain.reorganize()`.
+8. mempool synchronization starts after chain convergence.
 
-sync retries timed-out batches against same target. it does not compare announced or downloaded cumulative work before selecting target. consensus code validates each block and local fork reorganization, but active network sync is not a validated cumulative-work sync protocol.
-
-`getheaders` and `headers` codecs and responder paths exist. active sync does not request or consume headers. `BlockDownloader` also exists, but active sync does not queue inventory through it or dispatch received blocks to it. headers-first and parallel block sync are therefore not implemented.
+network policy accepts at most 4,000 candidate headers across active peer requests, a reorganization depth of 100 blocks, and candidate body bytes totaling 16 configured maximum blocks. transaction body requests allow 500 globally and 50 per peer session. body download is sequential. unsolicited blocks are ignored.
 
 ## inventory and transactions
 
-new local blocks and transactions can be announced with `inv`. peers can request advertised items with `getdata`. block requests are served. transaction relay can serve requested local mempool transactions.
+new local blocks and transactions are announced with `inv`. `getdata` serves only inventory previously announced to that authenticated peer. received block inventory triggers header discovery instead of immediate body download.
 
-incoming `tx` messages decode at protocol layer but are not dispatched to `TransactionRelay.handleTransaction()`. incoming transaction admission and relay are not active. `syncMempool()` exists but is not called when peers connect.
+unknown transaction inventory creates bounded, session-bound requests. matching `tx` responses pass through mempool validation once, then relay to peers other than the source. unsolicited transactions are ignored. mempool synchronization runs after header convergence.
 
 ## connection lifecycle
 
@@ -102,11 +101,9 @@ network startup reads these environment variables:
 
 connection and sync tuning values are constructor options. they are not environment variables in current startup wiring.
 
-## unimplemented network paths
+## limits
 
-- headers-first sync
-- parallel block downloading in active sync
-- cumulative-work peer selection and validated cumulative-work sync
-- incoming transaction dispatch
-- mempool sync on connection
-- requested block admission outside active sequential sync
+- block body download is sequential.
+- synchronization does not aggregate work across several peers.
+- transport authentication does not provide confidentiality.
+- checkpoints and finalized blocks are not implemented.

@@ -28,7 +28,7 @@ describe('network protocol', () => {
 
   describe('message serialization', () => {
     it('should use the chain-bound protocol version', () => {
-      expect(PROTOCOL_VERSION).toBe(5);
+      expect(PROTOCOL_VERSION).toBe(6);
     });
 
     it('should serialize and deserialize messages with correct header', () => {
@@ -251,6 +251,36 @@ describe('network protocol', () => {
       }];
 
       expect(protocol.deserializeHeaders(protocol.serializeHeaders(headers))).toEqual(headers);
+    });
+
+    it('should round-trip difficulty above 32 bits', () => {
+      const headers = [{
+        height: 1,
+        hash: '1'.repeat(64),
+        previousHash: '2'.repeat(64),
+        merkleRoot: '3'.repeat(64),
+        stateRoot: '4'.repeat(64),
+        timestamp: 1234567890,
+        difficulty: 0x1_0000_0000,
+        nonce: 7
+      }];
+
+      expect(protocol.deserializeHeaders(protocol.serializeHeaders(headers))).toEqual(headers);
+    });
+
+    it('should reject unsafe header integers', () => {
+      const headers = [{
+        height: 1,
+        hash: '1'.repeat(64),
+        previousHash: '2'.repeat(64),
+        merkleRoot: '3'.repeat(64),
+        stateRoot: '4'.repeat(64),
+        timestamp: Number.MAX_SAFE_INTEGER + 1,
+        difficulty: 1,
+        nonce: 0
+      }];
+
+      expect(protocol.deserializeHeaders(protocol.serializeHeaders(headers))).toBeNull();
     });
   });
 

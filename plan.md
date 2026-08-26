@@ -30,7 +30,7 @@ open release gates:
 
 - [x] bind peer handshakes and traffic to chain identity
 - [x] authenticate and bound tcp transport
-- [ ] relay transactions and synchronize by validated cumulative work
+- [x] relay transactions and synchronize by validated cumulative work
 - [ ] harden api input, exposure, pagination, and metric labels
 - [ ] pin deployment inputs
 - [ ] pass real multi-node deployment tests

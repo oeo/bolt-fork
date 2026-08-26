@@ -260,6 +260,17 @@ describe('API Server Integration', () => {
     expect(error.error).toBe('Endpoint not found');
   });
 
+  test('should not expose peer synchronization endpoints', async () => {
+    for (const path of ['/peer/status', '/peer/blocks', '/peer/transactions']) {
+      const response = await fetch(`http://localhost:17333${path}`);
+      expect(response.status).toBe(404);
+    }
+    for (const path of ['/peer/blocks', '/peer/transactions']) {
+      const response = await fetch(`http://localhost:17333${path}`, { method: 'POST' });
+      expect(response.status).toBe(404);
+    }
+  });
+
   test('should handle network status without p2p node', async () => {
     const response = await fetch('http://localhost:17333/network/status');
     expect(response.status).toBe(200);

@@ -4,7 +4,9 @@
 
 the api has no authentication or authorization. current node startup binds it to `0.0.0.0`, and every response permits wildcard cors. run it only on a trusted network or behind an authenticated gateway.
 
-`POST /peers/connect`, `POST /peer/blocks`, and `POST /peer/transactions` are unauthenticated peer mutation routes. they can initiate outbound connections or submit data for chain and mempool processing. exposing them to an untrusted network is a security risk.
+`POST /peers/connect` is an unauthenticated mutation route that can initiate outbound connections when a network node is injected. exposing it to an untrusted network is a security risk.
+
+block and transaction exchange is available only through authenticated tcp protocol messages. obsolete `/peer/status`, `/peer/blocks`, and `/peer/transactions` routes return `404`.
 
 no rate limiting is implemented. no mining http endpoints are implemented.
 
@@ -74,18 +76,6 @@ current startup in `src/index.ts` does not inject a node into `ApiServer`. netwo
 | `POST /peers/connect` | `500` with `{"error":"Network node not available"}` |
 
 transaction submission also reports `broadcasted: false` in current startup.
-
-### peer synchronization
-
-| method | path | behavior |
-|---|---|---|
-| `GET` | `/peer/status` | returns node id, chain height, tip hash, role capability, and timestamp |
-| `GET` | `/peer/blocks?height=:height` | returns sequential blocks from `height`, defaulting to `0` and limiting the result to 100 blocks |
-| `POST` | `/peer/blocks` | deserializes one block and attempts chain insertion, sync deferral, or competing-chain handling |
-| `GET` | `/peer/transactions` | returns all mempool transactions |
-| `POST` | `/peer/transactions` | deserializes one transaction and attempts mempool insertion |
-
-peer block and transaction handlers catch processing failures and return `200` with `success: false` and an `error` value.
 
 ## bigint encoding
 

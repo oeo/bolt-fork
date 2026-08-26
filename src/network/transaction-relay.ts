@@ -24,12 +24,12 @@ export interface TransactionRelayConfig {
 export class TransactionRelay extends EventEmitter {
   private config: TransactionRelayConfig;
   private recentTxs: Map<string, number> = new Map(); // hash -> timestamp
-  private relayQueue: Set<Transaction> = new Set();
+  private relayQueue = new Map<string, { transaction: Transaction; sourcePeer?: string }>();
+  private sourcePeers = new Map<string, string>();
   private relayTimer: any;
   private cleanupTimer: any;
   private isRunning: boolean = false;
   private mempoolHandler?: (tx: Transaction) => void;
-  private messageHandler?: (peerId: string, data: Uint8Array) => void;
   
   constructor(config: TransactionRelayConfig) {
     super();
@@ -47,12 +47,7 @@ export class TransactionRelay extends EventEmitter {
    */
   private setupEventHandlers(): void {
     this.mempoolHandler = (tx: Transaction) => this.relayTransaction(tx);
-    this.messageHandler = (peerId: string, data: Uint8Array) => {
-      const message = this.config.protocol.decodeMessage(data);
-      if (message?.command === 'getdata') this.handleGetData(peerId, message.payload);
-    };
-    this.config.mempool.on('transaction:added', this.mempoolHandler);
-    this.config.connectionManager.on('message:received', this.messageHandler);
+    this.config.mempool.on('transactionAdded', this.mempoolHandler);
   }
   
   /**
@@ -93,13 +88,12 @@ export class TransactionRelay extends EventEmitter {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
-    if (this.mempoolHandler) this.config.mempool.off('transaction:added', this.mempoolHandler);
-    if (this.messageHandler) this.config.connectionManager.off('message:received', this.messageHandler);
+    if (this.mempoolHandler) this.config.mempool.off('transactionAdded', this.mempoolHandler);
     this.mempoolHandler = undefined;
-    this.messageHandler = undefined;
     
     this.relayQueue.clear();
     this.recentTxs.clear();
+    this.sourcePeers.clear();
   }
   
   /**
@@ -116,7 +110,10 @@ export class TransactionRelay extends EventEmitter {
     this.recentTxs.set(tx.hash, Date.now());
     
     // add to relay queue
-    this.relayQueue.add(tx);
+    this.relayQueue.set(tx.hash, {
+      transaction: tx,
+      sourcePeer: this.sourcePeers.get(tx.hash)
+    });
     
     logger.debug(`queued transaction ${tx.hash.substring(0, 8)}... for relay`);
   }
@@ -128,23 +125,26 @@ export class TransactionRelay extends EventEmitter {
     if (this.relayQueue.size === 0) return;
     
     // get batch of transactions to relay
-    const batch = Array.from(this.relayQueue).slice(0, this.config.relayBatchSize);
+    const batch = Array.from(this.relayQueue.values()).slice(0, this.config.relayBatchSize);
     
     if (batch.length === 0) return;
     
     // remove from queue
-    for (const tx of batch) {
-      this.relayQueue.delete(tx);
+    for (const { transaction } of batch) {
+      this.relayQueue.delete(transaction.hash);
     }
     
     // create inventory items
-    const items = batch.map(tx => ({
+    const items = batch.map(({ transaction }) => ({
       type: 1, // transaction
-      hash: tx.hash
+      hash: transaction.hash
     }));
+    const excludedPeers = new Map(batch.flatMap(({ transaction, sourcePeer }) =>
+      sourcePeer ? [[transaction.hash, sourcePeer] as const] : []
+    ));
     
     // announce via inventory manager
-    this.config.inventoryManager.broadcastInventory(items);
+    this.config.inventoryManager.broadcastInventory(items, excludedPeers);
     
     logger.debug(`relayed ${batch.length} transactions to network`);
     this.emit('transactions:relayed', batch.length);
@@ -153,7 +153,7 @@ export class TransactionRelay extends EventEmitter {
   /**
    * handle getdata request for transactions
    */
-  private handleGetData(peerId: string, items: any[]): void {
+  handleGetData(peerId: string, items: any[]): void {
     const txRequests = items.filter(item => item.type === 1); // type 1 = transaction
     
     if (txRequests.length === 0) return;
@@ -161,7 +161,9 @@ export class TransactionRelay extends EventEmitter {
     logger.debug(`received getdata for ${txRequests.length} transactions from ${peerId}`);
     
     for (const item of txRequests) {
-      const tx = this.config.mempool.getTransaction(item.hash);
+      const tx = this.config.inventoryManager.wasAnnouncedToPeer(peerId, item.type, item.hash)
+        ? this.config.mempool.getTransaction(item.hash)
+        : null;
       
       if (tx) {
         // send transaction to peer
@@ -207,7 +209,7 @@ export class TransactionRelay extends EventEmitter {
   /**
    * handle incoming transaction from peer
    */
-  async handleTransaction(peerId: string, txData: any): Promise<void> {
+  async handleTransaction(peerId: string, txData: any): Promise<boolean> {
     try {
       // reconstruct transaction object
       const tx: Transaction = {
@@ -227,22 +229,24 @@ export class TransactionRelay extends EventEmitter {
       // check if we've seen this recently
       if (this.recentTxs.has(tx.hash)) {
         logger.debug(`ignoring duplicate transaction ${tx.hash.substring(0, 8)}...`);
-        return;
+        return false;
       }
-      
-      // mark as recent
-      this.recentTxs.set(tx.hash, Date.now());
+      if (this.config.mempool.hasTransaction(tx.hash)) return false;
       
       // add to mempool
-      await this.config.mempool.addTransaction(tx);
+      this.sourcePeers.set(tx.hash, peerId);
+      try {
+        await this.config.mempool.addTransaction(tx);
+      } finally {
+        this.sourcePeers.delete(tx.hash);
+      }
       logger.info(`received new transaction ${tx.hash.substring(0, 8)}... from ${peerId}`);
 
-      // relay to other peers
-      this.relayTransaction(tx);
-
       this.emit('transaction:received', tx, peerId);
+      return true;
     } catch (error) {
       logger.error(`failed to handle transaction from ${peerId}:`, error);
+      return false;
     }
   }
   
@@ -271,7 +275,9 @@ export class TransactionRelay extends EventEmitter {
     for (let i = 0; i < items.length; i += batchSize) {
       const batch = items.slice(i, i + batchSize);
       const message = this.config.protocol.encodeMessage('inv', batch);
-      this.config.connectionManager.sendMessage(peerId, message);
+      if (this.config.connectionManager.sendMessage(peerId, message)) {
+        this.config.inventoryManager.markAnnounced(peerId, batch);
+      }
     }
     
     logger.info(`announced ${items.length} transactions to ${peerId}`);

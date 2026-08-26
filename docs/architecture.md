@@ -21,14 +21,14 @@ block acceptance validates:
 - transaction execution and resulting account state root
 - account balances and nonces
 
-canonical storage tracks cumulative work. competing branches can trigger a reorganization only after candidate blocks, state transitions, difficulty, timestamps, and cumulative work are validated. this local fork handling is separate from network synchronization. network sync does not select or prevalidate peers by cumulative work.
+canonical storage tracks cumulative work. competing branches can trigger a reorganization only after candidate blocks, state transitions, difficulty, timestamps, and cumulative work are validated. network synchronization validates candidate headers and cumulative work before requesting block bodies.
 
 ## networking
 
-active networking uses protocol version `5`.
+active networking uses protocol version `6`.
 
 ```text
-ipfs pubsub discovery -> tcp connection -> version/verack -> getblocks -> inv -> getdata -> block
+ipfs pubsub discovery -> tcp connection -> version/verack -> getheaders -> headers -> getdata -> block
 ```
 
 peer announcements include signed node identity, chain identity, tcp endpoint, height, tip hash, version, timestamp, and capabilities. discovered peers are connected over tcp. fresh announcements can retry disconnected peers within connection admission and cooldown limits.
@@ -37,9 +37,9 @@ signed `version` and `verack` transcripts bind both peers, connection roles, non
 
 tcp input, output, connection, handshake, message-dispatch, discovery, and protocol collection limits bound peer-controlled resource use. mainnet and testnet outbound dialing rejects private and reserved destinations after dns resolution. devnet permits private peers.
 
-active synchronization selects the announced peer with highest height. it sends `getblocks` with a locator containing current tip and genesis, receives `inv`, requests missing blocks with `getdata`, and accepts the next expected block sequentially.
+`SyncManager` owns authenticated protocol dispatch. active synchronization sends `getheaders` with an exponential canonical locator, validates contiguous headers and cumulative work through `Blockchain`, then requests candidate block bodies sequentially. canonical extensions use normal block admission. complete replacement branches use bounded reorganization. block inventory starts header discovery rather than direct body download.
 
-`getheaders` and `headers` codecs and the `getheaders` responder exist. incoming `headers` messages are not dispatched. `BlockDownloader` exists, but active sync does not queue work through it. see [networking](networking.md) for protocol and release limitations.
+transaction inventory creates bounded requests tied to the authenticated peer session. requested transactions pass through mempool admission once and relay without echoing to their source. unsolicited blocks and transactions are ignored. see [networking](networking.md) for protocol limits.
 
 ## account state
 
@@ -67,7 +67,7 @@ src/core/       blocks, blockchain, execution, difficulty, forks, mempool, trans
 src/crypto/     hashes, addresses, keys, signatures, wallets
 src/storage/    storage contract, lmdb implementation, memory implementation
 src/network/    discovery, tcp framing, connections, sync, inventory, relay
-src/services/   mining, block templates, metrics, service sync
+src/services/   mining, block templates, metrics
 src/api/        bun http server
 src/config/     chain configuration
 src/utils/      logging, serialization, identity, currency
@@ -75,16 +75,12 @@ src/utils/      logging, serialization, identity, currency
 
 bun runs typescript directly. tcp uses `Bun.listen` and `Bun.connect`. hashing uses `Bun.CryptoHasher` without unsupported performance multipliers or benchmark claims.
 
-## current network gaps
+## current network limits
 
-these paths are not implemented end to end:
-
-- headers-first synchronization
-- parallel block downloading in active sync
-- cumulative-work peer selection and validated cumulative-work network sync
-- incoming `tx` dispatch to transaction relay
-- mempool synchronization on connection
-- requested block admission outside active sequential sync
+- block body download is sequential.
+- candidate headers, reorganization depth, requested transactions, and candidate body bytes have fixed policy bounds.
+- synchronization evaluates one peer candidate at a time.
+- checkpoints and finalized blocks are not implemented.
 
 tcp framing checks chain-specific network magic, payload checksum, sequence, and authentication tag. signed handshakes authenticate peer identity. transport does not provide confidentiality.
 

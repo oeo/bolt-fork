@@ -436,20 +436,6 @@ export class PeerDiscoveryService extends EventEmitter {
   }
   
   /**
-   * get best peer (highest work)
-   */
-  getBestPeer(): PeerEndpoint | null {
-    const peers = this.getKnownPeers();
-    if (peers.length === 0) return null;
-    
-    // for now, just use highest block height
-    // later we'll compare cumulative difficulty
-    return peers.reduce((best, peer) => {
-      return peer.height > best.height ? peer : best;
-    });
-  }
-  
-  /**
    * check if service is running
    */
   isActive(): boolean {

@@ -66,11 +66,6 @@ the cluster scripts are not safe to use. generated node compose files do not con
 - `GET /network/status`
 - `GET /peers`
 - `POST /peers/connect`
-- `GET /peer/status`
-- `GET /peer/blocks?height=:height`
-- `POST /peer/blocks`
-- `GET /peer/transactions`
-- `POST /peer/transactions`
 - `GET /health`
 
 ## configuration

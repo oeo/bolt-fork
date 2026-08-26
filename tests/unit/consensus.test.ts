@@ -341,7 +341,7 @@ describe('consensus mechanism', () => {
       const orphanBlock = new BlockClass(
         10,
         timestamp,
-        'unknown_hash',
+        'f'.repeat(64),
         [coinbase],
         testnet.initialDifficulty,
         'miner1'
