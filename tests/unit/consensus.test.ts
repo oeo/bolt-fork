@@ -543,7 +543,11 @@ describe('consensus mechanism', () => {
     test('should resurrect valid detached transactions atomically', async () => {
       const sender = generateAddress(testnet.addressPrefix);
       const recipient = generateAddress(testnet.addressPrefix);
-      const mempool = new Mempool(storage, { minFeePerByte: 1n });
+      const mempool = new Mempool(storage, {
+        chainId: testnet.chainId,
+        addressPrefix: testnet.addressPrefix,
+        minFeePerByte: 1n,
+      });
       await mempool.initialize();
       const genesis = await blockchain.getBlock(0);
       const baseTimestamp = Date.now();
