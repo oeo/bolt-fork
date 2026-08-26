@@ -1,415 +1,102 @@
-# bolt rest api documentation
+# bolt rest api
 
-## overview
+## exposure
 
-the bolt rest api provides http/json endpoints for interacting with the blockchain, submitting transactions, and monitoring network status. the api server runs on port 7333 by default.
+the api has no authentication or authorization. current node startup binds it to `0.0.0.0`, and every response permits wildcard cors. run it only on a trusted network or behind an authenticated gateway.
 
-## base url
+`POST /peers/connect`, `POST /peer/blocks`, and `POST /peer/transactions` are unauthenticated peer mutation routes. they can initiate outbound connections or submit data for chain and mempool processing. exposing them to an untrusted network is a security risk.
 
-```
-http://localhost:7333
-```
+no rate limiting is implemented. no mining http endpoints are implemented.
 
-## authentication
+## configuration
 
-currently, the api does not require authentication. future versions may add api key support.
+the default address is `http://0.0.0.0:7333`. `API_PORT` changes the port. `ApiServerConfig.host` can change the bind host when the server is constructed programmatically.
 
-## endpoints
-
-### health & monitoring
-
-#### GET /health
-
-health check endpoint
-
-**response:**
-```json
-{
-  "status": "ok",
-  "timestamp": 1691615999000
-}
+```bash
+API_PORT=7333
 ```
 
-### blockchain
+## response behavior
 
-#### GET /blockchain/info
+route dispatch uses these generic statuses:
 
-get blockchain statistics and configuration
+| status | behavior |
+|---|---|
+| `200` | any handled non-options route whose handler returns, including returned objects with `error` or `success: false` |
+| `204` | every `OPTIONS` request, with no response body |
+| `404` | unknown path or unsupported method, with `{"error":"Endpoint not found"}` |
+| `500` | uncaught handler or parsing error, with `{"error":"<message>"}` or `{"error":"Internal server error"}` |
 
-**response:**
-```json
-{
-  "network": "testnet",
-  "height": 1000,
-  "latestBlockHash": "abc123...",
-  "difficulty": 15,
-  "cumulativeDifficulty": "999999",
-  "targetBlockTime": 300,
-  "difficultyAdjustmentInterval": 2016,
-  "maxSupply": "21000000 BOLT",
-  "currentReward": "50 BOLT"
-}
-```
+all routes receive these cors headers:
 
-#### GET /blocks
-
-get paginated list of blocks (newest first)
-
-**query parameters:**
-- `limit` (number, default: 10) - number of blocks to return
-- `offset` (number, default: 0) - pagination offset
-
-**response:**
-```json
-{
-  "blocks": [
-    {
-      "index": 1000,
-      "hash": "def456...",
-      "previousHash": "abc123...",
-      "timestamp": 1691615999000,
-      "difficulty": 15,
-      "nonce": 12345,
-      "merkleRoot": "ghi789...",
-      "transactions": [...],
-    }
-  ],
-  "total": 1001,
-  "limit": 10,
-  "offset": 0
-}
-```
-
-#### GET /blocks/:hashOrHeight
-
-get specific block by hash or height
-
-**parameters:**
-- `hashOrHeight` - block hash (hex) or height (number)
-
-**response:**
-```json
-{
-  "index": 100,
-  "hash": "abc123...",
-  "previousHash": "xyz789...",
-  "timestamp": 1691615999000,
-  "difficulty": 10,
-  "nonce": 54321,
-  "merkleRoot": "def456...",
-  "transactions": [...],
-}
-```
-
-**errors:**
-- `500` - block not found
-
-### transactions
-
-#### POST /transactions
-
-submit a signed transaction
-
-**request body:**
-```json
-{
-  "chainId": 1058,
-  "kind": "transfer",
-  "hash": "tx123...",
-  "from": "B1abc...",
-  "to": "B1def...",
-  "amount": "100000000000",  // in watts (1000 BOLT)
-  "fee": "1000000",          // in watts (0.01 BOLT)
-  "nonce": 0,
-  "timestamp": 1691615999000,
-  "signature": "sig123...",
-  "publicKey": "pub123..."
-}
-```
-
-**validation:**
-- requires the configured chain id
-- requires sender and recipient addresses from the configured chain
-- verifies sender has sufficient balance (amount + fee)
-- checks nonce matches expected value
-- validates transaction signature
-- ensures fee meets minimum requirements
-
-**response:**
-```json
-{
-  "hash": "tx123...",
-  "accepted": true,
-  "broadcasted": true  // false if no p2p node
-}
-```
-
-**errors:**
-- `500` - invalid transaction:
-  - insufficient balance
-  - invalid nonce
-  - invalid signature
-  - fee too low
-
-#### GET /transactions/:hash
-
-get transaction by hash
-
-**response:**
-```json
-{
-  "hash": "tx123...",
-  "from": "B1abc...",
-  "to": "B1def...",
-  "amount": "100000000000",
-  "fee": "1000000",
-  "nonce": 0,
-  "timestamp": 1691615999000,
-  "signature": "sig123...",
-  "status": "confirmed",  // or "pending"
-  "confirmations": 6,
-  "blockHeight": 995
-}
-```
-
-**errors:**
-- `500` - transaction not found
-
-### accounts
-
-#### GET /accounts/:address/balance
-
-get account balance in watts
-
-**response:**
-```json
-{
-  "address": "B1abc...",
-  "balance": "500000000000",  // in watts
-  "formatted": "5000 BOLT"    // human-readable
-}
-```
-
-#### GET /accounts/:address/nonce
-
-get account nonce (for transaction ordering)
-
-**response:**
-```json
-{
-  "address": "B1abc...",
-  "nonce": 5
-}
-```
-
-### mempool
-
-#### GET /mempool
-
-get mempool statistics
-
-**response:**
-```json
-{
-  "size": 25,                    // number of transactions
-  "bytes": 12500,                // total size in bytes
-  "minFeePerByte": "1",          // minimum fee in watts
-  "maxFeePerByte": "1000",       // maximum fee in watts
-  "averageFeePerByte": "50",     // average fee in watts
-  "totalFees": "250000 watts"    // total fees formatted
-}
-```
-
-#### GET /mempool/transactions
-
-get all mempool transactions
-
-**response:**
-```json
-{
-  "transactions": [
-    {
-      "chainId": 1058,
-      "kind": "transfer",
-      "hash": "tx123...",
-      "from": "B1abc...",
-      "to": "B1def...",
-      "amount": "100000000000",
-      "fee": "1000000",
-      "nonce": 0,
-      "timestamp": 1691615999000
-    }
-  ],
-  "count": 25
-}
-```
-
-### network
-
-#### GET /network/status
-
-get p2p network status
-
-**response:**
-```json
-{
-  "peerId": "QmAbc123...",
-  "multiaddrs": [
-    "/ip4/0.0.0.0/tcp/7334/p2p/QmAbc123..."
-  ],
-  "connectedPeers": 8,
-  "protocols": [
-    "/bolt/version/1.0.0",
-    "/bolt/sync/blocks/1.0.0"
-  ],
-  "topics": [
-    "/bolt/blocks/1.0.0",
-    "/bolt/transactions/1.0.0"
-  ],
-  "blockHeight": 1000,
-  "syncing": false
-}
-```
-
-**note:** returns error if p2p node not available
-
-#### GET /peers
-
-list connected peers
-
-**response:**
-```json
-{
-  "peers": [
-    "QmDef456...",
-    "QmGhi789..."
-  ],
-  "count": 2
-}
-```
-
-#### POST /peers/connect
-
-manually connect to a peer
-
-**request body:**
-```json
-{
-  "address": "/ip4/192.168.1.100/tcp/7334/p2p/QmXyz..."
-}
-```
-
-**response:**
-```json
-{
-  "connected": true,
-  "address": "/ip4/192.168.1.100/tcp/7334/p2p/QmXyz..."
-}
-```
-
-**errors:**
-- `500` - connection failed or p2p node not available
-
-## error responses
-
-all errors return appropriate http status codes with json error messages:
-
-```json
-{
-  "error": "Description of the error"
-}
-```
-
-common status codes:
-- `200` - success
-- `204` - no content (options requests)
-- `404` - endpoint not found
-- `500` - internal server error
-
-## cors support
-
-the api includes cors headers for browser compatibility:
-
-```
+```http
 Access-Control-Allow-Origin: *
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type
 ```
 
-## bigint handling
+## active routes
 
-large numbers (balances, fees, cumulative difficulty) are serialized as strings with an 'n' suffix for bigint values:
+### health and blockchain
+
+| method | path | behavior |
+|---|---|---|
+| `GET` | `/health` | returns `status: "ok"` and current millisecond timestamp |
+| `GET` | `/blockchain/info` | returns network, height, tip hash, difficulty, cumulative difficulty, timing configuration, formatted maximum supply, and formatted current reward |
+| `GET` | `/blocks` | returns blocks newest first with `total`, `limit`, and `offset`; defaults are `limit=10` and `offset=0` |
+| `GET` | `/blocks/:hashOrHeight` | reads a decimal height or otherwise treats the parameter as a hash; missing blocks raise `500` |
+
+### transactions, accounts, and mempool
+
+| method | path | behavior |
+|---|---|---|
+| `POST` | `/transactions` | deserializes and validates a transaction, adds it to the mempool, and returns `hash`, `accepted`, and `broadcasted` |
+| `GET` | `/transactions/:hash` | checks the mempool first, then stored transactions; returns pending or confirmed status |
+| `GET` | `/accounts/:address/balance` | returns raw balance and formatted balance |
+| `GET` | `/accounts/:address/nonce` | returns account nonce |
+| `GET` | `/mempool` | returns size, bytes, fee-per-byte values, and formatted total fees |
+| `GET` | `/mempool/transactions` | returns all mempool transactions and their count |
+
+### network
+
+| method | path | behavior |
+|---|---|---|
+| `GET` | `/network/status` | returns node and chain status when a node is injected |
+| `GET` | `/peers` | returns connected peers when a node is injected |
+| `POST` | `/peers/connect` | deserializes `{ "address": "<multiaddr>" }` and asks the injected node to connect |
+
+current startup in `src/index.ts` does not inject a node into `ApiServer`. network routes therefore behave as follows:
+
+| route | current result |
+|---|---|
+| `GET /network/status` | `200` with `{"error":"Network node not available"}` |
+| `GET /peers` | `200` with `{"error":"Network node not available"}` |
+| `POST /peers/connect` | `500` with `{"error":"Network node not available"}` |
+
+transaction submission also reports `broadcasted: false` in current startup.
+
+### peer synchronization
+
+| method | path | behavior |
+|---|---|---|
+| `GET` | `/peer/status` | returns node id, chain height, tip hash, role capability, and timestamp |
+| `GET` | `/peer/blocks?height=:height` | returns sequential blocks from `height`, defaulting to `0` and limiting the result to 100 blocks |
+| `POST` | `/peer/blocks` | deserializes one block and attempts chain insertion, sync deferral, or competing-chain handling |
+| `GET` | `/peer/transactions` | returns all mempool transactions |
+| `POST` | `/peer/transactions` | deserializes one transaction and attempts mempool insertion |
+
+peer block and transaction handlers catch processing failures and return `200` with `success: false` and an `error` value.
+
+## bigint encoding
+
+raw bigint values are json strings with an `n` suffix. request bodies use the same representation when a field must deserialize to bigint.
 
 ```json
 {
   "balance": "100000000000n",
+  "fee": "1000000n",
   "cumulativeDifficulty": "999999999n"
 }
 ```
 
-the api uses the custom bigint serializer from `src/utils/bigint.ts`.
-
-## configuration
-
-api settings via environment variables:
-
-```bash
-API_PORT=7333     # api server port (default: 7333)
-```
-
-## rate limiting
-
-currently no rate limiting. future versions may add:
-- request rate limiting per ip
-- transaction submission limits
-- expensive query throttling
-
-## websocket support (phase 3)
-
-future websocket endpoints for real-time updates:
-- block notifications
-- transaction confirmations
-- mempool updates
-- peer events
-
-## examples
-
-### submit a transaction
-
-```bash
-curl -X POST http://localhost:7333/transactions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "chainId": 1058,
-    "kind": "transfer",
-    "hash": "abc123...",
-    "from": "B1sender...",
-    "to": "B1receiver...",
-    "amount": "100000000000",
-    "fee": "1000000",
-    "nonce": 0,
-    "timestamp": 1691615999000,
-    "signature": "sig...",
-    "publicKey": "pub..."
-  }'
-```
-
-### check balance
-
-```bash
-curl http://localhost:7333/accounts/B1abc.../balance
-```
-
-### get latest blocks
-
-```bash
-curl http://localhost:7333/blocks?limit=5
-```
-
-### connect to peer
-
-```bash
-curl -X POST http://localhost:7333/peers/connect \
-  -H "Content-Type: application/json" \
-  -d '{"address": "/ip4/192.168.1.100/tcp/7334/p2p/QmXyz..."}'
-```
+formatted currency fields remain ordinary strings. encoding and decoding use `src/utils/bigint.ts`.

@@ -1,6 +1,6 @@
 # hashing
 
-bolt consensus uses sha-256. chain configuration cannot select another proof-of-work hash.
+bolt consensus uses sha-256 only. chain configuration cannot select another proof-of-work hash.
 
 ## block work
 
@@ -16,4 +16,4 @@ chain selection compares the sum of block work. summing difficulty values is not
 
 ## other hashes
 
-the hash utility also exposes sha-512, double-sha-256, and the current scrypt-compatible helper for non-consensus callers. these algorithms cannot validate or mine bolt blocks through `Blockchain`.
+the hash utility also exposes sha-512, double-sha-256, and a `scrypt` compatibility helper for non-consensus callers. the `scrypt` helper applies repeated sha-256 and is not scrypt. these helpers cannot validate or mine bolt blocks through `Blockchain`.

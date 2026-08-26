@@ -1,210 +1,108 @@
 # networking
 
-bolt uses a two-layer networking architecture that separates peer discovery from data exchange.
+bolt separates peer discovery from blockchain data exchange.
 
-## architecture overview
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│     node 1      │     │     node 2      │     │     node 3      │
-│                 │     │                 │     │                 │
-│ ┌─────────────┐ │     │ ┌─────────────┐ │     │ ┌─────────────┐ │
-│ │ tcp server  │◄├─────┤►│ tcp client  │◄├─────┤►│ tcp client  │ │
-│ │ port 8333   │ │     │ │             │ │     │ │             │ │
-│ └─────────────┘ │     │ └─────────────┘ │     │ └─────────────┘ │
-│                 │     │                 │     │                 │
-│ ┌─────────────┐ │     │ ┌─────────────┐ │     │ ┌─────────────┐ │
-│ │    ipfs     │ │     │ │    ipfs     │ │     │ │    ipfs     │ │
-│ │ (discovery) │◄├─────┤►│ (discovery) │◄├─────┤►│ (discovery) │ │
-│ └─────────────┘ │     │ └─────────────┘ │     │ └─────────────┘ │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
+```text
+ipfs pubsub: peer endpoint discovery
+tcp: handshake, inventory, blocks, and transactions
 ```
 
 ## peer discovery
 
-ipfs is used exclusively for peer discovery via pubsub:
+`PeerDiscoveryService` connects to an ipfs rpc endpoint, attempts public libp2p bootstrap nodes as fallback connectivity, and subscribes to `/bolt/peers`. ipfs carries endpoint announcements only.
 
-### announcement format
-```json
-{
-  "nodeId": "1K5t98ovEbVJv5HhYqJm1KPmgXvTYXUpQF",
-  "tcp": "node1:8333",
-  "height": 1250,
-  "chainHash": "abc123...",
-  "timestamp": 1704067200
-}
-```
+announcements contain:
 
-### discovery process
-1. nodes announce their tcp endpoint every 30 seconds on `/bolt/peers`
-2. nodes subscribe to peer announcements
-3. discovered peers are tracked with metadata
-4. connection manager establishes tcp connections to discovered peers
+- `nodeId`
+- `tcp`
+- `height`
+- `chainHash`
+- `version`
+- `timestamp`
+- optional `capabilities`
+
+received announcements are validated, stored by node id, and used to open tcp connections. stale announcements are removed. peer selection currently compares announced height only.
 
 ## tcp protocol
 
-all blockchain data exchange happens over tcp using a binary protocol.
+current protocol version is `4`.
 
-current protocol version: `3`.
-
-### message format
-```
-┌──────────┬──────────┬──────────┬──────────┬──────────────┐
-│  magic   │   type   │  length  │ checksum │   payload    │
-│ 4 bytes  │ 4 bytes  │ 4 bytes  │ 4 bytes  │ variable     │
-└──────────┴──────────┴──────────┴──────────┴──────────────┘
+```text
+[magic:4][type:4][length:4][checksum:4][payload:length]
 ```
 
-- **magic**: network identifier (0x12699C94)
-- **type**: message type enum
-- **length**: payload size in bytes
-- **checksum**: first 4 bytes of double-sha256
-- **payload**: message-specific data
+- `magic` identifies bolt protocol traffic. configured networks currently share it, so it does not isolate chains.
+- `type` identifies protocol message.
+- `length` declares payload bytes.
+- `checksum` is first four bytes of double sha-256 over payload.
+- `payload` contains message-specific bytes.
 
-### message types
+the protocol serializes handshake, keepalive, inventory, block request, header request, block, and transaction messages. transaction payloads include `chainId` and `kind`.
 
-#### handshake
-- `version` - capability exchange
-- `verack` - version acknowledgement
+## handshake
 
-#### synchronization
-- `getheaders` - request header chain
-- `headers` - header chain response
-- `getblocks` - request block inventory
-- `inv` - inventory announcement
-- `getdata` - request specific items
+each connection sends `version`, then expects protocol version `4`. mismatched versions are disconnected. accepted versions receive `verack`.
 
-#### data transfer
-- `block` - full block data
-- `tx` - chain-bound transaction data, including `chainId` and `kind`
+version messages carry services, timestamp, peer addresses, nonce, user agent, and starting height. current handshake does not authenticate node identity or bind discovery `nodeId` to tcp peer identity.
 
-#### maintenance
-- `ping` - connection keepalive
-- `pong` - ping response
+## active block synchronization
 
-## synchronization
+active sync is sequential and height-selected:
 
-bolt uses headers-first synchronization with parallel block downloads.
+1. discovery chooses peer with highest announced height.
+2. sync sends `getblocks` to that peer.
+3. block locator contains current tip and genesis. genesis is omitted when it is already tip.
+4. peer returns block hashes through `inv`.
+5. receiver requests unknown block hashes through `getdata`.
+6. peer sends full `block` messages.
+7. receiver accepts only next expected height and validates block through `Blockchain.addBlock()`.
 
-### sync process
-1. **header sync**: request and validate header chain
-2. **block download**: parallel fetch of blocks (max 16 concurrent)
-3. **orphan handling**: store out-of-order blocks
-4. **chain building**: connect blocks as parents arrive
+sync retries timed-out batches against same target. it does not compare announced or downloaded cumulative work before selecting target. consensus code validates each block and local fork reorganization, but active network sync is not a validated cumulative-work sync protocol.
 
-### block locator
-exponential backoff for efficient sync:
-```
-[tip, tip-1, tip-2, tip-4, tip-8, tip-16, ..., genesis]
-```
+`getheaders` and `headers` codecs and responder paths exist. active sync does not request or consume headers. `BlockDownloader` also exists, but active sync does not queue inventory through it or dispatch received blocks to it. headers-first and parallel block sync are therefore not implemented.
 
-## connection management
+## inventory and transactions
 
-### limits
-- maximum connections: 125 peers
-- inbound connections: 100
-- outbound connections: 25
+new local blocks and transactions can be announced with `inv`. peers can request advertised items with `getdata`. block requests are served. transaction relay can serve requested local mempool transactions.
 
-### connection lifecycle
-1. discovery via ipfs
-2. tcp connection establishment
-3. version handshake
-4. continuous sync and relay
-5. automatic reconnection on failure
+incoming `tx` messages decode at protocol layer but are not dispatched to `TransactionRelay.handleTransaction()`. incoming transaction admission and relay are not active. `syncMempool()` exists but is not called when peers connect.
 
-## inventory management
+## connection lifecycle
 
-tracks what each peer has:
-- per-peer block inventory
-- per-peer transaction inventory
-- deduplication of announcements
-- smart peer selection for downloads
+`ConnectionManager` listens with `Bun.listen`, opens outbound sockets with `Bun.connect`, buffers fragmented messages, emits complete frames, and drops idle or failed sockets. failed peers are not automatically reconnected.
 
-## transaction relay
+outbound connection attempts observe one aggregate connection setting. inbound accepts do not enforce aggregate or inbound-specific caps.
 
-efficient transaction propagation:
-- deduplication via recent cache
-- relay to all connected peers
-- mempool sync on connection
-- orphan transaction handling
+## transport security
 
-## performance
+magic rejects non-bolt frames. configured networks currently share the same magic. checksum detects payload corruption. neither mechanism authenticates sender, isolates chains, or encrypts transport.
 
-### optimizations
-- binary protocol minimizes bandwidth
-- parallel downloads maximize throughput
-- inventory deduplication reduces redundancy
-- connection pooling for efficiency
-- backpressure handling prevents overload
+declared payload length is trusted before a complete frame is emitted. no payload cap or receive-buffer cap is enforced. inbound connections have no enforced cap. unauthenticated peer identity and unbounded transport input remain release blockers.
 
-### benchmarks
-- sync speed: ~1000 blocks/minute
-- message latency: <10ms local, <100ms internet
-- bandwidth: <10mbps average
-- memory: <100mb per connection
+## compose connectivity
 
-## security
+main `docker-compose.yml` joins bolt and ipfs services to `bolt-network`. bolt advertises its docker hostname for peer discovery when `NODE_HOST` is set by compose. tcp port `8333` is reachable inside docker network but is not published to host. api and metrics ports are published separately.
 
-### protocol security
-- magic bytes prevent cross-network messages
-- checksums detect corruption
-- size limits prevent memory exhaustion
-- connection limits prevent dos
-
-### planned enhancements
-- peer reputation scoring
-- ban list for malicious peers
-- encryption for privacy
-- tor/i2p support
+`docker-compose.bats.yml` also leaves tcp port `8333` unpublished. deployment tests reach services through compose networking or published api port, not host tcp.
 
 ## configuration
 
-### environment variables
-```bash
-# tcp server port
-TCP_PORT=8333
+network startup reads these environment variables:
 
-# ipfs api endpoint
-IPFS_API=http://localhost:5001
+- `NETWORK_MODE`, defaults to `tcp`. legacy `ipfs` mode falls back to tcp mode.
+- `TCP_PORT`, tcp listen and announcement port.
+- `IPFS_API`, ipfs rpc endpoint.
+- `NODE_HOST`, host placed in tcp peer announcements.
 
-# connection limits
-MAX_CONNECTIONS=125
-MAX_INBOUND=100
-MAX_OUTBOUND=25
+connection and sync tuning values are constructor options. they are not environment variables in current startup wiring.
 
-# sync parameters
-SYNC_BATCH_SIZE=10
-SYNC_TIMEOUT=30000
-MAX_RETRIES=3
-```
+## unimplemented network paths
 
-## debugging
-
-### useful commands
-```bash
-# check peer connections
-curl http://localhost:7333/network/peers
-
-# monitor sync status
-curl http://localhost:7333/network/sync
-
-# view network stats
-curl http://localhost:7333/network/stats
-```
-
-### common issues
-
-**sync stuck at height 0**
-- check ipfs connectivity
-- verify tcp port is accessible
-- ensure at least one peer has blocks
-
-**high bandwidth usage**
-- reduce max connections
-- increase announcement interval
-- enable compression (future)
-
-**connection drops**
-- check firewall settings
-- verify network stability
-- review backpressure handling
+- headers-first sync
+- parallel block downloading in active sync
+- cumulative-work peer selection and validated cumulative-work sync
+- incoming transaction dispatch
+- mempool sync on connection
+- automatic reconnect
+- payload and receive-buffer caps
+- inbound connection caps

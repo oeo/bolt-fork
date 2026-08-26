@@ -1,303 +1,156 @@
-# Metrics and monitoring
+# bolt metrics
 
-## Overview
+## current scope
 
-bolt implements comprehensive metrics collection using Prometheus, providing deep observability into all aspects of the blockchain's operation.
+`src/services/metrics.ts` registers custom prometheus metric families and default node.js process metrics in a singleton registry. registration does not mean a metric is updated by production code. several registered families currently have no production integration.
 
-## Architecture
+metrics change through blockchain and mempool events, mining timers and events, api requests, and work performed immediately before a scrape.
 
-The metrics system consists of:
+## production updates
 
-### Core service (`src/services/metrics.ts`)
-- Prometheus registry with 60+ metrics
-- Singleton pattern for global access
-- Automatic Node.js metrics collection
-- Dynamic metric updates from blockchain state
+| trigger | current updates |
+|---|---|
+| every metrics scrape | blockchain height, difficulty, cumulative difficulty, and mempool gauges |
+| integrated node scrape | node health, sync state, role, storage size, and peer counts before registry export |
+| `block:added` event | block counters and histograms, regular transaction metrics, mining success, mining time, and mining revenue |
+| `transactionAdded` event | mempool additions |
+| mining event and timer | hash rate and mining difficulty |
+| rest api request | request count, duration, and uncaught error count |
 
-### Metrics server (`scripts/metrics-server.ts`)
-- HTTP server for Prometheus scraping
-- Health and readiness endpoints
-- Graceful shutdown handling
+the block event records mining success for every accepted block, including blocks not mined locally. transaction processing time recorded there is currently a fixed value. these series should not be interpreted as measured local mining or transaction-validation latency.
 
-### Helper utilities (`src/utils/metrics-helper.ts`)
-- Timing utilities for operations
-- Metric recording wrappers
-- Method decorators for automatic timing
+no production caller currently updates gbt metrics, mining attempts, block or transaction validation errors, mempool removals, rejections or evictions, network message or bandwidth metrics, storage operation or error metrics, or active api connections. helper methods exist for these families, but their presence is not an integration guarantee.
 
-## Metric categories
+## registered custom names
 
-### Blockchain metrics
-```
-bolt_blockchain_height                    - Current blockchain height
-bolt_blockchain_difficulty                - Current mining difficulty  
-bolt_blockchain_cumulative_difficulty     - Total cumulative difficulty
-bolt_blocks_mined_total                   - Total blocks mined
-bolt_block_processing_seconds             - Block processing time histogram
-bolt_block_size_bytes                     - Block size histogram
-bolt_transactions_per_block               - Transactions per block histogram
-bolt_block_validation_errors_total        - Validation errors by type
-```
+### blockchain
 
-### Mempool metrics
-```
-bolt_mempool_size                         - Number of transactions
-bolt_mempool_bytes                        - Total size in bytes
-bolt_mempool_total_fees_watts             - Total fees in watts
-bolt_mempool_min_fee_per_byte_watts       - Minimum fee per byte
-bolt_mempool_max_fee_per_byte_watts       - Maximum fee per byte
-bolt_mempool_avg_fee_per_byte_watts       - Average fee per byte
-bolt_mempool_transactions_added_total     - Transactions added
-bolt_mempool_transactions_removed_total   - Transactions removed by reason
-bolt_mempool_transactions_rejected_total  - Transactions rejected by reason
-bolt_mempool_evictions_total              - Transactions evicted
+```text
+bolt_blockchain_height
+bolt_blockchain_difficulty
+bolt_blockchain_cumulative_difficulty
+bolt_blocks_mined_total
+bolt_block_processing_seconds
+bolt_block_size_bytes
+bolt_transactions_per_block
+bolt_block_validation_errors_total
+bolt_blockchain_block_size
+bolt_blockchain_block_time
+bolt_blockchain_transactions_total
 ```
 
-### Transaction metrics
-```
-bolt_transaction_processing_seconds       - Processing time histogram
-bolt_transaction_size_bytes              - Transaction size histogram
-bolt_transaction_fees_watts              - Transaction fees histogram
-bolt_transaction_validation_errors_total - Validation errors by type
+### mempool
+
+```text
+bolt_mempool_size
+bolt_mempool_bytes
+bolt_mempool_total_fees_watts
+bolt_mempool_min_fee_per_byte_watts
+bolt_mempool_max_fee_per_byte_watts
+bolt_mempool_avg_fee_per_byte_watts
+bolt_mempool_transactions_added_total
+bolt_mempool_transactions_removed_total
+bolt_mempool_transactions_rejected_total
+bolt_mempool_evictions_total
 ```
 
-### Mining metrics
-```
-bolt_mining_hash_rate                    - Current hash rate (H/s)
-bolt_mining_attempts_total               - Total mining attempts
-bolt_mining_success_total                - Successfully mined blocks
-bolt_mining_time_seconds                 - Time to mine block histogram
-bolt_mining_revenue_watts                - Total mining revenue
-bolt_mining_difficulty                   - Current difficulty target
+### transactions and mining
+
+```text
+bolt_transaction_processing_seconds
+bolt_transaction_size_bytes
+bolt_transaction_fees_watts
+bolt_transaction_validation_errors_total
+bolt_mining_hash_rate
+bolt_mining_attempts_total
+bolt_mining_success_total
+bolt_mining_time_seconds
+bolt_mining_revenue_watts
+bolt_mining_difficulty
 ```
 
-### GetBlockTemplate (GBT) metrics
-```
-bolt_gbt_templates_generated_total       - Templates generated
-bolt_gbt_templates_active                - Active templates
-bolt_gbt_templates_cached                - Cached templates
-bolt_gbt_templates_expired_total         - Expired templates
-bolt_gbt_template_generation_seconds     - Generation time histogram
-bolt_gbt_longpoll_connections            - Active longpoll connections
-bolt_gbt_block_submissions_total         - Total submissions
-bolt_gbt_block_submissions_valid_total   - Valid submissions
-bolt_gbt_block_submissions_invalid_total - Invalid submissions by reason
-bolt_gbt_mempool_refreshes_total         - Template refreshes
+### getblocktemplate
+
+```text
+bolt_gbt_templates_generated_total
+bolt_gbt_templates_active
+bolt_gbt_templates_cached
+bolt_gbt_templates_expired_total
+bolt_gbt_template_generation_seconds
+bolt_gbt_longpoll_connections
+bolt_gbt_block_submissions_total
+bolt_gbt_block_submissions_valid_total
+bolt_gbt_block_submissions_invalid_total
+bolt_gbt_mempool_refreshes_total
 ```
 
-### Network metrics (ready for P2P)
-```
-bolt_network_peers_connected             - Connected peers
-bolt_network_peers_total                 - Total known peers
-bolt_network_messages_received_total     - Messages received by type
-bolt_network_messages_sent_total         - Messages sent by type
-bolt_network_bandwidth_in_bytes          - Incoming bandwidth
-bolt_network_bandwidth_out_bytes         - Outgoing bandwidth
+### network and storage
+
+```text
+bolt_network_peers_connected
+bolt_network_peers_total
+bolt_network_messages_received_total
+bolt_network_messages_sent_total
+bolt_network_bandwidth_in_bytes
+bolt_network_bandwidth_out_bytes
+bolt_storage_operations_total
+bolt_storage_latency_seconds
+bolt_storage_errors_total
+bolt_storage_size_bytes
 ```
 
-### Storage metrics
-```
-bolt_storage_operations_total            - Operations by type and status
-bolt_storage_latency_seconds             - Operation latency histogram
-bolt_storage_errors_total                - Errors by operation and type
-bolt_storage_size_bytes                  - Storage size by type
+### api and node health
+
+```text
+bolt_api_requests_total
+bolt_api_request_duration_seconds
+bolt_api_request_errors_total
+bolt_api_active_connections
+bolt_node_uptime_seconds
+bolt_node_health
+bolt_node_start_time_seconds
+bolt_node_sync_status
+bolt_node_role
 ```
 
-### API metrics (ready for REST API)
-```
-bolt_api_requests_total                  - Requests by method/endpoint/status
-bolt_api_request_duration_seconds        - Request duration histogram
-bolt_api_request_errors_total            - Errors by method/endpoint/type
-bolt_api_active_connections              - Active connections by type
-```
+histograms also expose prometheus-generated `_bucket`, `_sum`, and `_count` series.
 
-## Usage
+## node metrics server
 
-### Starting the metrics server
+normal node startup serves metrics on `METRICS_PORT`, default `7336`.
+
+| route | behavior |
+|---|---|
+| `GET /metrics` | updates integrated scrape-time values and returns prometheus text format |
+| `GET /health` | returns json health data |
+| any other path | returns `404` |
+
+## standalone server
+
+`scripts/metrics-server.ts` starts a separate registry process:
+
 ```bash
-# Run standalone metrics server
 bun run scripts/metrics-server.ts
-
-# Or set environment variable
 METRICS_PORT=7336 bun run scripts/metrics-server.ts
 ```
 
-### Prometheus configuration
-Add to `prometheus.yml`:
+it serves `/metrics`, `/health`, and `/ready`. other paths return a plaintext endpoint summary. the standalone process does not inject blockchain, mempool, network, or storage instances, so it does not reproduce the node-integrated scrape updates.
+
+example prometheus configuration:
+
 ```yaml
 scrape_configs:
-  - job_name: 'bolt'
+  - job_name: bolt
     static_configs:
-      - targets: ['localhost:7336']
+      - targets: [localhost:7336]
     scrape_interval: 15s
 ```
 
-### Recording metrics in code
-```typescript
-import { getMetricsService } from './services/metrics';
+compose configuration uses `bolt:7336` as the target.
 
-const metrics = getMetricsService();
+## grafana dashboards
 
-// Record block mined
-metrics.recordBlockMined(processingTime, blockSize, txCount);
+checked-in dashboards are:
 
-// Update mining metrics
-metrics.updateMiningMetrics(hashRate, difficulty);
-
-// Record transaction processing
-metrics.recordTransactionProcessing(time, size, fee);
-```
-
-### Using helper utilities
-```typescript
-import { timeOperation, MetricTimer } from './utils/metrics-helper';
-
-// Time an async operation
-const result = await timeOperation(
-  async () => await blockchain.addBlock(block),
-  (duration, result) => metrics.recordBlockMined(duration, block.size, block.txCount)
-);
-
-// Manual timing
-const timer = new MetricTimer();
-// ... do work ...
-const elapsed = timer.elapsed();
-```
-
-## Integration points
-
-### Blockchain
-- Block processing and validation
-- Difficulty adjustments
-- Chain reorganizations
-
-### Mempool
-- Transaction additions and removals
-- Fee tracking
-- Eviction events
-
-### Mining service
-- Hash rate calculation
-- Block discovery
-- Revenue tracking
-
-### GetBlockTemplate service
-- Template generation and caching
-- Longpoll connections
-- Block submissions
-
-### Storage layer
-- Operation timing
-- Error tracking
-- Size monitoring
-
-## Grafana dashboards
-
-### Blockchain dashboard
-- Chain height over time
-- Difficulty adjustments
-- Block production rate
-- Validation error rate
-
-### Mempool dashboard
-- Transaction flow (in/out)
-- Fee distribution
-- Size and capacity
-- Eviction rate
-
-### Mining dashboard
-- Hash rate trends
-- Block discovery rate
-- Revenue accumulation
-- Success rate
-
-### Performance dashboard
-- Block processing latency
-- Transaction validation time
-- Storage operation latency
-- API response times
-
-## Alert rules
-
-### Critical alerts
-```yaml
-- alert: ChainStalled
-  expr: increase(bolt_blockchain_height[5m]) == 0
-  for: 10m
-  annotations:
-    summary: "Blockchain height not increasing"
-
-- alert: HighValidationErrors
-  expr: rate(bolt_block_validation_errors_total[5m]) > 0.1
-  annotations:
-    summary: "High block validation error rate"
-
-- alert: MempoolFull
-  expr: bolt_mempool_size / 10000 > 0.9
-  annotations:
-    summary: "Mempool at 90% capacity"
-```
-
-### Warning alerts
-```yaml
-- alert: LowHashRate
-  expr: bolt_mining_hash_rate < 100000
-  annotations:
-    summary: "Mining hash rate below threshold"
-
-- alert: HighStorageLatency
-  expr: histogram_quantile(0.95, bolt_storage_latency_seconds) > 1
-  annotations:
-    summary: "Storage operations slow (p95 > 1s)"
-```
-
-## Testing
-
-Comprehensive test coverage in `tests/unit/metrics.test.ts`:
-- Metric recording and retrieval
-- Prometheus format validation
-- Error handling
-- Singleton pattern
-- All metric categories
-- **29 tests, all passing**
-
-Run tests:
-```bash
-bun test tests/unit/metrics.test.ts
-```
-
-### Phase 4.5 improvements
-During the comprehensive testing phase, the metrics service was completely rewritten to:
-- Support BigInt serialization for large numeric values
-- Add proper Prometheus-compliant metric names and labels
-- Implement all 60+ metrics across 8 categories
-- Ensure thread-safe singleton access
-- Add dynamic blockchain state metrics
-
-## Performance considerations
-
-- Metrics are collected in-memory with minimal overhead
-- Histogram buckets are pre-configured for efficiency
-- Dynamic metrics updated only on scrape
-- No persistent storage required
-- Negligible impact on blockchain performance
-
-## Best practices
-
-1. **Use appropriate metric types**
-   - Counter: For values that only increase
-   - Gauge: For values that can go up and down
-   - Histogram: For distributions and percentiles
-
-2. **Label cardinality**
-   - Keep label values bounded
-   - Avoid high-cardinality labels (user IDs, etc.)
-
-3. **Metric naming**
-   - Follow Prometheus conventions
-   - Use `_total` suffix for counters
-   - Use base units (seconds, bytes)
-
-4. **Recording timing**
-   - Record metrics after operations complete
-   - Use helper utilities for consistency
-   - Include both success and failure cases
+- `compose/monitoring/grafana-provisioning/dashboards/blockchain-overview.json`, titled `Blockchain Overview`
+- `compose/monitoring/grafana-provisioning/dashboards/node-health.json`, titled `Node Health`

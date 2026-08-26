@@ -2,276 +2,88 @@
 
 ## overview
 
-bolt is a proof-of-work blockchain using an account model (not utxo) with a clean separation between peer discovery and data exchange:
+bolt is a proof-of-work blockchain with account state. peer discovery and blockchain data use separate transports:
 
-1. **ipfs layer**: used exclusively for peer discovery via pubsub
-2. **tcp layer**: handles all blockchain data exchange using binary protocol
+1. ipfs pubsub announces peer tcp endpoints.
+2. tcp carries protocol messages, blocks, and transactions.
 
-this architecture provides high performance binary communication while maintaining decentralized peer discovery through ipfs.
+the ipfs discovery service attempts public libp2p bootstrap nodes before subscribing to `/bolt/peers`. blockchain data does not travel through ipfs.
 
-## consensus mechanism
+## consensus
 
-bolt implements nakamoto consensus with proof-of-work:
-- **cumulative difficulty**: follows chain with most total work
-- **automatic reorganization**: switches to better chain when found
-- **fork tolerance**: handles temporary forks with eventual convergence
-- **orphan management**: stores blocks awaiting parents
-- **median time validation**: ensures proper timestamp ordering
+bolt consensus uses sha-256 only. every shipped chain configuration selects sha-256, and `Blockchain` rejects any other configured or requested consensus hash algorithm. the general crypto helper exposes other algorithms, but they are not valid bolt consensus choices.
 
-### key consensus features
-- pre-validation of entire competing chains before reorganization
-- deterministic fork resolution using cumulative work
-- proper median time calculation during reorganization
-- comprehensive test coverage for edge cases
+block acceptance validates:
 
-## networking architecture
+- block structure, proof of work, and configured size limit
+- parent linkage and expected difficulty
+- median time against recent blocks
+- transaction execution and resulting account state root
+- account balances and nonces
 
-### two-layer design
+canonical storage tracks cumulative work. competing branches can trigger a reorganization only after candidate blocks, state transitions, difficulty, timestamps, and cumulative work are validated. this local fork handling is separate from network synchronization. network sync does not select or prevalidate peers by cumulative work.
 
-```
-┌─────────────────────────────────────────────────────┐
-│                 application layer                   │
-│           (blockchain, mining, mempool)             │
-└─────────────────────────────────────────────────────┘
-                          ▲
-                          │
-┌─────────────────────────────────────────────────────┐
-│              tcp communication layer                │
-│   • binary protocol with magic bytes                │
-│   • headers-first synchronization                   │
-│   • parallel block downloads                        │
-│   • inventory management                            │
-│   • transaction relay                               │
-└─────────────────────────────────────────────────────┘
-                          ▲
-                          │
-┌─────────────────────────────────────────────────────┐
-│             ipfs peer discovery layer               │
-│   • peer endpoint announcements                     │
-│   • pubsub topic: /bolt/peers                       │
-│   • automatic peer connection                       │
-│   • bootstrap node fallback                         │
-└─────────────────────────────────────────────────────┘
+## networking
+
+active networking uses protocol version `4`.
+
+```text
+ipfs pubsub discovery -> tcp connection -> version/verack -> getblocks -> inv -> getdata -> block
 ```
 
-### tcp protocol
+peer announcements include node id, tcp endpoint, height, chain hash, version, timestamp, and optional capabilities. discovered peers are connected over tcp.
 
-binary message format:
-```
-[magic(4)][type(4)][length(4)][checksum(4)][payload]
-```
+active synchronization selects the announced peer with highest height. it sends `getblocks` with a locator containing current tip and genesis, receives `inv`, requests missing blocks with `getdata`, and accepts the next expected block sequentially.
 
-message types:
-- `version` - handshake and capability exchange
-- `verack` - version acknowledgement
-- `ping/pong` - connection keepalive
-- `inv` - inventory announcements
-- `getdata` - request specific items
-- `getblocks` - request block inventory
-- `getheaders` - request header chain
-- `headers` - header chain response
-- `block` - full block data
-- `tx` - transaction data
+`getheaders` and `headers` codecs and the `getheaders` responder exist. incoming `headers` messages are not dispatched. `BlockDownloader` exists, but active sync does not queue work through it. see [networking](networking.md) for protocol and release limitations.
 
-### synchronization strategy
+## account state
 
-headers-first sync with parallel downloads:
-1. request headers from peers (getheaders)
-2. validate header chain before downloading blocks
-3. queue blocks for parallel download (max 16 concurrent)
-4. handle out-of-order blocks via orphan pool
-5. connect orphans when parents arrive
+accounts contain:
 
-## storage layer
+- address
+- balance
+- nonce
 
-### lmdb backend
+transactions are chain-bound and identify transfer or coinbase kind. block execution derives account updates and commits a state root with each accepted block.
 
-primary storage using lightning memory-mapped database:
-- single environment for all databases
-- atomic transactions across operations
-- 100gb default capacity
-- native bun integration for performance
+## storage
 
-databases:
-- `blocks` - full block data by height and hash
-- `headers` - block headers for fast sync
-- `transactions` - indexed transaction storage
-- `state` - account balances and nonces
-- `mempool` - unconfirmed transactions with indexes
-- `metadata` - chain tips and configuration
+`StorageAdapter` defines block, account, transaction, mempool, metadata, and canonical-chain operations. implementations are:
 
-### storage abstraction
+- `LMDBAdapter` for persistent storage
+- `MemoryAdapter` for in-memory use
 
-adapter pattern for flexibility:
-```typescript
-interface StorageAdapter {
-  saveBlock(block: Block): Promise<void>;
-  getBlock(height: number): Promise<Block | null>;
-  getAccountState(address: string): Promise<AccountState | null>;
-  // ... other methods
-}
+canonical transitions carry expected tip and cumulative-work values. storage implementations reject stale writes instead of silently replacing a changed tip. automatic backup, recovery, and startup integrity verification are not provided. `Blockchain.verifyChainIntegrity()` is an explicit operation.
+
+## runtime structure
+
+```text
+src/core/       blocks, blockchain, execution, difficulty, forks, mempool, transactions
+src/crypto/     hashes, addresses, keys, signatures, wallets
+src/storage/    storage contract, lmdb implementation, memory implementation
+src/network/    discovery, tcp framing, connections, sync, inventory, relay
+src/services/   mining, block templates, metrics, service sync
+src/api/        bun http server
+src/config/     chain configuration
+src/utils/      logging, serialization, identity, currency
 ```
 
-implementations:
-- `LMDBAdapter` - production storage with persistence
-- `MemoryAdapter` - in-memory for testing
+bun runs typescript directly. tcp uses `Bun.listen` and `Bun.connect`. hashing uses `Bun.CryptoHasher` without unsupported performance multipliers or benchmark claims.
 
-## account model
+## current network gaps
 
-instead of bitcoin's utxo model, bolt uses accounts with:
-- address (bitcoin-style base58)
-- balance (in watts, 1 bolt = 100,000,000 watts)
-- nonce (for replay protection)
+these paths are not implemented end to end:
 
-state is derived from the transaction history and cached in storage.
+- headers-first synchronization
+- parallel block downloading in active sync
+- cumulative-work peer selection and validated cumulative-work network sync
+- incoming `tx` dispatch to transaction relay
+- mempool synchronization on connection
+- automatic peer reconnection
+- tcp payload and receive-buffer caps
+- inbound connection caps
 
-## key design decisions
+tcp framing checks network magic and payload checksum. it does not authenticate peers or encrypt traffic. unbounded transport input and unauthenticated peer identity remain release blockers.
 
-### dynamic hashing algorithm
-
-supports multiple proof-of-work algorithms:
-- sha-256 (default)
-- sha-512
-- scrypt
-- double-sha-256
-
-the algorithm is part of chain configuration and included in the chain version hash.
-
-### chain version hash
-
-deterministic hash of configuration parameters:
-- network (mainnet/testnet/devnet)
-- hash algorithm
-- difficulty parameters
-- economic parameters (supply, rewards, halving)
-
-prevents cross-chain contamination.
-
-### hd wallet support
-
-hierarchical deterministic wallets using bip44:
-- derivation path: `m/44'/1057'/account'/change/index`
-- coin type 1057 (bolt's registered type)
-- mnemonic seed phrases (bip39)
-- extended keys (bip32)
-
-## directory structure
-
-```
-src/
-├── core/           # blockchain, blocks, transactions, mempool
-├── crypto/         # hashing, addresses, signatures, hd wallets
-├── storage/        # lmdb and memory adapters
-├── network/        # tcp protocol, sync, peer discovery
-├── services/       # mining, metrics, sync
-├── api/            # rest api server
-├── config/         # chain configurations
-│   └── chains/     # network-specific configs
-├── utils/          # logger, bigint, identity
-└── constants.ts    # protocol constants
-```
-
-## key components
-
-### core
-- `Blockchain` - chain management and validation
-- `Mempool` - transaction pool with fee sorting
-- `Block` - block structure and validation
-- `Transaction` - transaction signing and verification
-
-### network
-- `Protocol` - binary message serialization/deserialization
-- `ConnectionManager` - tcp connection handling
-- `SyncManager` - blockchain synchronization
-- `PeerDiscoveryService` - ipfs-based peer discovery
-- `InventoryManager` - track peer inventory
-- `TransactionRelay` - transaction propagation
-- `OrphanPool` - out-of-order block handling
-- `BlockDownloader` - parallel block fetching
-
-### services
-- `GetBlockTemplate` - mining pool protocol (gbt)
-- `MiningService` - internal mining with workers
-- `MetricsService` - prometheus metrics collection
-
-### api
-- `ApiServer` - rest api with full blockchain access
-
-## performance optimizations
-
-### bun-specific enhancements
-- `Bun.CryptoHasher` for 2x faster hashing
-- `Bun.listen` for high-performance tcp server
-- native `Uint8Array` operations
-- zero dependencies where possible
-
-### protocol optimizations
-- binary protocol reduces bandwidth
-- headers-first sync minimizes downloads
-- parallel block fetching (16 concurrent)
-- inventory deduplication
-- connection pooling (125 max peers)
-
-### storage optimizations
-- memory-mapped i/o via lmdb
-- atomic batch operations
-- indexed queries for fast lookups
-- composite keys for complex queries
-
-## monitoring and observability
-
-### prometheus metrics (60+)
-- blockchain: height, difficulty, reorganizations
-- network: peers, messages, bandwidth
-- mempool: size, fees, transaction flow
-- storage: operations, latency, size
-- mining: hashrate, blocks found, revenue
-
-### logging
-domain-based logging with automatic context:
-```typescript
-const logger = getLogger(__filename);
-logger.info('block added', { height, hash });
-```
-
-### grafana dashboards
-pre-configured dashboards for:
-- node health and performance
-- network topology and sync status
-- mining statistics
-- mempool analysis
-
-## security considerations
-
-### network security
-- message checksums prevent corruption
-- magic bytes prevent cross-chain messages
-- connection limits prevent dos
-- peer banning for misbehavior (planned)
-
-### consensus security
-- cumulative proof-of-work prevents attacks
-- median time validation prevents timestamp manipulation
-- reorganization depth limits (planned)
-- checkpoint system (planned)
-
-### storage security
-- atomic transactions prevent corruption
-- backup/recovery mechanisms
-- integrity checks on startup
-
-## future enhancements
-
-### planned features
-- peer reputation scoring
-- partial chain validation
-- state snapshots for fast sync
-- bloom filters for spv clients
-- compact block relay
-- tor/i2p support
-
-### scalability improvements
-- block pruning for light clients
-- sharding for horizontal scaling
-- layer 2 solutions
-- zero-knowledge proofs
+main compose networking keeps tcp port `8333` inside `bolt-network`. it does not publish that port to the host.
