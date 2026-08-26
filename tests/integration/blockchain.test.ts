@@ -145,7 +145,7 @@ describe('Blockchain Integration', () => {
         blockReward,
         0,
         0n,
-        Date.now()
+        block.timestamp
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();
@@ -204,7 +204,7 @@ describe('Blockchain Integration', () => {
         blockchain.getBlockReward(1),
         0,
         0n,
-        Date.now()
+        block.timestamp
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();
@@ -239,7 +239,7 @@ describe('Blockchain Integration', () => {
         blockchain.getBlockReward(1),
         0,
         0n,
-        Date.now()
+        block.timestamp
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();
@@ -279,7 +279,7 @@ describe('Blockchain Integration', () => {
         blockReward,
         0,
         0n,
-        Date.now()
+        block.timestamp
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();
@@ -322,7 +322,7 @@ describe('Blockchain Integration', () => {
         blockReward,
         0,
         0n,
-        Date.now()
+        block1.timestamp
       );
       block1.transactions = [coinbase1.toObject()];
       block1.merkleRoot = block1.calculateMerkleRoot();
@@ -366,7 +366,7 @@ describe('Blockchain Integration', () => {
         blockReward + fee, // reward + tx fee
         0,
         0n,
-        Date.now()
+        block2.timestamp
       );
       block2.transactions = [coinbase2.toObject(), tx1.toObject()];
       block2.merkleRoot = block2.calculateMerkleRoot();
@@ -465,9 +465,10 @@ describe('Blockchain Integration', () => {
       const minerAddress = generateAddress(testConfig.addressPrefix).address;
       for (let i = 1; i <= 3; i++) {
         const previousBlock = await blockchain.getLatestBlock();
+        const timestamp = Date.now() + i * 1000;
         const block = new BlockClass(
           i,
-          Date.now() + i * 1000, // add delay to ensure timestamps are different
+          timestamp,
           previousBlock!.hash,
           [],
           1,
@@ -482,7 +483,7 @@ describe('Blockchain Integration', () => {
           blockReward,
           0,
           0n,
-          Date.now()
+          timestamp
         );
         block.transactions = [coinbase.toObject()];
         block.merkleRoot = block.calculateMerkleRoot();
@@ -530,7 +531,7 @@ describe('Blockchain Integration', () => {
           blockReward,
           0,
           0n,
-          Date.now()
+          block.timestamp
         );
         block.transactions = [coinbase.toObject()];
         block.merkleRoot = block.calculateMerkleRoot();
@@ -575,7 +576,7 @@ describe('Blockchain Integration', () => {
         blockReward,
         0,
         0n,
-        Date.now()
+        block.timestamp
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();
@@ -614,7 +615,7 @@ describe('Blockchain Integration', () => {
         blockReward,
         0,
         0n,
-        Date.now()
+        block.timestamp
       );
       block.transactions = [coinbase.toObject()];
       block.merkleRoot = block.calculateMerkleRoot();

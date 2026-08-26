@@ -7,6 +7,7 @@ import { devnet as devnetConfig } from '../../src/config/chains/devnet';
 import { TransactionClass } from '../../src/core/transaction';
 import { generateAddress } from '../../src/crypto/address';
 import type { BlockTemplate, BlockTemplateRequest, BlockSubmission } from '../../src/types';
+import { serialize } from '../../src/utils/bigint';
 
 describe('GetBlockTemplate Service', () => {
   let gbtService: GetBlockTemplateService;
@@ -15,6 +16,11 @@ describe('GetBlockTemplate Service', () => {
   let storage: MemoryAdapter;
   let payoutAddress: string;
   const getTemplate = () => gbtService.getBlockTemplate({ payoutAddress });
+  const reconstruct = (template: BlockTemplate) => gbtService['reconstructBlock'](template, {
+    templateId: template.templateId,
+    nonce: 12345,
+    timestamp: template.timestamp,
+  });
   
   beforeEach(async () => {
     // setup storage
@@ -101,6 +107,113 @@ describe('GetBlockTemplate Service', () => {
       
       // should return same template if nothing changed
       expect(template2.templateId).toBe(template1.templateId);
+    });
+
+    test('should refresh cached template after canonical tip changes', async () => {
+      const template1 = await getTemplate();
+      const block = reconstruct(template1);
+      expect((await blockchain.addBlock(block)).valid).toBe(true);
+
+      const template2 = await getTemplate();
+
+      expect(template2.templateId).not.toBe(template1.templateId);
+      expect(template2.height).toBe(2);
+      expect(template2.previousHash).toBe(block.hash);
+    });
+
+    test('should refresh stale template before starting longpoll', async () => {
+      const template1 = await getTemplate();
+      await gbtService.getBlockTemplate({ payoutAddress, longpollId: template1.longpollId });
+      const block = reconstruct(template1);
+      expect((await blockchain.addBlock(block)).valid).toBe(true);
+
+      const template2 = await gbtService.getBlockTemplate({
+        payoutAddress,
+        longpollId: template1.longpollId,
+      });
+
+      expect(template2.height).toBe(2);
+      expect(template2.previousHash).toBe(block.hash);
+    }, 1000);
+
+    test('should retry generation when canonical tip changes during preparation', async () => {
+      const staleTemplate = await getTemplate();
+      const block = reconstruct(staleTemplate);
+      await gbtService['invalidateAllTemplates']();
+
+      const prepareBlock = blockchain.prepareBlock.bind(blockchain);
+      let preparationStarted!: () => void;
+      let finishPreparation!: () => void;
+      const started = new Promise<void>(resolve => preparationStarted = resolve);
+      const canFinish = new Promise<void>(resolve => finishPreparation = resolve);
+      let pause = true;
+      blockchain.prepareBlock = async (...args) => {
+        const states = await prepareBlock(...args);
+        if (pause) {
+          pause = false;
+          preparationStarted();
+          await canFinish;
+        }
+        return states;
+      };
+
+      const generating = getTemplate();
+      await started;
+      expect((await blockchain.addBlock(block)).valid).toBe(true);
+      finishPreparation();
+      const template = await generating;
+
+      expect(template.height).toBe(2);
+      expect(template.previousHash).toBe(block.hash);
+    });
+
+    test('should serialize template publication with canonical commits', async () => {
+      const template1 = await getTemplate();
+      const block = reconstruct(template1);
+      await gbtService['invalidateAllTemplates']();
+
+      const setCustomData = storage.setCustomData.bind(storage);
+      const withStateWrite = storage.withStateWrite.bind(storage);
+      const transitionCanonicalChain = storage.transitionCanonicalChain.bind(storage);
+      let storageStarted!: () => void;
+      let finishStorage!: () => void;
+      let commitRequested!: () => void;
+      const started = new Promise<void>(resolve => storageStarted = resolve);
+      const canFinish = new Promise<void>(resolve => finishStorage = resolve);
+      const requested = new Promise<void>(resolve => commitRequested = resolve);
+      let stateWrites = 0;
+      let transitionStarted = false;
+      let pause = true;
+      storage.withStateWrite = async <T>(operation: () => Promise<T>) => {
+        stateWrites++;
+        if (stateWrites === 2) commitRequested();
+        return withStateWrite(operation);
+      };
+      storage.transitionCanonicalChain = async (...args) => {
+        transitionStarted = true;
+        return transitionCanonicalChain(...args);
+      };
+      storage.setCustomData = async (...args) => {
+        if (pause && args[0].startsWith('gbt:template:')) {
+          pause = false;
+          storageStarted();
+          await canFinish;
+        }
+        return setCustomData(...args);
+      };
+
+      const generating = getTemplate();
+      await started;
+      const committing = blockchain.addBlock(block);
+      await requested;
+      expect(transitionStarted).toBe(false);
+
+      finishStorage();
+      await generating;
+      expect((await committing).valid).toBe(true);
+      const refreshed = await getTemplate();
+      expect(refreshed.height).toBe(2);
+      expect(refreshed.previousHash).toBe(block.hash);
     });
 
     test('should isolate templates by payout address', async () => {
@@ -197,6 +310,19 @@ describe('GetBlockTemplate Service', () => {
       expect(result.valid).toBe(false);
       expect(result.error).toContain('Template not found or expired');
     });
+
+    test('should reject timestamp changes from stored template', async () => {
+      const template = await getTemplate();
+      const result = await gbtService.submitBlock({
+        templateId: template.templateId,
+        nonce: 12345,
+        timestamp: template.timestamp + 1,
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('timestamp');
+    });
+
   });
   
   describe('longpoll support', () => {
@@ -254,6 +380,58 @@ describe('GetBlockTemplate Service', () => {
       
       expect(template2).toBeDefined();
     });
+
+    test('should wake longpoll when canonical tip changes', async () => {
+      const template1 = await getTemplate();
+      await gbtService.getBlockTemplate({ payoutAddress, longpollId: template1.longpollId });
+      const waiting = gbtService.getBlockTemplate({
+        payoutAddress,
+        longpollId: template1.longpollId,
+      });
+      while (gbtService['activeSubscriptions'].size === 0) await Promise.resolve();
+
+      const block = reconstruct(template1);
+      expect((await blockchain.addBlock(block)).valid).toBe(true);
+      const template2 = await waiting;
+
+      expect(template2.height).toBe(2);
+      expect(template2.previousHash).toBe(block.hash);
+    }, 1000);
+
+    test('should isolate longpoll notifications by payout address', async () => {
+      const otherPayout = generateAddress(devnetConfig.addressPrefix).address;
+      const first = await getTemplate();
+      const other = await gbtService.getBlockTemplate({ payoutAddress: otherPayout });
+      await gbtService.getBlockTemplate({ payoutAddress, longpollId: first.longpollId });
+      await gbtService.getBlockTemplate({ payoutAddress: otherPayout, longpollId: other.longpollId });
+
+      const waitingFirst = gbtService.getBlockTemplate({ payoutAddress, longpollId: first.longpollId });
+      const waitingOther = gbtService.getBlockTemplate({ payoutAddress: otherPayout, longpollId: other.longpollId });
+      while (gbtService['activeSubscriptions'].size < 2) await Promise.resolve();
+      await gbtService['invalidateAllTemplates']();
+
+      const refreshedFirst = await getTemplate();
+      expect((await waitingFirst).templateId).toBe(refreshedFirst.templateId);
+      expect(gbtService['activeSubscriptions'].has(other.longpollId)).toBe(true);
+
+      const refreshedOther = await gbtService.getBlockTemplate({ payoutAddress: otherPayout });
+      expect((await waitingOther).templateId).toBe(refreshedOther.templateId);
+    }, 1000);
+
+    test('should replace duplicate longpoll subscriptions', async () => {
+      const template = await getTemplate();
+      await gbtService.getBlockTemplate({ payoutAddress, longpollId: template.longpollId });
+      const first = gbtService.getBlockTemplate({ payoutAddress, longpollId: template.longpollId });
+      while (gbtService['activeSubscriptions'].size === 0) await Promise.resolve();
+
+      const second = gbtService.getBlockTemplate({ payoutAddress, longpollId: template.longpollId });
+      expect((await first).templateId).toBe(template.templateId);
+      expect(gbtService['activeSubscriptions'].size).toBe(1);
+
+      await gbtService['invalidateAllTemplates']();
+      const refreshed = await getTemplate();
+      expect((await second).templateId).toBe(refreshed.templateId);
+    }, 1000);
   });
   
   describe('template metadata', () => {
@@ -336,6 +514,22 @@ describe('GetBlockTemplate Service', () => {
       
       const currentTemplateId = await storage.getCustomData(`gbt:current:${payoutAddress}`);
       expect(currentTemplateId).toBe(template.templateId);
+    });
+
+    test('should preserve newer current pointer when old template expires', async () => {
+      const oldTemplate = await getTemplate();
+      const block = reconstruct(oldTemplate);
+      expect((await blockchain.addBlock(block)).valid).toBe(true);
+      const currentTemplate = await getTemplate();
+      const expired = { ...oldTemplate, expiresAt: Date.now() - 1 };
+      await storage.setCustomData(
+        `gbt:template:${oldTemplate.templateId}`,
+        serialize(gbtService['serializeTemplate'](expired))
+      );
+
+      await gbtService['cleanupExpiredTemplates']();
+
+      expect(await storage.getCustomData(`gbt:current:${payoutAddress}`)).toBe(currentTemplate.templateId);
     });
   });
   

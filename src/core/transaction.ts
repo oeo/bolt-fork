@@ -347,7 +347,7 @@ export function createCoinbaseTransaction(
   minerAddress: string,
   blockReward: bigint,
   fees: bigint,
-  timestamp: number = Date.now()
+  timestamp: number
 ): TransactionClass {
   const coinbase = new TransactionClass(
     chainId,

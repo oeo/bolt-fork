@@ -56,4 +56,19 @@ describe('block executor', () => {
     expect(calculateStateRoot(first)).toBe(calculateStateRoot(second));
     expect(calculateStateRoot(first)).toBe('de23397172b152b5f7a2d974926f8f1722bd4efdb9676bf9d24ce25b513d0360');
   });
+
+  it('should bind coinbase identity to block timestamp', async () => {
+    const miner = generateAddress(devnet.addressPrefix);
+    const coinbase = createCoinbaseTransaction(
+      devnet.chainId,
+      miner.address,
+      5000000000n,
+      0n,
+      1234567890
+    );
+    const block = new BlockClass(1, 1234567891, '0'.repeat(64), [coinbase], 1);
+
+    await expect(executeBlock(block.toObject(), new Map(), devnet, 5000000000n))
+      .rejects.toThrow('Invalid coinbase transaction');
+  });
 });

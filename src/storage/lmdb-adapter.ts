@@ -1,12 +1,26 @@
-import { CanonicalTransition, StaleChainTipError, StorageAdapter } from './adapter';
+import {
+  CanonicalTransition,
+  MempoolUpdate,
+  PersistedMempoolEntry,
+  StaleChainTipError,
+  StorageAdapter,
+} from './adapter';
 import { LMDBManager } from './lmdb-manager';
 import { LMDBBlockchainStore } from './lmdb-blockchain-store';
 import { LMDBStateStore } from './lmdb-state-store';
 import { LMDBMempoolStore } from './lmdb-mempool-store';
 import type { Block, Transaction, AccountState } from '../types';
 import { getLogger } from '../utils/logger';
+import { deserializeBigInt, serializeBigInt } from '../utils/serialization';
 
 const logger = getLogger(__filename);
+
+interface ConfirmedTransactionRecord {
+  transaction: Transaction;
+  blockHash: string;
+  blockHeight: number;
+  transactionIndex: number;
+}
 
 /**
  * composite lmdb adapter that implements the full StorageAdapter interface
@@ -65,6 +79,8 @@ export class LMDBAdapter extends StorageAdapter {
     blocks,
     accountStates,
     cumulativeDifficulty,
+    mempoolAdditions = [],
+    mempoolRemovals = [],
   }: CanonicalTransition): Promise<void> {
     if (cumulativeDifficulty < 0n) throw new Error('Invalid cumulative difficulty');
     if (new Set(accountStates.map(({ address }) => address)).size !== accountStates.length) {
@@ -104,17 +120,30 @@ export class LMDBAdapter extends StorageAdapter {
         previousHash = block.hash;
       }
 
+      const detachedBlocks: Block[] = [];
+      for (let height = ancestor.height + 1; height <= expectedTip.height; height++) {
+        const detached = this.blockchainStore.readBlock(height);
+        if (detached) detachedBlocks.push(detached);
+      }
+      for (const block of detachedBlocks) this.writeRemoveConfirmedTransactions(block);
       this.blockchainStore.writeRemoveBlocksAbove(ancestor.height);
-      for (const block of blocks) this.blockchainStore.writeBlock(block);
+      for (const block of blocks) {
+        this.blockchainStore.writeBlock(block);
+        this.writeConfirmedTransactions(block);
+      }
       this.stateStore.clearAccounts();
       this.stateStore.writeAccounts(accountStates.map(({ address, state }) => ({
         address,
         ...state,
       })));
+      this.mempoolStore.writeUpdate(mempoolAdditions, mempoolRemovals);
       this.manager.metadata.putSync('cumulativeDifficulty', cumulativeDifficulty.toString());
     });
     this.blockchainStore.clearCache();
     this.stateStore.clearCache();
+    for (const error of this.publishCanonicalMempoolUpdate(mempoolAdditions, mempoolRemovals)) {
+      logger.error('Canonical mempool listener failed', error);
+    }
   }
 
   async getBlock(index: number): Promise<Block | null> {
@@ -198,11 +227,71 @@ export class LMDBAdapter extends StorageAdapter {
   }
 
   async getTransaction(hash: string): Promise<Transaction | null> {
-    return this.mempoolStore.getTransaction(hash);
+    const data = this.manager.confirmedTransactions.get(hash);
+    return data ? this.deserializeConfirmedTransaction(data).transaction : null;
   }
 
   async getMempoolTransactions(): Promise<Transaction[]> {
     return this.mempoolStore.getTransactions();
+  }
+
+  async getMempoolEntries(): Promise<PersistedMempoolEntry[]> {
+    return this.mempoolStore.getEntries();
+  }
+
+  async getMempoolAdmissionState(address: string) {
+    return this.manager.transactionSync(() => {
+      const height = this.manager.metadata.get('chainHeight');
+      const tip = this.manager.metadata.get('chainTip');
+      const account = this.stateStore.readAccount(address);
+      return {
+        tip: {
+          height: height === undefined ? -1 : Number(height.toString()),
+          hash: tip === undefined ? null : tip.toString(),
+        },
+        accountState: account ? { balance: account.balance, nonce: account.nonce } : null,
+      };
+    });
+  }
+
+  async updateMempool({ expectedTip, additions, removals }: MempoolUpdate): Promise<void> {
+    this.manager.transactionSync(() => {
+      const height = this.manager.metadata.get('chainHeight');
+      const tip = this.manager.metadata.get('chainTip');
+      const actualTip = {
+        height: height === undefined ? -1 : Number(height.toString()),
+        hash: tip === undefined ? null : tip.toString(),
+      };
+      if (actualTip.height !== expectedTip.height || actualTip.hash !== expectedTip.hash) {
+        throw new StaleChainTipError(actualTip);
+      }
+      const removed = new Set(removals);
+      const pendingNonces = new Set<string>();
+      for (const entry of additions) {
+        if (!removed.has(entry.transaction.hash) && this.manager.mempool.get(entry.transaction.hash)) {
+          throw new Error(`Transaction ${entry.transaction.hash} already in storage mempool`);
+        }
+        const sender = entry.transaction.from;
+        if (!sender) continue;
+        const nonceKey = `${sender}:${entry.transaction.nonce}`;
+        if (pendingNonces.has(nonceKey)) {
+          throw new Error(`Nonce ${entry.transaction.nonce} already in storage mempool`);
+        }
+        pendingNonces.add(nonceKey);
+        for (const { value } of this.manager.mempoolByAddress.getRange({
+          start: `${sender}:`,
+          end: `${sender}:\xff`,
+        })) {
+          const hash = value.toString();
+          if (removed.has(hash)) continue;
+          const existing = this.mempoolStore.readEntry(hash);
+          if (existing?.transaction.from === sender && existing.transaction.nonce === entry.transaction.nonce) {
+            throw new Error(`Nonce ${entry.transaction.nonce} already in storage mempool`);
+          }
+        }
+      }
+      this.mempoolStore.writeUpdate(additions, removals);
+    });
   }
 
   async removeFromMempool(hash: string): Promise<void> {
@@ -218,7 +307,15 @@ export class LMDBAdapter extends StorageAdapter {
   }
 
   async getTransactionsByAddress(address: string): Promise<Transaction[]> {
-    return this.mempoolStore.getTransactionsByAddress(address);
+    const transactions: Transaction[] = [];
+    for (const { value } of this.manager.confirmedByAddress.getRange({
+      start: `${address}:`,
+      end: `${address}:\xff`,
+    })) {
+      const data = this.manager.confirmedTransactions.get(value.toString());
+      if (data) transactions.push(this.deserializeConfirmedTransaction(data).transaction);
+    }
+    return transactions;
   }
 
   // transaction persistence (for blockchain)
@@ -264,6 +361,71 @@ export class LMDBAdapter extends StorageAdapter {
   async getSetMembers(key: string): Promise<string[]> {
     const raw = await this.manager.metadata.get(`set:${key}`);
     return raw ? JSON.parse(raw) : [];
+  }
+
+  private writeConfirmedTransactions(block: Block): void {
+    block.transactions.forEach((transaction, transactionIndex) => {
+      if (this.manager.confirmedTransactions.get(transaction.hash)) {
+        throw new Error(`Duplicate confirmed transaction: ${transaction.hash}`);
+      }
+      const record: ConfirmedTransactionRecord = {
+        transaction,
+        blockHash: block.hash,
+        blockHeight: block.index,
+        transactionIndex,
+      };
+      this.manager.confirmedTransactions.putSync(
+        transaction.hash,
+        this.serializeConfirmedTransaction(record)
+      );
+      if (transaction.from) {
+        this.manager.confirmedByAddress.putSync(
+          `${transaction.from}:${transaction.hash}`,
+          transaction.hash
+        );
+      }
+      this.manager.confirmedByAddress.putSync(
+        `${transaction.to}:${transaction.hash}`,
+        transaction.hash
+      );
+    });
+  }
+
+  private writeRemoveConfirmedTransactions(block: Block): void {
+    for (const transaction of block.transactions) {
+      const data = this.manager.confirmedTransactions.get(transaction.hash);
+      if (!data) continue;
+      const record = this.deserializeConfirmedTransaction(data);
+      if (record.blockHash !== block.hash) continue;
+      this.manager.confirmedTransactions.removeSync(transaction.hash);
+      if (transaction.from) {
+        this.manager.confirmedByAddress.removeSync(`${transaction.from}:${transaction.hash}`);
+      }
+      this.manager.confirmedByAddress.removeSync(`${transaction.to}:${transaction.hash}`);
+    }
+  }
+
+  private serializeConfirmedTransaction(record: ConfirmedTransactionRecord): Buffer {
+    return Buffer.from(JSON.stringify({
+      ...record,
+      transaction: {
+        ...record.transaction,
+        amount: serializeBigInt(record.transaction.amount),
+        fee: serializeBigInt(record.transaction.fee),
+      },
+    }));
+  }
+
+  private deserializeConfirmedTransaction(data: Buffer): ConfirmedTransactionRecord {
+    const record = JSON.parse(data.toString());
+    return {
+      ...record,
+      transaction: {
+        ...record.transaction,
+        amount: deserializeBigInt(record.transaction.amount),
+        fee: deserializeBigInt(record.transaction.fee),
+      },
+    };
   }
 
   // utility operations

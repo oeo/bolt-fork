@@ -34,6 +34,58 @@ export interface MempoolStats {
   avgFeePerByte: bigint;
 }
 
+export const DEFAULT_MEMPOOL_LIMITS = {
+  maxSize: 10000,
+  maxSizeBytes: 100_000_000,
+  maxTransactionSize: 100_000,
+} as const;
+
+export function selectMempoolLimitRemovals(
+  entries: MempoolEntry[],
+  maxSize: number,
+  maxSizeBytes: number,
+  protectedSenders: ReadonlySet<string> = new Set(),
+  maximumEvictionFee?: bigint
+): string[] {
+  let count = entries.length;
+  let bytes = entries.reduce((total, entry) => total + entry.size, 0);
+  if (count <= maxSize && bytes <= maxSizeBytes) return [];
+
+  const candidates = entries
+    .filter(entry => !protectedSenders.has(entry.transaction.from ?? ''))
+    .sort((a, b) => {
+      const feeDifference = a.feePerByte - b.feePerByte;
+      if (feeDifference < 0n) return -1;
+      if (feeDifference > 0n) return 1;
+      if (a.transaction.from === b.transaction.from) return b.transaction.nonce - a.transaction.nonce;
+      if (a.addedAt !== b.addedAt) return a.addedAt - b.addedAt;
+      return a.transaction.hash.localeCompare(b.transaction.hash);
+    });
+  const removed = new Set<string>();
+    for (const entry of candidates) {
+    if (count <= maxSize && bytes <= maxSizeBytes) break;
+    if (removed.has(entry.transaction.hash)) continue;
+    const dependents = entries.filter(dependent =>
+      dependent.transaction.from === entry.transaction.from &&
+      dependent.transaction.nonce >= entry.transaction.nonce &&
+      !removed.has(dependent.transaction.hash)
+    );
+    if (
+      maximumEvictionFee !== undefined &&
+      dependents.some(dependent => dependent.feePerByte >= maximumEvictionFee)
+    ) {
+      continue;
+    }
+    for (const dependent of dependents) {
+      removed.add(dependent.transaction.hash);
+      count--;
+      bytes -= dependent.size;
+    }
+  }
+  if (count > maxSize || bytes > maxSizeBytes) throw new Error('Mempool size limit reached');
+  return [...removed];
+}
+
 /**
  * mempool manages pending transactions waiting for block inclusion
  */
@@ -50,14 +102,34 @@ export class Mempool extends EventEmitter {
     this.config = {
       chainId: config.chainId ?? chainConfig.chainId,
       addressPrefix: config.addressPrefix ?? chainConfig.addressPrefix,
-      maxSize: config.maxSize || 10000,
-      maxSizeBytes: config.maxSizeBytes || 100_000_000, // 100MB
+      maxSize: config.maxSize || DEFAULT_MEMPOOL_LIMITS.maxSize,
+      maxSizeBytes: config.maxSizeBytes || DEFAULT_MEMPOOL_LIMITS.maxSizeBytes,
       minFeePerByte: config.minFeePerByte || chainConfig.minFeePerByte,
       maxTransactionAge: config.maxTransactionAge || 72 * 60 * 60 * 1000, // 72 hours
-      maxTransactionSize: config.maxTransactionSize || 100_000, // 100KB default
+      maxTransactionSize: config.maxTransactionSize || DEFAULT_MEMPOOL_LIMITS.maxTransactionSize,
     };
     this.entries = new Map();
     this.totalBytes = 0;
+    this.storage.setMempoolPolicy({
+      maxSize: this.config.maxSize!,
+      maxSizeBytes: this.config.maxSizeBytes!,
+      maxTransactionSize: this.config.maxTransactionSize!,
+      minFeePerByte: this.config.minFeePerByte!,
+    });
+    this.storage.onCanonicalMempoolUpdate((additions, removals) => {
+      for (const hash of removals) this.removeEntry(hash);
+      for (const { transaction, addedAt } of additions) {
+        this.removeEntry(transaction.hash);
+        const size = TransactionClass.fromObject(transaction).getSize();
+        this.entries.set(transaction.hash, {
+          transaction,
+          addedAt,
+          size,
+          feePerByte: transaction.fee / BigInt(size),
+        });
+        this.totalBytes += size;
+      }
+    });
   }
   
   /**
@@ -65,25 +137,86 @@ export class Mempool extends EventEmitter {
    */
   async initialize(): Promise<void> {
     try {
-      const transactions = await this.storage.getMempoolTransactions();
-      
-      for (const tx of transactions) {
-        const txClass = TransactionClass.fromObject(tx);
-        const validation = txClass.validate(this.config.chainId!, this.config.addressPrefix!);
-        if (!validation.valid) {
-          throw new Error(`Invalid stored transaction ${tx.hash}: ${validation.error}`);
+      await this.storage.withStateWrite(async () => {
+        const stored = await this.storage.getMempoolEntries();
+        const removals = new Set<string>();
+        const bySender = new Map<string, typeof stored>();
+        const restored: MempoolEntry[] = [];
+        const expiredNonceBySender = new Map<string, number>();
+        this.entries.clear();
+        this.totalBytes = 0;
+
+        for (const entry of stored) {
+          const sender = entry.transaction.from;
+          if (!sender) throw new Error(`Invalid stored transaction ${entry.transaction.hash}: Coinbase transaction`);
+          if (Date.now() - entry.addedAt > this.config.maxTransactionAge!) {
+            const expiredNonce = expiredNonceBySender.get(sender);
+            expiredNonceBySender.set(sender, Math.min(expiredNonce ?? entry.transaction.nonce, entry.transaction.nonce));
+          }
         }
-        const size = txClass.getSize();
-        const feePerByte = tx.fee / BigInt(size);
-        
-        this.entries.set(tx.hash, {
-          transaction: tx,
-          addedAt: Date.now(),
-          size,
-          feePerByte
-        });
-        this.totalBytes += size;
-      }
+        for (const entry of stored) {
+          const sender = entry.transaction.from!;
+          if (entry.transaction.nonce >= (expiredNonceBySender.get(sender) ?? Number.POSITIVE_INFINITY)) {
+            removals.add(entry.transaction.hash);
+            continue;
+          }
+          const queue = bySender.get(sender) ?? [];
+          queue.push(entry);
+          bySender.set(sender, queue);
+        }
+
+        for (const [sender, queue] of bySender) {
+          queue.sort((a, b) =>
+            a.transaction.nonce - b.transaction.nonce ||
+            a.addedAt - b.addedAt ||
+            a.transaction.hash.localeCompare(b.transaction.hash)
+          );
+          const admission = await this.storage.getMempoolAdmissionState(sender);
+          let balance = admission.accountState?.balance ?? 0n;
+          let nonce = admission.accountState?.nonce ?? 0;
+          for (let index = 0; index < queue.length; index++) {
+            const entry = queue[index];
+            const transaction = TransactionClass.fromObject(entry.transaction);
+            const validation = transaction.validate(this.config.chainId!, this.config.addressPrefix!);
+            if (!validation.valid) {
+              throw new Error(`Invalid stored transaction ${transaction.hash}: ${validation.error}`);
+            }
+            if (!await transaction.verify()) {
+              throw new Error(`Invalid stored transaction ${transaction.hash}: Invalid signature`);
+            }
+            const account = transaction.validateAgainstAccount(balance, nonce);
+            if (!account.valid) throw new Error(`Invalid stored transaction ${transaction.hash}: ${account.error}`);
+            const size = transaction.getSize();
+            const feePerByte = transaction.fee / BigInt(size);
+            if (size > this.config.maxTransactionSize! || feePerByte < this.config.minFeePerByte!) {
+              for (const removed of queue.slice(index)) removals.add(removed.transaction.hash);
+              break;
+            }
+            balance -= transaction.amount + transaction.fee;
+            nonce++;
+            restored.push({ transaction: entry.transaction, addedAt: entry.addedAt, size, feePerByte });
+          }
+        }
+
+        for (const hash of selectMempoolLimitRemovals(
+          restored,
+          this.config.maxSize!,
+          this.config.maxSizeBytes!
+        )) removals.add(hash);
+        if (removals.size > 0) {
+          const admission = await this.storage.getMempoolAdmissionState('');
+          await this.storage.updateMempool({
+            expectedTip: admission.tip,
+            additions: [],
+            removals: [...removals],
+          });
+        }
+        for (const entry of restored) {
+          if (removals.has(entry.transaction.hash)) continue;
+          this.entries.set(entry.transaction.hash, entry);
+          this.totalBytes += entry.size;
+        }
+      });
       
       logger.info(`Mempool initialized with ${this.entries.size} transactions`);
     } catch (error) {
@@ -96,7 +229,7 @@ export class Mempool extends EventEmitter {
    * add transaction to mempool
    */
   async addTransaction(tx: Transaction | TransactionClass): Promise<void> {
-    return this.withWriteLock(() => this.addTransactionUnlocked(tx));
+    return this.withWriteLock(() => this.storage.withStateWrite(() => this.addTransactionUnlocked(tx)));
   }
 
   private async addTransactionUnlocked(tx: Transaction | TransactionClass): Promise<void> {
@@ -105,12 +238,6 @@ export class Mempool extends EventEmitter {
     // check if already in mempool
     if (this.entries.has(transaction.hash)) {
       throw new Error(`Transaction ${transaction.hash} already in mempool`);
-    }
-    
-    // check if already in storage mempool
-    const inStorage = await this.storage.isInMempool(transaction.hash);
-    if (inStorage) {
-      throw new Error(`Transaction ${transaction.hash} already in storage mempool`);
     }
     
     // validate transaction
@@ -126,10 +253,11 @@ export class Mempool extends EventEmitter {
       throw new Error('Invalid transaction signature');
     }
     
+    let admission;
     if (transaction.from) {
-      const canonical = await this.storage.getAccountState(transaction.from);
-      let balance = canonical?.balance ?? 0n;
-      let nonce = canonical?.nonce ?? 0;
+      admission = await this.storage.getMempoolAdmissionState(transaction.from);
+      let balance = admission.accountState?.balance ?? 0n;
+      let nonce = admission.accountState?.nonce ?? 0;
       const senderTxs = (await this.getTransactionsBySender(transaction.from))
         .sort((a, b) => a.nonce - b.nonce);
       for (const pending of senderTxs) {
@@ -155,37 +283,27 @@ export class Mempool extends EventEmitter {
       throw new Error(`Fee too low: ${formatWatts(feePerByte)}/byte < ${formatWatts(this.config.minFeePerByte!)}/byte`);
     }
     
-    // check mempool size limits
-    if (this.entries.size >= this.config.maxSize!) {
-      // try to evict lower fee transactions
-      const evicted = this.evictTransaction();
-      if (!evicted || evicted.feePerByte >= feePerByte) {
-        throw new Error(`Mempool full and transaction fee too low for inclusion`);
-      }
-    }
-    
-    // check mempool byte size limit
-    if (this.totalBytes + size > this.config.maxSizeBytes!) {
-      // try to evict lower fee transactions
-      const evicted = this.evictTransaction();
-      if (!evicted) {
-        throw new Error(`Mempool size limit reached`);
-      }
-    }
-    
-    // add to mempool
     const entry: MempoolEntry = {
       transaction,
       addedAt: Date.now(),
       size,
       feePerByte
     };
-    
+    const removals = selectMempoolLimitRemovals(
+      [...this.entries.values(), entry],
+      this.config.maxSize!,
+      this.config.maxSizeBytes!,
+      new Set([transaction.from!]),
+      feePerByte
+    );
+    await this.storage.updateMempool({
+      expectedTip: admission!.tip,
+      additions: [{ transaction, addedAt: entry.addedAt }],
+      removals,
+    });
+    for (const hash of removals) this.removeEntry(hash);
     this.entries.set(transaction.hash, entry);
     this.totalBytes += size;
-    
-    // persist to storage
-    await this.storage.addToMempool(transaction);
     
     logger.info(`Added transaction ${transaction.hash} to mempool`, {
       size,
@@ -201,62 +319,74 @@ export class Mempool extends EventEmitter {
    * remove transaction from mempool
    */
   async removeTransaction(txHash: string): Promise<void> {
-    const entry = this.entries.get(txHash);
-    if (!entry) {
-      return; // not in mempool
-    }
-    
-    this.entries.delete(txHash);
-    this.totalBytes -= entry.size;
-    
-    // remove from storage
-    await this.storage.removeFromMempool(txHash);
-    
-    logger.debug(`Removed transaction ${txHash} from mempool`);
+    return this.withWriteLock(async () => {
+      await this.storage.withStateWrite(async () => {
+        const entry = this.entries.get(txHash);
+        if (!entry) return;
+        const removals = Array.from(this.entries.values())
+          .filter(candidate =>
+            candidate.transaction.from === entry.transaction.from &&
+            candidate.transaction.nonce >= entry.transaction.nonce
+          )
+          .map(candidate => candidate.transaction.hash);
+        const admission = await this.storage.getMempoolAdmissionState(entry.transaction.from ?? '');
+        await this.storage.updateMempool({
+          expectedTip: admission.tip,
+          additions: [],
+          removals,
+        });
+        for (const hash of removals) this.removeEntry(hash);
+        logger.debug(`Removed ${removals.length} transactions from mempool`);
+      });
+    });
   }
   
   /**
    * get transactions for block inclusion, sorted by fee
    */
   getTransactionsForBlock(maxSize: number = chainConfig.maxBlockSize): Transaction[] {
-    // remove expired transactions first
     this.removeExpiredTransactions();
-    
-    // sort by fee per byte (highest first), with deterministic tiebreakers
-    const sorted = Array.from(this.entries.values())
-      .sort((a, b) => {
-        // CRITICAL: if same sender, ALWAYS sort by nonce (lower nonce first)
-        // This ensures transaction dependencies are respected
-        if (a.transaction.from === b.transaction.from && a.transaction.from !== null) {
-          return a.transaction.nonce - b.transaction.nonce;
-        }
-        
-        // primary sort: fee per byte (higher is better)
-        const diff = b.feePerByte - a.feePerByte;
-        if (diff > 0n) return 1;
-        if (diff < 0n) return -1;
-        
-        // secondary sort: first-seen-first-included (older is better)
-        if (a.addedAt !== b.addedAt) {
-          return a.addedAt - b.addedAt;
-        }
-        
-        // tertiary sort: transaction hash (lexicographic order for determinism)
-        return a.transaction.hash.localeCompare(b.transaction.hash);
-      });
-    
+    const queues = new Map<string, MempoolEntry[]>();
+    const expiredNonceBySender = new Map<string, number>();
+    const now = Date.now();
+    for (const entry of this.entries.values()) {
+      if (now - entry.addedAt <= this.config.maxTransactionAge!) continue;
+      const sender = entry.transaction.from!;
+      const nonce = expiredNonceBySender.get(sender);
+      expiredNonceBySender.set(sender, Math.min(nonce ?? entry.transaction.nonce, entry.transaction.nonce));
+    }
+    for (const entry of this.entries.values()) {
+      const sender = entry.transaction.from!;
+      if (entry.transaction.nonce >= (expiredNonceBySender.get(sender) ?? Number.POSITIVE_INFINITY)) continue;
+      const queue = queues.get(sender) ?? [];
+      queue.push(entry);
+      queues.set(sender, queue);
+    }
+    for (const queue of queues.values()) {
+      queue.sort((a, b) => a.transaction.nonce - b.transaction.nonce);
+    }
+
     const transactions: Transaction[] = [];
     let currentSize = 0;
-    
-    for (const entry of sorted) {
+    while (queues.size > 0) {
+      const [entry] = Array.from(queues.values(), queue => queue[0]).sort((a, b) => {
+        const feeDifference = b.feePerByte - a.feePerByte;
+        if (feeDifference > 0n) return 1;
+        if (feeDifference < 0n) return -1;
+        if (a.addedAt !== b.addedAt) return a.addedAt - b.addedAt;
+        return a.transaction.hash.localeCompare(b.transaction.hash);
+      });
+      const sender = entry.transaction.from!;
       if (currentSize + entry.size > maxSize) {
-        continue; // skip if would exceed block size
+        queues.delete(sender);
+        continue;
       }
-      
       transactions.push(entry.transaction);
       currentSize += entry.size;
+      const queue = queues.get(sender)!;
+      queue.shift();
+      if (queue.length === 0) queues.delete(sender);
     }
-    
     return transactions;
   }
   
@@ -333,9 +463,11 @@ export class Mempool extends EventEmitter {
    * clear all transactions from mempool
    */
   async clear(): Promise<void> {
-    this.entries.clear();
-    this.totalBytes = 0;
-    await this.storage.clearMempool();
+    await this.withWriteLock(() => this.storage.withStateWrite(async () => {
+      await this.storage.clearMempool();
+      this.entries.clear();
+      this.totalBytes = 0;
+    }));
     
     logger.info('Mempool cleared');
   }
@@ -344,9 +476,19 @@ export class Mempool extends EventEmitter {
    * remove transactions that are in a block
    */
   async removeBlockTransactions(transactions: Transaction[]): Promise<void> {
-    for (const tx of transactions) {
-      await this.removeTransaction(tx.hash);
-    }
+    await this.withWriteLock(() => this.storage.withStateWrite(async () => {
+      const removals = transactions
+        .map(transaction => transaction.hash)
+        .filter(hash => this.entries.has(hash));
+      if (removals.length === 0) return;
+      const admission = await this.storage.getMempoolAdmissionState('');
+      await this.storage.updateMempool({
+        expectedTip: admission.tip,
+        additions: [],
+        removals,
+      });
+      for (const hash of removals) this.removeEntry(hash);
+    }));
   }
   
   /**
@@ -357,97 +499,86 @@ export class Mempool extends EventEmitter {
     getBalance: (address: string) => Promise<bigint>,
     getNonce: (address: string) => Promise<number>
   ): Promise<void> {
-    const toRemove: string[] = [];
-    
-    for (const [hash, entry] of this.entries) {
-      const tx = entry.transaction;
-      
-      // skip coinbase transactions
-      if (!tx.from) continue;
-      
-      try {
-        const balance = await getBalance(tx.from);
-        const nonce = await getNonce(tx.from);
-        
-        const txClass = TransactionClass.fromObject(tx);
-        const validation = txClass.validateAgainstAccount(balance, nonce);
-        
-        if (!validation.valid) {
-          logger.debug(`Removing invalid transaction ${hash}: ${validation.error}`);
-          toRemove.push(hash);
-        }
-      } catch (error) {
-        logger.error(`Error validating transaction ${hash}`, error);
-        toRemove.push(hash);
+    await this.withWriteLock(() => this.storage.withStateWrite(async () => {
+      const bySender = new Map<string, MempoolEntry[]>();
+      for (const entry of this.entries.values()) {
+        const sender = entry.transaction.from;
+        if (!sender) continue;
+        const queue = bySender.get(sender) ?? [];
+        queue.push(entry);
+        bySender.set(sender, queue);
       }
-    }
-    
-    // remove invalid transactions
-    for (const hash of toRemove) {
-      await this.removeTransaction(hash);
-    }
-    
-    if (toRemove.length > 0) {
-      logger.info(`Removed ${toRemove.length} invalid transactions from mempool`);
-    }
+
+      const toRemove = new Set<string>();
+      for (const [sender, queue] of bySender) {
+        queue.sort((a, b) => a.transaction.nonce - b.transaction.nonce);
+        try {
+          let balance = await getBalance(sender);
+          let nonce = await getNonce(sender);
+          for (let index = 0; index < queue.length; index++) {
+            const entry = queue[index];
+            const tx = TransactionClass.fromObject(entry.transaction);
+            const validation = tx.validateAgainstAccount(balance, nonce);
+            if (!validation.valid) {
+              logger.debug(`Removing invalid transaction ${tx.hash}: ${validation.error}`);
+              for (const removed of queue.slice(index)) toRemove.add(removed.transaction.hash);
+              break;
+            }
+            balance -= tx.amount + tx.fee;
+            nonce++;
+          }
+        } catch (error) {
+          logger.error(`Error validating transactions from ${sender}`, error);
+          for (const entry of queue) toRemove.add(entry.transaction.hash);
+        }
+      }
+
+      if (toRemove.size > 0) {
+        const admission = await this.storage.getMempoolAdmissionState('');
+        await this.storage.updateMempool({
+          expectedTip: admission.tip,
+          additions: [],
+          removals: [...toRemove],
+        });
+        for (const hash of toRemove) this.removeEntry(hash);
+        logger.info(`Removed ${toRemove.size} invalid transactions from mempool`);
+      }
+    }));
   }
   
-  /**
-   * remove expired transactions
-   */
   private removeExpiredTransactions(): void {
     const now = Date.now();
-    const maxAge = this.config.maxTransactionAge!;
-    const toRemove: string[] = [];
-    
-    for (const [hash, entry] of this.entries) {
-      if (now - entry.addedAt > maxAge) {
-        toRemove.push(hash);
-      }
-    }
-    
-    for (const hash of toRemove) {
-      this.entries.delete(hash);
-      const entry = this.entries.get(hash);
-      if (entry) {
-        this.totalBytes -= entry.size;
-      }
-    }
-    
-    if (toRemove.length > 0) {
-      logger.debug(`Removed ${toRemove.length} expired transactions from mempool`);
-    }
-  }
-  
-  /**
-   * evict lowest fee transaction
-   */
-  private evictTransaction(): MempoolEntry | null {
-    let lowestFeeEntry: MempoolEntry | null = null;
-    let lowestFeeHash: string | null = null;
-    
-    for (const [hash, entry] of this.entries) {
-      if (!lowestFeeEntry || entry.feePerByte < lowestFeeEntry.feePerByte) {
-        lowestFeeEntry = entry;
-        lowestFeeHash = hash;
-      }
-    }
-    
-    if (lowestFeeHash && lowestFeeEntry) {
-      this.entries.delete(lowestFeeHash);
-      this.totalBytes -= lowestFeeEntry.size;
-      
-      // remove from storage (async, but don't await)
-      this.storage.removeFromMempool(lowestFeeHash).catch(err => {
-        logger.error(`Failed to remove evicted transaction from storage`, err);
+    if (![...this.entries.values()].some(entry => now - entry.addedAt > this.config.maxTransactionAge!)) return;
+    void this.withWriteLock(async () => {
+      await this.storage.withStateWrite(async () => {
+        const expiredNonceBySender = new Map<string, number>();
+        const lockedNow = Date.now();
+        for (const entry of this.entries.values()) {
+          if (lockedNow - entry.addedAt <= this.config.maxTransactionAge!) continue;
+          const sender = entry.transaction.from!;
+          const nonce = expiredNonceBySender.get(sender);
+          expiredNonceBySender.set(sender, Math.min(nonce ?? entry.transaction.nonce, entry.transaction.nonce));
+        }
+        const removals = Array.from(this.entries.entries())
+          .filter(([, entry]) =>
+            entry.transaction.nonce >= (
+              expiredNonceBySender.get(entry.transaction.from!) ?? Number.POSITIVE_INFINITY
+            )
+          )
+          .map(([hash]) => hash);
+        if (removals.length === 0) return;
+        const admission = await this.storage.getMempoolAdmissionState('');
+        await this.storage.updateMempool({ expectedTip: admission.tip, additions: [], removals });
+        for (const hash of removals) this.removeEntry(hash);
       });
-      
-      logger.debug(`Evicted transaction ${lowestFeeHash} with fee ${formatWatts(lowestFeeEntry.feePerByte)}/byte`);
-      
-      return lowestFeeEntry;
-    }
-    
-    return null;
+    }).catch(error => logger.error('Failed to remove expired transactions', error));
+  }
+
+  private removeEntry(hash: string): void {
+    const entry = this.entries.get(hash);
+    if (!entry) return;
+    this.entries.delete(hash);
+    this.totalBytes -= entry.size;
   }
 
   private async withWriteLock<T>(operation: () => Promise<T>): Promise<T> {

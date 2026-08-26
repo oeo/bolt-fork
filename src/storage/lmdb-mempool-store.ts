@@ -2,6 +2,7 @@ import { LMDBManager } from './lmdb-manager';
 import type { Transaction } from '../types';
 import { getLogger } from '../utils/logger';
 import { serializeBigInt, deserializeBigInt } from '../utils/serialization';
+import type { PersistedMempoolEntry } from './adapter';
 
 const logger = getLogger(__filename);
 
@@ -35,30 +36,8 @@ export class LMDBMempoolStore {
       return false;
     }
     
-    const serialized = this.serializeTransaction(tx);
-    const timestamp = Math.floor(Date.now() / 1000);
-    
     this.lmdb.transactionSync(() => {
-      // add to main storage
-      this.lmdb.mempool.putSync(tx.hash, serialized);
-      
-      // add to fee index with composite key
-      const feeKey = this.createFeeKey(tx.fee, tx.hash);
-      this.lmdb.mempoolByFee.putSync(feeKey, tx.hash);
-      
-      // add to time index with composite key
-      const timeKey = this.createTimeKey(timestamp, tx.hash);
-      this.lmdb.mempoolByTime.putSync(timeKey, tx.hash);
-      
-      // add to address indexes with composite keys
-      if (tx.from) {
-        const fromKey = this.createAddressKey(tx.from, tx.hash);
-        this.lmdb.mempoolByAddress.putSync(fromKey, tx.hash);
-      }
-      if (tx.to) {
-        const toKey = this.createAddressKey(tx.to, tx.hash);
-        this.lmdb.mempoolByAddress.putSync(toKey, tx.hash);
-      }
+      this.writeUpdate([{ transaction: tx, addedAt: Date.now() }], []);
     });
     
     logger.debug(`added transaction ${tx.hash} to mempool`);
@@ -72,33 +51,8 @@ export class LMDBMempoolStore {
     const txData = await this.lmdb.mempool.get(txHash);
     if (!txData) return;
     
-    const tx = this.deserializeTransaction(txData);
-    
     this.lmdb.transactionSync(() => {
-      // remove from main storage
-      this.lmdb.mempool.removeSync(txHash);
-      
-      // remove from fee index
-      const feeKey = this.createFeeKey(tx.fee, txHash);
-      this.lmdb.mempoolByFee.removeSync(feeKey);
-      
-      // remove from time index (need to search for timestamp)
-      for (const { key, value } of this.lmdb.mempoolByTime.getRange()) {
-        if (value.toString() === txHash) {
-          this.lmdb.mempoolByTime.removeSync(key);
-          break;
-        }
-      }
-      
-      // remove from address indexes
-      if (tx.from) {
-        const fromKey = this.createAddressKey(tx.from, txHash);
-        this.lmdb.mempoolByAddress.removeSync(fromKey);
-      }
-      if (tx.to) {
-        const toKey = this.createAddressKey(tx.to, txHash);
-        this.lmdb.mempoolByAddress.removeSync(toKey);
-      }
+      this.writeUpdate([], [txHash]);
     });
     
     logger.debug(`removed transaction ${txHash} from mempool`);
@@ -110,29 +64,7 @@ export class LMDBMempoolStore {
   async removeTransactions(txHashes: string[]): Promise<void> {
     if (txHashes.length === 0) return;
     
-    this.lmdb.transactionSync(() => {
-      for (const hash of txHashes) {
-        const txData = this.lmdb.mempool.get(hash);
-        if (!txData) continue;
-        
-        const tx = this.deserializeTransaction(txData);
-        
-        // remove from all indexes
-        this.lmdb.mempool.removeSync(hash);
-        
-        const feeKey = this.createFeeKey(tx.fee, hash);
-        this.lmdb.mempoolByFee.removeSync(feeKey);
-        
-        if (tx.from) {
-          const fromKey = this.createAddressKey(tx.from, hash);
-          this.lmdb.mempoolByAddress.removeSync(fromKey);
-        }
-        if (tx.to) {
-          const toKey = this.createAddressKey(tx.to, hash);
-          this.lmdb.mempoolByAddress.removeSync(toKey);
-        }
-      }
-    });
+    this.lmdb.transactionSync(() => this.writeUpdate([], txHashes));
     
     logger.debug(`removed ${txHashes.length} transactions from mempool`);
   }
@@ -144,7 +76,7 @@ export class LMDBMempoolStore {
     const data = await this.lmdb.mempool.get(txHash);
     if (!data) return null;
     
-    return this.deserializeTransaction(data);
+    return this.deserializeEntry(data).transaction;
   }
 
   /**
@@ -162,7 +94,7 @@ export class LMDBMempoolStore {
     const transactions: Transaction[] = [];
     
     for await (const { value } of this.lmdb.mempool.getRange()) {
-      transactions.push(this.deserializeTransaction(value));
+      transactions.push(this.deserializeEntry(value).transaction);
     }
     
     return transactions;
@@ -181,7 +113,7 @@ export class LMDBMempoolStore {
       const txHash = typeof value === 'string' ? value : value.toString();
       const txData = await this.lmdb.mempool.get(txHash);
       if (txData) {
-        transactions.push(this.deserializeTransaction(txData));
+        transactions.push(this.deserializeEntry(txData).transaction);
       }
     }
     
@@ -208,7 +140,7 @@ export class LMDBMempoolStore {
         seen.add(txHash);
         const txData = await this.lmdb.mempool.get(txHash);
         if (txData) {
-          transactions.push(this.deserializeTransaction(txData));
+          transactions.push(this.deserializeEntry(txData).transaction);
         }
       }
     }
@@ -220,14 +152,13 @@ export class LMDBMempoolStore {
    * prune old transactions from mempool
    */
   async pruneOldTransactions(maxAgeSeconds: number): Promise<number> {
-    const cutoff = Math.floor(Date.now() / 1000) - maxAgeSeconds;
+    const cutoff = Date.now() - maxAgeSeconds * 1000;
     const toRemove: string[] = [];
     
     // find old transactions by iterating time index
     for await (const { key, value } of this.lmdb.mempoolByTime.getRange()) {
       // extract timestamp from composite key
-      const timestampHex = String(key).split(':')[0];
-      const timestamp = parseInt(timestampHex, 16);
+      const timestamp = parseInt(String(key).split(':')[0], 16);
       if (timestamp <= cutoff) {
         const txHash = typeof value === 'string' ? value : value.toString();
         toRemove.push(txHash);
@@ -281,7 +212,7 @@ export class LMDBMempoolStore {
     let totalBytes = 0;
     
     for await (const { value } of this.lmdb.mempool.getRange()) {
-      const tx = this.deserializeTransaction(value);
+      const tx = this.deserializeEntry(value).transaction;
       
       if (tx.fee < minFee) minFee = tx.fee;
       if (tx.fee > maxFee) maxFee = tx.fee;
@@ -301,8 +232,7 @@ export class LMDBMempoolStore {
   // helper methods
   
   private createTimeKey(timestamp: number, txHash: string): string {
-    // create composite key: timestamp padded + hash
-    const timestampHex = timestamp.toString(16).padStart(8, '0');
+    const timestampHex = timestamp.toString(16).padStart(12, '0');
     return `${timestampHex}:${txHash}`;
   }
 
@@ -320,21 +250,62 @@ export class LMDBMempoolStore {
     return `${feeHex}:${txHash}`;
   }
 
-  private serializeTransaction(tx: Transaction): Buffer {
+  getEntries(): PersistedMempoolEntry[] {
+    const entries: PersistedMempoolEntry[] = [];
+    for (const { value } of this.lmdb.mempool.getRange()) {
+      entries.push(this.deserializeEntry(value));
+    }
+    return entries;
+  }
+
+  readEntry(hash: string): PersistedMempoolEntry | null {
+    const data = this.lmdb.mempool.get(hash);
+    return data ? this.deserializeEntry(data) : null;
+  }
+
+  writeUpdate(additions: PersistedMempoolEntry[], removals: string[]): void {
+    for (const hash of removals) {
+      const data = this.lmdb.mempool.get(hash);
+      if (!data) continue;
+      const entry = this.deserializeEntry(data);
+      const tx = entry.transaction;
+      this.lmdb.mempool.removeSync(hash);
+      this.lmdb.mempoolByFee.removeSync(this.createFeeKey(tx.fee, hash));
+      this.lmdb.mempoolByTime.removeSync(this.createTimeKey(entry.addedAt, hash));
+      if (tx.from) this.lmdb.mempoolByAddress.removeSync(this.createAddressKey(tx.from, hash));
+      this.lmdb.mempoolByAddress.removeSync(this.createAddressKey(tx.to, hash));
+    }
+    for (const entry of additions) {
+      const tx = entry.transaction;
+      this.lmdb.mempool.putSync(tx.hash, this.serializeEntry(entry));
+      this.lmdb.mempoolByFee.putSync(this.createFeeKey(tx.fee, tx.hash), tx.hash);
+      this.lmdb.mempoolByTime.putSync(this.createTimeKey(entry.addedAt, tx.hash), tx.hash);
+      if (tx.from) this.lmdb.mempoolByAddress.putSync(this.createAddressKey(tx.from, tx.hash), tx.hash);
+      this.lmdb.mempoolByAddress.putSync(this.createAddressKey(tx.to, tx.hash), tx.hash);
+    }
+  }
+
+  private serializeEntry(entry: PersistedMempoolEntry): Buffer {
     const json = JSON.stringify({
-      ...tx,
-      amount: serializeBigInt(tx.amount),
-      fee: serializeBigInt(tx.fee),
+      addedAt: entry.addedAt,
+      transaction: {
+        ...entry.transaction,
+        amount: serializeBigInt(entry.transaction.amount),
+        fee: serializeBigInt(entry.transaction.fee),
+      },
     });
     return Buffer.from(json);
   }
 
-  private deserializeTransaction(data: Buffer): Transaction {
+  private deserializeEntry(data: Buffer): PersistedMempoolEntry {
     const json = JSON.parse(data.toString());
     return {
-      ...json,
-      amount: deserializeBigInt(json.amount),
-      fee: deserializeBigInt(json.fee),
+      addedAt: json.addedAt,
+      transaction: {
+        ...json.transaction,
+        amount: deserializeBigInt(json.transaction.amount),
+        fee: deserializeBigInt(json.transaction.fee),
+      },
     };
   }
 }

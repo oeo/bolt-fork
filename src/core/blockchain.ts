@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { Block, Transaction, AccountState, BlockTemplate, ValidationResult } from '../types';
-import { StaleChainTipError, StorageAdapter } from '../storage/adapter';
+import { PersistedMempoolEntry, StaleChainTipError, StorageAdapter } from '../storage/adapter';
 import { ChainConfig } from '../config/chain';
 import { BlockClass, createGenesisBlock } from './block';
 import { TransactionClass, createCoinbaseTransaction } from './transaction';
@@ -9,9 +9,14 @@ import { HashAlgorithm, hash } from '../crypto/hash';
 import { ForkManager } from './fork-manager';
 import { getLogger } from '../utils/logger';
 import { calculateStateRoot, executeBlock, type BlockExecution } from './block-executor';
+import {
+  DEFAULT_MEMPOOL_LIMITS,
+  selectMempoolLimitRemovals,
+  type MempoolEntry,
+} from './mempool';
 
 const logger = getLogger(__filename);
-const STORAGE_VERSION = '4';
+const STORAGE_VERSION = '5';
 
 /**
  * main blockchain orchestration class
@@ -105,14 +110,16 @@ export class Blockchain extends EventEmitter {
       this.config.genesisNonce
     );
 
-    await this.storage.transitionCanonicalChain({
+    await this.storage.withStateWrite(() => this.storage.transitionCanonicalChain({
       expectedTip: { height: -1, hash: null },
       expectedCumulativeDifficulty: 0n,
       ancestor: { height: -1, hash: null },
       blocks: [genesis.toObject()],
       accountStates: [],
       cumulativeDifficulty: calculateBlockWork(genesis.difficulty),
-    });
+      mempoolAdditions: [],
+      mempoolRemovals: [],
+    }));
 
     this.currentHeight = 0;
 
@@ -186,6 +193,12 @@ export class Blockchain extends EventEmitter {
       return difficultyValidation;
     }
 
+    for (const transaction of block.transactions) {
+      if (await this.storage.getTransaction(transaction.hash)) {
+        return { valid: false, error: `Duplicate confirmed transaction: ${transaction.hash}` };
+      }
+    }
+
     let execution: BlockExecution;
     try {
       execution = await this.executeBlock(block);
@@ -200,13 +213,19 @@ export class Blockchain extends EventEmitter {
     const currentCumulative = await this.storage.getCumulativeDifficulty();
     const newCumulative = currentCumulative + calculateBlockWork(block.difficulty);
     try {
-      await this.storage.transitionCanonicalChain({
-      expectedTip: { height: previousBlock.index, hash: previousBlock.hash },
-      expectedCumulativeDifficulty: currentCumulative,
-      ancestor: { height: previousBlock.index, hash: previousBlock.hash },
-      blocks: [block.toObject()],
-      accountStates: Array.from(execution.accountStates, ([address, state]) => ({ address, state })),
-      cumulativeDifficulty: newCumulative,
+      await this.storage.withStateWrite(async () => {
+        const confirmed = block.transactions.filter(tx => tx.from !== null).map(tx => tx.hash);
+        const mempoolRemovals = await this.prepareExtensionMempoolRemovals(execution.accountStates, confirmed);
+        await this.storage.transitionCanonicalChain({
+          expectedTip: { height: previousBlock.index, hash: previousBlock.hash },
+          expectedCumulativeDifficulty: currentCumulative,
+          ancestor: { height: previousBlock.index, hash: previousBlock.hash },
+          blocks: [block.toObject()],
+          accountStates: Array.from(execution.accountStates, ([address, state]) => ({ address, state })),
+          cumulativeDifficulty: newCumulative,
+          mempoolAdditions: [],
+          mempoolRemovals,
+        });
       });
     } catch (error) {
       if (error instanceof StaleChainTipError) {
@@ -636,9 +655,11 @@ export class Blockchain extends EventEmitter {
 
     const expectedCumulativeDifficulty = await this.storage.getCumulativeDifficulty();
     let candidateCumulativeDifficulty = 0n;
+    const candidateTransactionHashes = new Set<string>();
     for (let height = 0; height <= commonAncestorHeight; height++) {
       const block = await this.storage.getBlock(height);
       if (!block) return false;
+      for (const transaction of block.transactions) candidateTransactionHashes.add(transaction.hash);
       candidateCumulativeDifficulty += calculateBlockWork(block.difficulty);
     }
 
@@ -657,6 +678,10 @@ export class Blockchain extends EventEmitter {
       if (!structureValidation.valid) return false;
       const sizeValidation = blockClass.validateSize(this.config.maxBlockSize);
       if (!sizeValidation.valid) return false;
+      for (const transaction of block.transactions) {
+        if (candidateTransactionHashes.has(transaction.hash)) return false;
+        candidateTransactionHashes.add(transaction.hash);
+      }
 
       const previousBlock = i === 0 ? ancestor : newBlocks[i - 1];
       if (!blockClass.validatePreviousBlock(BlockClass.fromObject(previousBlock)).valid) return false;
@@ -701,13 +726,18 @@ export class Blockchain extends EventEmitter {
     }
 
     try {
-      await this.storage.transitionCanonicalChain({
-        expectedTip: { height: expectedTip.index, hash: expectedTip.hash },
-        expectedCumulativeDifficulty,
-        ancestor: { height: ancestor.index, hash: ancestor.hash },
-        blocks: newBlocks,
-        accountStates: Array.from(accountStates, ([address, state]) => ({ address, state })),
-        cumulativeDifficulty: candidateCumulativeDifficulty,
+      await this.storage.withStateWrite(async () => {
+        const mempoolUpdate = await this.prepareReorgMempoolUpdate(removedBlocks, newBlocks, accountStates);
+        await this.storage.transitionCanonicalChain({
+          expectedTip: { height: expectedTip.index, hash: expectedTip.hash },
+          expectedCumulativeDifficulty,
+          ancestor: { height: ancestor.index, hash: ancestor.hash },
+          blocks: newBlocks,
+          accountStates: Array.from(accountStates, ([address, state]) => ({ address, state })),
+          cumulativeDifficulty: candidateCumulativeDifficulty,
+          mempoolAdditions: mempoolUpdate.additions,
+          mempoolRemovals: mempoolUpdate.removals,
+        });
       });
     } catch (error) {
       if (error instanceof StaleChainTipError) {
@@ -726,6 +756,113 @@ export class Blockchain extends EventEmitter {
     for (const block of newBlocks) this.emitCommitted('block:added', BlockClass.fromObject(block));
     logger.info(`Chain reorganization completed, new height=${this.currentHeight}`);
     return true;
+  }
+
+  private async prepareExtensionMempoolRemovals(
+    accountStates: ReadonlyMap<string, AccountState>,
+    confirmedHashes: string[]
+  ): Promise<string[]> {
+    const removals = new Set(confirmedHashes);
+    const bySender = new Map<string, PersistedMempoolEntry[]>();
+    for (const entry of await this.storage.getMempoolEntries()) {
+      const sender = entry.transaction.from;
+      if (!sender || removals.has(entry.transaction.hash)) continue;
+      const queue = bySender.get(sender) ?? [];
+      queue.push(entry);
+      bySender.set(sender, queue);
+    }
+    for (const [sender, queue] of bySender) {
+      queue.sort((a, b) =>
+        a.transaction.nonce - b.transaction.nonce ||
+        a.addedAt - b.addedAt ||
+        a.transaction.hash.localeCompare(b.transaction.hash)
+      );
+      let { balance, nonce } = accountStates.get(sender) ?? { balance: 0n, nonce: 0 };
+      for (const entry of queue) {
+        const transaction = TransactionClass.fromObject(entry.transaction);
+        const validation = transaction.validateAgainstAccount(balance, nonce);
+        if (!validation.valid) {
+          removals.add(transaction.hash);
+          continue;
+        }
+        balance -= transaction.amount + transaction.fee;
+        nonce++;
+      }
+    }
+    return [...removals];
+  }
+
+  private async prepareReorgMempoolUpdate(
+    removedBlocks: Block[],
+    addedBlocks: Block[],
+    accountStates: ReadonlyMap<string, AccountState>
+  ): Promise<{ additions: PersistedMempoolEntry[]; removals: string[] }> {
+    const policy = this.storage.getMempoolPolicy() ?? {
+      ...DEFAULT_MEMPOOL_LIMITS,
+      minFeePerByte: this.config.minFeePerByte,
+    };
+    const confirmed = new Set(addedBlocks.flatMap(block => block.transactions.map(tx => tx.hash)));
+    const persisted = await this.storage.getMempoolEntries();
+    const persistedHashes = new Set(persisted.map(entry => entry.transaction.hash));
+    const candidates = persisted.filter(entry => !confirmed.has(entry.transaction.hash));
+    let addedAt = Date.now();
+    for (const transaction of removedBlocks.flatMap(block => block.transactions)) {
+      if (transaction.from === null || confirmed.has(transaction.hash) || persistedHashes.has(transaction.hash)) continue;
+      candidates.push({ transaction, addedAt: addedAt++ });
+    }
+
+    const bySender = new Map<string, PersistedMempoolEntry[]>();
+    for (const entry of candidates) {
+      const sender = entry.transaction.from;
+      if (!sender) continue;
+      const queue = bySender.get(sender) ?? [];
+      queue.push(entry);
+      bySender.set(sender, queue);
+    }
+
+    const additions: PersistedMempoolEntry[] = [];
+    const validEntries: MempoolEntry[] = [];
+    const removals = new Set(confirmed);
+    for (const [sender, queue] of [...bySender].sort(([a], [b]) => a.localeCompare(b))) {
+      queue.sort((a, b) =>
+        a.transaction.nonce - b.transaction.nonce ||
+        a.addedAt - b.addedAt ||
+        a.transaction.hash.localeCompare(b.transaction.hash)
+      );
+      let { balance, nonce } = accountStates.get(sender) ?? { balance: 0n, nonce: 0 };
+      for (const entry of queue) {
+        const transaction = TransactionClass.fromObject(entry.transaction);
+        const structure = transaction.validate(this.config.chainId, this.config.addressPrefix);
+        const account = transaction.validateAgainstAccount(balance, nonce);
+        const size = transaction.getSize();
+        const policyValid =
+          size <= policy.maxTransactionSize &&
+          transaction.fee / BigInt(size) >= policy.minFeePerByte;
+        const valid = structure.valid && account.valid && policyValid && await transaction.verify();
+        if (!valid) {
+          if (persistedHashes.has(transaction.hash)) removals.add(transaction.hash);
+          continue;
+        }
+        balance -= transaction.amount + transaction.fee;
+        nonce++;
+        validEntries.push({
+          transaction: entry.transaction,
+          addedAt: entry.addedAt,
+          size,
+          feePerByte: transaction.fee / BigInt(size),
+        });
+        if (!persistedHashes.has(transaction.hash)) additions.push(entry);
+      }
+    }
+    for (const hash of selectMempoolLimitRemovals(
+      validEntries,
+      policy.maxSize,
+      policy.maxSizeBytes
+    )) removals.add(hash);
+    return {
+      additions: additions.filter(entry => !removals.has(entry.transaction.hash)),
+      removals: [...removals],
+    };
   }
   
   /**
@@ -804,6 +941,7 @@ export class Blockchain extends EventEmitter {
 
     // get block reward
     const blockReward = this.getBlockReward(height);
+    const timestamp = Math.max(Date.now(), previousBlock.timestamp + 1);
 
     // create coinbase transaction
     const coinbase = createCoinbaseTransaction(
@@ -811,7 +949,7 @@ export class Blockchain extends EventEmitter {
       minerAddress,
       blockReward,
       totalFees,
-      Date.now()
+      timestamp
     );
 
     // get difficulty
@@ -823,7 +961,7 @@ export class Blockchain extends EventEmitter {
       transactions: [coinbase.toObject(), ...transactions],
       difficulty,
       coinbaseValue: blockReward + totalFees,
-      timestamp: Date.now()
+      timestamp
     };
   }
 

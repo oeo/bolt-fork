@@ -6,7 +6,7 @@ import { NETWORK_MAGIC } from '../constants';
 const logger = getLogger(__filename);
 
 // protocol version
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 // message types
 export enum MessageType {

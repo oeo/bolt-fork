@@ -161,19 +161,21 @@ export class MiningService extends EventEmitter {
         totalFees += tx.fee;
       }
       
+      const timestamp = Math.max(Date.now(), previousBlock.timestamp + 1);
+
       // create coinbase
       const coinbase = createCoinbaseTransaction(
         chainConfig.chainId,
         this.minerAddress,
         blockReward,
         totalFees,
-        Date.now()
+        timestamp
       );
       
       // create block
       const block = new BlockClass(
         height,
-        Date.now(),
+        timestamp,
         previousBlock.hash,
         [coinbase.toObject(), ...transactions],
         difficulty,

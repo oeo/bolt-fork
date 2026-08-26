@@ -36,7 +36,12 @@ export async function executeBlock(
 
   const fees = transactions.slice(1).reduce((total, transaction) => total + transaction.fee, 0n);
   const coinbase = transactions[0];
-  if (coinbase.amount !== blockReward + fees || coinbase.fee !== 0n || coinbase.nonce !== 0) {
+  if (
+    coinbase.amount !== blockReward + fees ||
+    coinbase.fee !== 0n ||
+    coinbase.nonce !== 0 ||
+    coinbase.timestamp !== block.timestamp
+  ) {
     throw new Error('Invalid coinbase transaction');
   }
 

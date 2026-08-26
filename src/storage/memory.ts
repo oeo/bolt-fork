@@ -1,4 +1,10 @@
-import { CanonicalTransition, StaleChainTipError, StorageAdapter } from './adapter';
+import {
+  CanonicalTransition,
+  MempoolUpdate,
+  PersistedMempoolEntry,
+  StaleChainTipError,
+  StorageAdapter,
+} from './adapter';
 import { Block, Transaction, AccountState } from '../types';
 import { getLogger } from '../utils/logger';
 
@@ -14,7 +20,7 @@ export class MemoryAdapter extends StorageAdapter {
   private accounts: Map<string, AccountState> = new Map();
   private transactions: Map<string, Transaction> = new Map();
   private txByAddress: Map<string, Set<string>> = new Map();
-  private mempool: Map<string, Transaction> = new Map();
+  private mempool: Map<string, PersistedMempoolEntry> = new Map();
   private metadata: Map<string, any> = new Map();
   private latestBlock: Block | null = null;
   private chainHeight: number = -1;
@@ -94,6 +100,8 @@ export class MemoryAdapter extends StorageAdapter {
     blocks,
     accountStates,
     cumulativeDifficulty,
+    mempoolAdditions = [],
+    mempoolRemovals = [],
   }: CanonicalTransition): Promise<void> {
     this.checkConnection();
     if (cumulativeDifficulty < 0n) throw new Error('Invalid cumulative difficulty');
@@ -140,6 +148,7 @@ export class MemoryAdapter extends StorageAdapter {
     const nextTxByAddress = new Map<string, Set<string>>();
     for (const block of nextBlocks.values()) {
       for (const tx of block.transactions) {
+        if (nextTransactions.has(tx.hash)) throw new Error(`Duplicate confirmed transaction: ${tx.hash}`);
         nextTransactions.set(tx.hash, tx);
         if (tx.from) {
           if (!nextTxByAddress.has(tx.from)) nextTxByAddress.set(tx.from, new Set());
@@ -157,14 +166,23 @@ export class MemoryAdapter extends StorageAdapter {
     }
 
     const finalHeight = blocks.at(-1)?.index ?? ancestor.height;
+    const nextMempool = new Map(this.mempool);
+    for (const hash of mempoolRemovals) nextMempool.delete(hash);
+    for (const entry of mempoolAdditions) {
+      nextMempool.set(entry.transaction.hash, structuredClone(entry));
+    }
     this.blocks = nextBlocks;
     this.blockHashes = nextBlockHashes;
     this.transactions = nextTransactions;
     this.txByAddress = nextTxByAddress;
     this.accounts = nextAccounts;
+    this.mempool = nextMempool;
     this.chainHeight = finalHeight;
     this.latestBlock = nextBlocks.get(finalHeight) ?? null;
     this.cumulativeDifficulty = cumulativeDifficulty;
+    for (const error of this.publishCanonicalMempoolUpdate(mempoolAdditions, mempoolRemovals)) {
+      logger.error('Canonical mempool listener failed', error);
+    }
   }
   
   async getBlock(height: number): Promise<Block | null> {
@@ -279,20 +297,65 @@ export class MemoryAdapter extends StorageAdapter {
   // mempool operations
   
   async addToMempool(tx: Transaction): Promise<void> {
-    this.checkConnection();
-    this.mempool.set(tx.hash, tx);
-    logger.debug(`Added transaction ${tx.hash} to mempool`);
+    const latest = await this.getLatestBlock();
+    return this.updateMempool({
+      expectedTip: { height: this.chainHeight, hash: latest?.hash ?? null },
+      additions: [{ transaction: tx, addedAt: Date.now() }],
+      removals: [],
+    });
   }
   
   async removeFromMempool(txHash: string): Promise<void> {
-    this.checkConnection();
-    this.mempool.delete(txHash);
-    logger.debug(`Removed transaction ${txHash} from mempool`);
+    const latest = await this.getLatestBlock();
+    return this.updateMempool({
+      expectedTip: { height: this.chainHeight, hash: latest?.hash ?? null },
+      additions: [],
+      removals: [txHash],
+    });
   }
   
   async getMempoolTransactions(): Promise<Transaction[]> {
     this.checkConnection();
-    return Array.from(this.mempool.values());
+    return Array.from(this.mempool.values(), entry => structuredClone(entry.transaction));
+  }
+
+  async getMempoolEntries(): Promise<PersistedMempoolEntry[]> {
+    this.checkConnection();
+    return Array.from(this.mempool.values(), entry => structuredClone(entry));
+  }
+
+  async getMempoolAdmissionState(address: string) {
+    this.checkConnection();
+    return {
+      tip: { height: this.chainHeight, hash: this.latestBlock?.hash ?? null },
+      accountState: this.accounts.has(address) ? { ...this.accounts.get(address)! } : null,
+    };
+  }
+
+  async updateMempool({ expectedTip, additions, removals }: MempoolUpdate): Promise<void> {
+    this.checkConnection();
+    const actualTip = { height: this.chainHeight, hash: this.latestBlock?.hash ?? null };
+    if (actualTip.height !== expectedTip.height || actualTip.hash !== expectedTip.hash) {
+      throw new StaleChainTipError(actualTip);
+    }
+    const next = new Map(this.mempool);
+    for (const hash of removals) next.delete(hash);
+    for (const entry of additions) {
+      if (next.has(entry.transaction.hash)) {
+        throw new Error(`Transaction ${entry.transaction.hash} already in storage mempool`);
+      }
+      if (
+        entry.transaction.from &&
+        Array.from(next.values()).some(existing =>
+          existing.transaction.from === entry.transaction.from &&
+          existing.transaction.nonce === entry.transaction.nonce
+        )
+      ) {
+        throw new Error(`Nonce ${entry.transaction.nonce} already in storage mempool`);
+      }
+      next.set(entry.transaction.hash, structuredClone(entry));
+    }
+    this.mempool = next;
   }
   
   async clearMempool(): Promise<void> {

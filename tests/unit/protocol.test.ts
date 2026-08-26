@@ -20,7 +20,7 @@ describe('network protocol', () => {
 
   describe('message serialization', () => {
     it('should use the chain-bound protocol version', () => {
-      expect(PROTOCOL_VERSION).toBe(3);
+      expect(PROTOCOL_VERSION).toBe(4);
     });
 
     it('should serialize and deserialize messages with correct header', () => {

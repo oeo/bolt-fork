@@ -358,7 +358,7 @@ describe('Full Blockchain Flow Integration', () => {
       
       const block = new BlockClass(
         template.height,
-        template.timestamp + blockNum + 1,
+        template.timestamp,
         template.previousHash,
         template.transactions, // already includes coinbase
         template.difficulty,

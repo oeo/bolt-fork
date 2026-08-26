@@ -8,7 +8,6 @@ resolved audit findings:
 
 - [x] bind transaction public keys to sender addresses
 - [x] require exactly one coinbase transaction at index zero
-- [x] enforce consensus block size limits
 - [x] consolidate storage adapter contracts
 - [x] make normal block commits atomic
 - [x] restore clean typechecking
@@ -22,14 +21,16 @@ resolved audit findings:
 - [x] restrict consensus proof of work to sha-256
 - [x] make extension and reorganization expected-tip atomic transitions
 - [x] serialize canonical block admission
+- [x] validate mempool transactions against canonical and pending account state
+- [x] persist confirmed transaction indexes and mempool lifecycle state
+- [x] make block-template payout, state root, and submission results authoritative
 
 open release gates:
 
+- [ ] enforce byte-accurate consensus block size limits
 - [ ] bind peer handshakes and traffic to chain identity
-- [ ] validate mempool transactions against canonical and pending account state
 - [ ] authenticate and bound tcp transport
 - [ ] relay transactions and synchronize by validated cumulative work
-- [ ] persist confirmed transaction indexes and mempool lifecycle state
 - [ ] harden api input, exposure, pagination, and metric labels
 - [ ] pin deployment inputs
 - [ ] pass real multi-node deployment tests

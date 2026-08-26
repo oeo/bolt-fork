@@ -50,6 +50,11 @@ export class LMDBStateStore {
     return account;
   }
 
+  readAccount(address: string): Account | null {
+    const data = this.lmdb.accounts.get(address);
+    return data ? this.deserializeAccount(data) : null;
+  }
+
   /**
    * get or create an account
    */

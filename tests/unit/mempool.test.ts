@@ -130,6 +130,25 @@ describe('Mempool', () => {
       expect(mempool.getStats().size).toBe(1);
     });
 
+    it('should not publish a transaction when persistence fails', async () => {
+      const tx = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        bob.address,
+        1000000n,
+        0,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      storage.updateMempool = async () => {
+        throw new Error('storage failed');
+      };
+
+      await expect(mempool.addTransaction(tx)).rejects.toThrow('storage failed');
+      expect(mempool.hasTransaction(tx.hash)).toBe(false);
+      expect(mempool.getStats().bytes).toBe(0);
+    });
+
     it('should reject pending overspend', async () => {
       const first = await createSignedTransaction(
         chainConfig.chainId,
@@ -229,9 +248,141 @@ describe('Mempool', () => {
       
       await smallMempool.addTransaction(tx3);
       
-      expect(smallMempool.hasTransaction(tx1.hash)).toBe(false); // evicted
-      expect(smallMempool.hasTransaction(tx2.hash)).toBe(true);
+      expect(smallMempool.hasTransaction(tx1.hash)).toBe(true);
+      expect(smallMempool.hasTransaction(tx2.hash)).toBe(false);
       expect(smallMempool.hasTransaction(tx3.hash)).toBe(true);
+    });
+
+    it('should evict sender dependents with a lower nonce', async () => {
+      const smallMempool = new Mempool(storage, { maxSize: 2, minFeePerByte: 1n });
+      const first = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        bob.address,
+        1000000n,
+        0,
+        500n,
+        hexToBytes(alice.privateKey)
+      );
+      const dependent = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        charlie.address,
+        1000000n,
+        1,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      const incoming = await createSignedTransaction(
+        chainConfig.chainId,
+        bob.address,
+        charlie.address,
+        1000000n,
+        0,
+        2000n,
+        hexToBytes(bob.privateKey)
+      );
+      await smallMempool.addTransaction(first);
+      await smallMempool.addTransaction(dependent);
+      await smallMempool.addTransaction(incoming);
+
+      expect(smallMempool.hasTransaction(first.hash)).toBe(false);
+      expect(smallMempool.hasTransaction(dependent.hash)).toBe(false);
+      expect(smallMempool.getTransactionsForBlock()).toEqual([incoming.toObject()]);
+    });
+
+    it('should not evict ancestors required by an incoming transaction', async () => {
+      const smallMempool = new Mempool(storage, { maxSize: 2, minFeePerByte: 1n });
+      const transactions = await Promise.all([0, 1, 2].map((nonce) => createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        bob.address,
+        1000000n,
+        nonce,
+        BigInt(500 + nonce * 1000),
+        hexToBytes(alice.privateKey)
+      )));
+      await smallMempool.addTransaction(transactions[0]);
+      await smallMempool.addTransaction(transactions[1]);
+
+      await expect(smallMempool.addTransaction(transactions[2])).rejects.toThrow('Mempool size limit');
+      expect(smallMempool.getTransactions().map(tx => tx.hash)).toEqual([
+        transactions[0].hash,
+        transactions[1].hash,
+      ]);
+    });
+  });
+
+  describe('initialize', () => {
+    it('preserves persisted transaction age', async () => {
+      const tx = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        bob.address,
+        1000000n,
+        0,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      const dependent = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        charlie.address,
+        1000000n,
+        1,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      await storage.updateMempool({
+        expectedTip: { height: -1, hash: null },
+        additions: [
+          { transaction: tx.toObject(), addedAt: Date.now() - 2000 },
+          { transaction: dependent.toObject(), addedAt: Date.now() },
+        ],
+        removals: [],
+      });
+      const restored = new Mempool(storage, { minFeePerByte: 1n, maxTransactionAge: 1000 });
+      await restored.initialize();
+
+      expect(restored.getTransactionsForBlock()).toEqual([]);
+      expect(await storage.isInMempool(tx.hash)).toBe(false);
+      expect(await storage.isInMempool(dependent.hash)).toBe(false);
+    });
+
+    it('prunes sender suffixes rejected by current policy', async () => {
+      const first = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        bob.address,
+        1000000n,
+        0,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      const dependent = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        charlie.address,
+        1000000n,
+        1,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      await storage.updateMempool({
+        expectedTip: { height: -1, hash: null },
+        additions: [first, dependent].map(transaction => ({
+          transaction: transaction.toObject(),
+          addedAt: Date.now(),
+        })),
+        removals: [],
+      });
+
+      const restored = new Mempool(storage, { minFeePerByte: 3n });
+      await restored.initialize();
+
+      expect(restored.getTransactions()).toEqual([]);
+      expect(await storage.isInMempool(first.hash)).toBe(false);
+      expect(await storage.isInMempool(dependent.hash)).toBe(false);
     });
   });
   
@@ -252,6 +403,35 @@ describe('Mempool', () => {
       
       await mempool.removeTransaction(tx.hash);
       expect(mempool.hasTransaction(tx.hash)).toBe(false);
+    });
+
+    it('should remove nonce descendants with their parent', async () => {
+      const parent = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        bob.address,
+        1000000n,
+        0,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      const dependent = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        charlie.address,
+        1000000n,
+        1,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      await mempool.addTransaction(parent);
+      await mempool.addTransaction(dependent);
+
+      await mempool.removeTransaction(parent.hash);
+
+      expect(mempool.hasTransaction(parent.hash)).toBe(false);
+      expect(mempool.hasTransaction(dependent.hash)).toBe(false);
+      expect(await storage.isInMempool(dependent.hash)).toBe(false);
     });
     
     it('should handle removing non-existent transaction', async () => {
@@ -342,6 +522,45 @@ describe('Mempool', () => {
       
       expect(txs.length).toBe(1);
       expect(txs[0].hash).toBe(tx2.hash); // higher fee transaction
+    });
+
+    it('should only compare executable sender heads by fee', async () => {
+      const first = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        bob.address,
+        1000000n,
+        0,
+        500n,
+        hexToBytes(alice.privateKey)
+      );
+      const dependent = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        charlie.address,
+        1000000n,
+        1,
+        5000n,
+        hexToBytes(alice.privateKey)
+      );
+      const independent = await createSignedTransaction(
+        chainConfig.chainId,
+        bob.address,
+        charlie.address,
+        1000000n,
+        0,
+        1000n,
+        hexToBytes(bob.privateKey)
+      );
+      await mempool.addTransaction(first);
+      await mempool.addTransaction(dependent);
+      await mempool.addTransaction(independent);
+
+      expect(mempool.getTransactionsForBlock().map(tx => tx.hash)).toEqual([
+        independent.hash,
+        first.hash,
+        dependent.hash,
+      ]);
     });
   });
   
@@ -446,8 +665,18 @@ describe('Mempool', () => {
         1000n,
         hexToBytes(alice.privateKey)
       );
-      
+      const tx2 = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        charlie.address,
+        1000000n,
+        1,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+
       await mempool.addTransaction(tx1);
+      await mempool.addTransaction(tx2);
       
       // mock state functions
       const getBalance = async (address: string) => 10000000n; // sufficient balance
@@ -456,6 +685,48 @@ describe('Mempool', () => {
       await mempool.validateAgainstState(getBalance, getNonce);
       
       expect(mempool.hasTransaction(tx1.hash)).toBe(true);
+      expect(mempool.hasTransaction(tx2.hash)).toBe(true);
+    });
+
+    it('should serialize validation with descendant admission', async () => {
+      const tx1 = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        bob.address,
+        1_000_000n,
+        0,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      const tx2 = await createSignedTransaction(
+        chainConfig.chainId,
+        alice.address,
+        charlie.address,
+        1_000_000n,
+        1,
+        1000n,
+        hexToBytes(alice.privateKey)
+      );
+      await mempool.addTransaction(tx1);
+
+      let startValidation!: () => void;
+      let finishValidation!: () => void;
+      const validationStarted = new Promise<void>(resolve => startValidation = resolve);
+      const validationCanFinish = new Promise<void>(resolve => finishValidation = resolve);
+      const validation = mempool.validateAgainstState(async () => {
+        startValidation();
+        await validationCanFinish;
+        return 0n;
+      }, async () => 0);
+
+      await validationStarted;
+      const admission = mempool.addTransaction(tx2);
+      finishValidation();
+      await validation;
+
+      await expect(admission).rejects.toThrow('Invalid nonce');
+      expect(mempool.hasTransaction(tx1.hash)).toBe(false);
+      expect(mempool.hasTransaction(tx2.hash)).toBe(false);
     });
   });
   
@@ -473,12 +744,12 @@ describe('Mempool', () => {
       
       const tx2 = await createSignedTransaction(
         chainConfig.chainId,
-        bob.address,
+        alice.address,
         charlie.address,
         2000000n,
-        0,
+        1,
         2000n,
-        hexToBytes(bob.privateKey)
+        hexToBytes(alice.privateKey)
       );
       
       await mempool.addTransaction(tx1);

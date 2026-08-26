@@ -134,6 +134,7 @@ class BoltIPFSNode {
     
     // create mempool
     this.mempool = new Mempool(this.storage, chainConfig);
+    await this.mempool.initialize();
     logger.info('Mempool initialized');
     
     // determine network mode
@@ -189,7 +190,7 @@ class BoltIPFSNode {
   
   private setupBlockchainHandlers(): void {
     // record metrics for ALL blocks added to the chain, regardless of source
-    this.blockchain.on('blockAdded', async (block) => {
+    this.blockchain.on('block:added', async (block) => {
       try {
         const blockSize = serialize(block).length;
         

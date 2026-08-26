@@ -40,9 +40,11 @@ const TEMPLATE_CONFIG = {
 interface LongpollSubscription {
   longpollId: string;
   templateId: string;
+  payoutAddress: string;
   timestamp: number;
   resolve: (template: BlockTemplate) => void;
   timeout: NodeJS.Timeout;
+  onChainChange: () => void;
 }
 
 export class GetBlockTemplateService {
@@ -72,14 +74,14 @@ export class GetBlockTemplateService {
     // check for existing valid template
     const existing = await this.getCurrentTemplate(request.payoutAddress);
     
-    // handle longpoll request
-    if (request.longpollId && existing) {
-      return this.handleLongpoll(request.longpollId, existing);
-    }
-    
     // generate new template if needed
     if (!existing || await this.shouldRefreshTemplate(existing)) {
       return this.generateNewTemplate(request.payoutAddress);
+    }
+
+    // handle longpoll request
+    if (request.longpollId) {
+      return this.handleLongpoll(request.longpollId, existing);
     }
     
     return existing;
@@ -91,6 +93,9 @@ export class GetBlockTemplateService {
     const template = await this.getTemplate(submission.templateId);
     if (!template) {
       return { valid: false, error: 'Template not found or expired' };
+    }
+    if (submission.timestamp !== undefined && submission.timestamp !== template.timestamp) {
+      return { valid: false, error: 'Submission timestamp does not match template' };
     }
     
     // reconstruct block from template and submission
@@ -105,28 +110,25 @@ export class GetBlockTemplateService {
       return { valid: false, error: 'Invalid proof of work' };
     }
     
-    // submit to blockchain
+    let result;
     try {
-      const result = await this.blockchain.addBlock(block);
-      if (!result.valid) return result;
-      await this.mempool.removeBlockTransactions(template.transactions);
-      await this.invalidateAllTemplates();
-      return result;
+      result = await this.blockchain.addBlock(block);
     } catch (error: any) {
       return { valid: false, error: error.message };
     }
+    return result;
   }
   
   // template generation
   private async generateNewTemplate(payoutAddress: string): Promise<BlockTemplate> {
-    const height = await this.blockchain.getHeight();
     const previousBlock = await this.blockchain.getLatestBlock();
-    const difficulty = await this.blockchain.getDifficulty();
     const chainConfig = this.blockchain.getChainConfig();
     
     if (!previousBlock) {
       throw new Error('No previous block found');
     }
+    const height = previousBlock.index + 1;
+    const difficulty = await this.blockchain.getDifficulty(height);
     
     // get transactions from mempool
     const transactions = this.mempool.getTransactionsForBlock();
@@ -135,10 +137,10 @@ export class GetBlockTemplateService {
     const totalFees = transactions.reduce((sum, tx) => sum + (tx.fee || 0n), 0n);
     
     // calculate block reward
-    const blockReward = this.blockchain.calculateBlockReward(height + 1);
+    const blockReward = this.blockchain.calculateBlockReward(height);
     
     // create coinbase transaction
-    const timestamp = Date.now();
+    const timestamp = Math.max(Date.now(), previousBlock.timestamp + 1);
     const coinbaseTransaction = createCoinbaseTransaction(
       chainConfig.chainId,
       payoutAddress,
@@ -148,7 +150,7 @@ export class GetBlockTemplateService {
     ).toObject();
     const allTransactions = [coinbaseTransaction, ...transactions];
     const candidate = new BlockClass(
-      height + 1,
+      height,
       timestamp,
       previousBlock.hash,
       allTransactions,
@@ -177,7 +179,7 @@ export class GetBlockTemplateService {
       expiresAt: Date.now() + TEMPLATE_CONFIG.defaultExpiryMs,
       
       version: 1,
-      height: height + 1,
+      height,
       previousHash: previousBlock.hash,
       merkleRootPlaceholder: candidate.merkleRoot,
       stateRoot: candidate.stateRoot,
@@ -201,8 +203,13 @@ export class GetBlockTemplateService {
       submitOld: false
     };
     
-    // store in storage
-    await this.storeTemplate(template);
+    let stale = false;
+    await this.storage.withStateWrite(async () => {
+      const currentTip = await this.blockchain.getLatestBlock();
+      stale = !currentTip || currentTip.index !== previousBlock.index || currentTip.hash !== previousBlock.hash;
+      if (!stale) await this.storeTemplate(template);
+    });
+    if (stale) return this.generateNewTemplate(payoutAddress);
     
     // notify longpoll subscribers
     this.notifyLongpollSubscribers(template);
@@ -241,6 +248,11 @@ export class GetBlockTemplateService {
   private async shouldRefreshTemplate(template: BlockTemplate): Promise<boolean> {
     // check if expired
     if (Date.now() > template.expiresAt) {
+      return true;
+    }
+
+    const tip = await this.blockchain.getLatestBlock();
+    if (!tip || template.height !== tip.index + 1 || template.previousHash !== tip.hash) {
       return true;
     }
     
@@ -344,22 +356,52 @@ export class GetBlockTemplateService {
       await this.updateLongpollId(longpollId, currentTemplate.templateId);
       return currentTemplate;
     }
+
+    const active = this.activeSubscriptions.get(longpollId);
+    if (active) {
+      clearTimeout(active.timeout);
+      this.blockchain.off('block:added', active.onChainChange);
+      this.activeSubscriptions.delete(longpollId);
+      active.resolve(currentTemplate);
+    }
     
     // template unchanged, set up longpoll subscription
     return new Promise((resolve) => {
-      const subscription: LongpollSubscription = {
+      let subscription!: LongpollSubscription;
+      const finish = (template: BlockTemplate): void => {
+        if (this.activeSubscriptions.get(longpollId) !== subscription) return;
+        clearTimeout(subscription.timeout);
+        this.blockchain.off('block:added', subscription.onChainChange);
+        this.activeSubscriptions.delete(longpollId);
+        resolve(template);
+      };
+      let refreshing = false;
+      const onChainChange = (): void => {
+        if (refreshing) return;
+        refreshing = true;
+        void this.getBlockTemplate({ payoutAddress: currentTemplate.coinbaseTransaction.to })
+          .then(finish)
+          .catch(error => {
+            refreshing = false;
+            logger.error('Failed to refresh longpoll after chain change', { error });
+          });
+      };
+      subscription = {
         longpollId,
         templateId: currentTemplate.templateId,
+        payoutAddress: currentTemplate.coinbaseTransaction.to,
         timestamp: Date.now(),
         resolve,
         timeout: setTimeout(() => {
-          // timeout reached, return current template
-          this.activeSubscriptions.delete(longpollId);
-          resolve(currentTemplate);
-        }, TEMPLATE_CONFIG.longpollTimeoutMs)
+          void this.getBlockTemplate({ payoutAddress: currentTemplate.coinbaseTransaction.to })
+            .then(finish)
+            .catch(() => finish(currentTemplate));
+        }, TEMPLATE_CONFIG.longpollTimeoutMs),
+        onChainChange,
       };
       
       this.activeSubscriptions.set(longpollId, subscription);
+      this.blockchain.on('block:added', onChainChange);
     });
   }
   
@@ -375,7 +417,9 @@ export class GetBlockTemplateService {
   // notify longpoll subscribers of new template
   private notifyLongpollSubscribers(newTemplate: BlockTemplate): void {
     for (const [longpollId, subscription] of this.activeSubscriptions) {
+      if (subscription.payoutAddress !== newTemplate.coinbaseTransaction.to) continue;
       clearTimeout(subscription.timeout);
+      this.blockchain.off('block:added', subscription.onChainChange);
       subscription.resolve(newTemplate);
       this.activeSubscriptions.delete(longpollId);
     }
@@ -408,7 +452,7 @@ export class GetBlockTemplateService {
   private reconstructBlock(template: BlockTemplate, submission: BlockSubmission): BlockClass {
     const block = new BlockClass(
       template.height,
-      submission.timestamp || template.timestamp,
+      template.timestamp,
       template.previousHash,
       [template.coinbaseTransaction, ...template.transactions],
       template.difficulty,
@@ -473,27 +517,27 @@ export class GetBlockTemplateService {
   
   // cleanup expired templates
   private async cleanupExpiredTemplates(): Promise<void> {
-    const now = Date.now();
-    
-    // get all active templates
-    const activeTemplates = await this.storage.getSetMembers(TEMPLATE_KEYS.activeTemplates);
-    
-    for (const templateId of activeTemplates) {
-      const template = await this.getTemplate(templateId);
-      
-      if (!template || now > template.expiresAt) {
-        // remove expired template
-        await this.storage.deleteCustomData(TEMPLATE_KEYS.template(templateId));
-        await this.storage.removeFromSet(TEMPLATE_KEYS.activeTemplates, templateId);
-        if (template) {
-          await this.storage.deleteCustomData(
-            TEMPLATE_KEYS.currentTemplate(template.coinbaseTransaction.to)
-          );
+    await this.storage.withStateWrite(async () => {
+      const now = Date.now();
+      const activeTemplates = await this.storage.getSetMembers(TEMPLATE_KEYS.activeTemplates);
+
+      for (const templateId of activeTemplates) {
+        const template = await this.getTemplate(templateId);
+
+        if (!template || now > template.expiresAt) {
+          await this.storage.deleteCustomData(TEMPLATE_KEYS.template(templateId));
+          await this.storage.removeFromSet(TEMPLATE_KEYS.activeTemplates, templateId);
+          if (template) {
+            const currentKey = TEMPLATE_KEYS.currentTemplate(template.coinbaseTransaction.to);
+            if (await this.storage.getCustomData(currentKey) === templateId) {
+              await this.storage.deleteCustomData(currentKey);
+            }
+          }
+
+          logger.debug('Cleaned up expired template', { templateId });
         }
-        
-        logger.debug('Cleaned up expired template', { templateId });
       }
-    }
+    });
   }
   
   // start cleanup scheduler
@@ -541,20 +585,23 @@ export class GetBlockTemplateService {
   
   // invalidate all templates
   private async invalidateAllTemplates(): Promise<void> {
-    const activeTemplates = await this.storage.getSetMembers(TEMPLATE_KEYS.activeTemplates);
-    
-    for (const templateId of activeTemplates) {
-      const template = await this.getTemplate(templateId);
-      if (template) {
-        await this.storage.deleteCustomData(
-          TEMPLATE_KEYS.currentTemplate(template.coinbaseTransaction.to)
-        );
+    await this.storage.withStateWrite(async () => {
+      const activeTemplates = await this.storage.getSetMembers(TEMPLATE_KEYS.activeTemplates);
+
+      for (const templateId of activeTemplates) {
+        const template = await this.getTemplate(templateId);
+        if (template) {
+          const currentKey = TEMPLATE_KEYS.currentTemplate(template.coinbaseTransaction.to);
+          if (await this.storage.getCustomData(currentKey) === templateId) {
+            await this.storage.deleteCustomData(currentKey);
+          }
+        }
+        await this.storage.deleteCustomData(TEMPLATE_KEYS.template(templateId));
       }
-      await this.storage.deleteCustomData(TEMPLATE_KEYS.template(templateId));
-    }
-    
-    await this.storage.deleteCustomData(TEMPLATE_KEYS.activeTemplates);
-    
+
+      await this.storage.deleteCustomData(TEMPLATE_KEYS.activeTemplates);
+    });
+
     logger.info('Invalidated all templates');
   }
   
@@ -571,6 +618,7 @@ export class GetBlockTemplateService {
     // clear all longpoll subscriptions
     for (const [longpollId, subscription] of this.activeSubscriptions) {
       clearTimeout(subscription.timeout);
+      this.blockchain.off('block:added', subscription.onChainChange);
       this.activeSubscriptions.delete(longpollId);
     }
     

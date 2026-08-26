@@ -12,7 +12,37 @@ export interface CanonicalTransition {
   blocks: Block[];
   accountStates: Array<{ address: string; state: AccountState }>;
   cumulativeDifficulty: bigint;
+  mempoolAdditions: PersistedMempoolEntry[];
+  mempoolRemovals: string[];
 }
+
+export interface PersistedMempoolEntry {
+  transaction: Transaction;
+  addedAt: number;
+}
+
+export interface MempoolAdmissionState {
+  tip: ChainPoint;
+  accountState: AccountState | null;
+}
+
+export interface MempoolUpdate {
+  expectedTip: ChainPoint;
+  additions: PersistedMempoolEntry[];
+  removals: string[];
+}
+
+export interface MempoolPolicy {
+  maxSize: number;
+  maxSizeBytes: number;
+  maxTransactionSize: number;
+  minFeePerByte: bigint;
+}
+
+export type CanonicalMempoolListener = (
+  additions: PersistedMempoolEntry[],
+  removals: string[]
+) => void;
 
 export class StaleChainTipError extends Error {
   constructor(public readonly actualTip: ChainPoint) {
@@ -26,6 +56,51 @@ export class StaleChainTipError extends Error {
  */
 export abstract class StorageAdapter {
   protected isConnected: boolean = false;
+  private canonicalMempoolListeners = new Set<CanonicalMempoolListener>();
+  private stateWriteTail: Promise<void> = Promise.resolve();
+  private mempoolPolicy: MempoolPolicy | null = null;
+
+  setMempoolPolicy(policy: MempoolPolicy): void {
+    this.mempoolPolicy = policy;
+  }
+
+  getMempoolPolicy(): MempoolPolicy | null {
+    return this.mempoolPolicy;
+  }
+
+  onCanonicalMempoolUpdate(listener: CanonicalMempoolListener): () => void {
+    this.canonicalMempoolListeners.add(listener);
+    return () => this.canonicalMempoolListeners.delete(listener);
+  }
+
+  protected publishCanonicalMempoolUpdate(
+    additions: PersistedMempoolEntry[],
+    removals: string[]
+  ): unknown[] {
+    const errors: unknown[] = [];
+    for (const listener of this.canonicalMempoolListeners) {
+      try {
+        listener(additions, removals);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    return errors;
+  }
+
+  async withStateWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.stateWriteTail;
+    let release!: () => void;
+    this.stateWriteTail = new Promise(resolve => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
   
   /**
    * initialize the storage connection
@@ -147,6 +222,12 @@ export abstract class StorageAdapter {
    * get all mempool transactions
    */
   abstract getMempoolTransactions(): Promise<Transaction[]>;
+
+  abstract getMempoolEntries(): Promise<PersistedMempoolEntry[]>;
+
+  abstract getMempoolAdmissionState(address: string): Promise<MempoolAdmissionState>;
+
+  abstract updateMempool(update: MempoolUpdate): Promise<void>;
   
   /**
    * clear the mempool

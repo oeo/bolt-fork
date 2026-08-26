@@ -23,6 +23,8 @@ export class LMDBManager {
   public blocks!: Database;
   public blockIndex!: Database;
   public blockHeaders!: Database;
+  public confirmedTransactions!: Database;
+  public confirmedByAddress!: Database;
   
   // state databases
   public accounts!: Database;
@@ -78,6 +80,8 @@ export class LMDBManager {
     this.blockHeaders = this.env.openDB({ name: 'headers',
       compression: false,            // headers are small
     });
+    this.confirmedTransactions = this.env.openDB({ name: 'confirmed_transactions' });
+    this.confirmedByAddress = this.env.openDB({ name: 'confirmed_by_address' });
     
     // account state
     this.accounts = this.env.openDB({ name: 'accounts' });
@@ -139,6 +143,7 @@ export class LMDBManager {
         blocks: await this.blocks.getCount(),
         accounts: await this.accounts.getCount(),
         mempool: await this.mempool.getCount(),
+        confirmedTransactions: await this.confirmedTransactions.getCount(),
       },
     };
     
@@ -185,6 +190,8 @@ export class LMDBManager {
       this.blocks.clearSync();
       this.blockIndex.clearSync();
       this.blockHeaders.clearSync();
+      this.confirmedTransactions.clearSync();
+      this.confirmedByAddress.clearSync();
       this.accounts.clearSync();
       this.accountIndex.clearSync();
       this.mempool.clearSync();
