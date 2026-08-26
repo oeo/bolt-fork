@@ -8,6 +8,7 @@ resolved audit findings:
 
 - [x] bind transaction public keys to sender addresses
 - [x] require exactly one coinbase transaction at index zero
+- [x] enforce byte-accurate consensus block size limits
 - [x] consolidate storage adapter contracts
 - [x] make normal block commits atomic
 - [x] restore clean typechecking
@@ -27,7 +28,6 @@ resolved audit findings:
 
 open release gates:
 
-- [ ] enforce byte-accurate consensus block size limits
 - [ ] bind peer handshakes and traffic to chain identity
 - [ ] authenticate and bound tcp transport
 - [ ] relay transactions and synchronize by validated cumulative work

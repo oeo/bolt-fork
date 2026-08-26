@@ -329,11 +329,11 @@ export class BlockClass {
   }
   
   /**
-   * get block size in bytes (approximate)
+   * get serialized block size in bytes
    */
   getSize(): number {
     const { serialize } = require('../utils/bigint');
-    return serialize(this.toObject()).length;
+    return new TextEncoder().encode(serialize(this.toObject())).byteLength;
   }
   
   /**

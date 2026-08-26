@@ -36,7 +36,7 @@ block work is calculated from the proof-of-work target. cumulative work is the s
 
 ## limits
 
-block validation compares JSON string code-unit length with configured `maxBlockSize`; byte-accurate encoded-size enforcement remains open. `maxTransactionSize` and `minFeePerByte` govern mempool admission and reorganization restoration, not block validity.
+total UTF-8 serialized block size must not exceed configured `maxBlockSize`. `maxTransactionSize` and `minFeePerByte` govern mempool admission and reorganization restoration, not block validity.
 
 ## genesis
 

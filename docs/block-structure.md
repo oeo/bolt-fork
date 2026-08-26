@@ -84,6 +84,6 @@ transactions from another chain are invalid. transfer `from` and `to` addresses 
 
 ## size limits
 
-- block validation compares JSON string code-unit length with configured `maxBlockSize`. byte-accurate encoded-size enforcement remains open.
+- total UTF-8 serialized block size must not exceed configured `maxBlockSize`. this is a consensus rule.
 - `maxTransactionSize` defaults to 100,000 bytes. this is mempool policy, not a block validity rule.
 - `minFeePerByte` is configured per network. this is mempool policy, not a block validity rule.

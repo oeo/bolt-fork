@@ -4,6 +4,7 @@ import { Transaction } from '../../src/types';
 import { calculateStateRoot } from '../../src/core/block-executor';
 import { calculateTransactionHash } from '../../src/crypto/signature';
 import { config as chainConfig } from '../../src/config/chain';
+import { serialize } from '../../src/utils/bigint';
 
 describe('Block Class', () => {
   let genesis: BlockClass;
@@ -209,6 +210,22 @@ describe('Block Class', () => {
       const result = block.validateSize(99);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('too large');
+    });
+
+    it('should measure serialized UTF-8 bytes', () => {
+      const block = new BlockClass(
+        1,
+        Date.now(),
+        genesis.hash,
+        [],
+        1,
+        '⚡'.repeat(100)
+      );
+      const size = new TextEncoder().encode(serialize(block.toObject())).byteLength;
+
+      expect(block.getSize()).toBe(size);
+      expect(block.validateSize(size).valid).toBe(true);
+      expect(block.validateSize(size - 1).valid).toBe(false);
     });
   });
   
