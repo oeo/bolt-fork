@@ -100,7 +100,7 @@ class BoltIPFSNode {
     }
     
     // load or create node identity
-    this.identity = new IdentityManager(this.config.dataDir);
+    this.identity = new IdentityManager(this.config.dataDir, chainConfig.addressPrefix);
     const nodeIdentity = await this.identity.loadOrCreate();
     
     // override nodeId with address from identity
@@ -146,7 +146,7 @@ class BoltIPFSNode {
     // create network orchestrator
     this.networkOrchestrator = new NetworkOrchestrator({
       mode,
-      nodeId: this.identity.getNodeId(),
+      identity: nodeIdentity,
       blockchain: this.blockchain,
       mempool: this.mempool,
       chainConfig,
@@ -459,6 +459,11 @@ class BoltIPFSNode {
     if (this.syncService) {
       this.syncService.stop();
       logger.info('Sync service stopped');
+    }
+
+    if (this.networkOrchestrator) {
+      await this.networkOrchestrator.stop();
+      logger.info('Network services stopped');
     }
     
     // stop api

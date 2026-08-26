@@ -42,15 +42,6 @@ export interface DifficultyAdjustment {
   timestamp: number;
 }
 
-// network message types
-export interface VersionMessage {
-  version: string;
-  nodeId: string;
-  timestamp: number;
-  height: number;
-  services: string[];
-}
-
 export interface BlockAnnounce {
   block: Block;
   nodeId: string;

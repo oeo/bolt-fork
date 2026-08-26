@@ -26,7 +26,10 @@ export class TransactionRelay extends EventEmitter {
   private recentTxs: Map<string, number> = new Map(); // hash -> timestamp
   private relayQueue: Set<Transaction> = new Set();
   private relayTimer: any;
+  private cleanupTimer: any;
   private isRunning: boolean = false;
+  private mempoolHandler?: (tx: Transaction) => void;
+  private messageHandler?: (peerId: string, data: Uint8Array) => void;
   
   constructor(config: TransactionRelayConfig) {
     super();
@@ -37,25 +40,19 @@ export class TransactionRelay extends EventEmitter {
       ...config
     };
     
-    this.setupEventHandlers();
   }
   
   /**
    * setup event handlers
    */
   private setupEventHandlers(): void {
-    // listen for new transactions added to mempool
-    this.config.mempool.on('transaction:added', (tx: Transaction) => {
-      this.relayTransaction(tx);
-    });
-    
-    // handle transaction requests
-    this.config.connectionManager.on('message:received', (peerId: string, data: Uint8Array) => {
+    this.mempoolHandler = (tx: Transaction) => this.relayTransaction(tx);
+    this.messageHandler = (peerId: string, data: Uint8Array) => {
       const message = this.config.protocol.decodeMessage(data);
-      if (message && message.command === 'getdata') {
-        this.handleGetData(peerId, message.payload);
-      }
-    });
+      if (message?.command === 'getdata') this.handleGetData(peerId, message.payload);
+    };
+    this.config.mempool.on('transaction:added', this.mempoolHandler);
+    this.config.connectionManager.on('message:received', this.messageHandler);
   }
   
   /**
@@ -66,6 +63,7 @@ export class TransactionRelay extends EventEmitter {
     
     logger.info('starting transaction relay');
     this.isRunning = true;
+    this.setupEventHandlers();
     
     // start relay timer
     this.relayTimer = setInterval(() => {
@@ -73,7 +71,7 @@ export class TransactionRelay extends EventEmitter {
     }, this.config.relayInterval);
     
     // periodic cleanup of recent transactions
-    setInterval(() => {
+    this.cleanupTimer = setInterval(() => {
       this.cleanupRecentTxs();
     }, 60000); // every minute
   }
@@ -91,6 +89,14 @@ export class TransactionRelay extends EventEmitter {
       clearInterval(this.relayTimer);
       this.relayTimer = null;
     }
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    if (this.mempoolHandler) this.config.mempool.off('transaction:added', this.mempoolHandler);
+    if (this.messageHandler) this.config.connectionManager.off('message:received', this.messageHandler);
+    this.mempoolHandler = undefined;
+    this.messageHandler = undefined;
     
     this.relayQueue.clear();
     this.recentTxs.clear();

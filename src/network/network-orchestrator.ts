@@ -13,6 +13,8 @@ import type { Mempool } from '../core/mempool';
 import type { ChainConfig } from '../config/chain';
 import type { Block } from '../core/block';
 import type { Transaction } from '../core/transaction';
+import type { NodeIdentity } from '../utils/identity';
+import type { PeerEndpoint } from './peer-discovery';
 
 const logger = getLogger(__filename);
 
@@ -23,7 +25,7 @@ export enum NetworkMode {
 
 export interface NetworkOrchestratorConfig {
   mode: NetworkMode;
-  nodeId: string;
+  identity: NodeIdentity;
   blockchain: Blockchain;
   mempool: Mempool;
   chainConfig: ChainConfig;
@@ -48,6 +50,9 @@ export class NetworkOrchestrator extends EventEmitter {
   private inventoryManager?: InventoryManager;
   private orphanPool?: OrphanPool;
   private txRelay?: TransactionRelay;
+  private blockAddedHandler?: (block: Block) => void;
+  private transactionAddedHandler?: (tx: Transaction) => void;
+  private peerAnnouncementHandler?: (peer: PeerEndpoint) => void;
   
   private isRunning: boolean = false;
   
@@ -90,14 +95,15 @@ export class NetworkOrchestrator extends EventEmitter {
     if (!this.isRunning) return;
     
     logger.info('stopping network orchestrator');
+    this.cleanupTCPEventHandlers();
     
     // stop tcp services
+    if (this.connectionManager) await this.connectionManager.stop();
     if (this.syncManager) await this.syncManager.stop();
     if (this.txRelay) this.txRelay.stop();
     if (this.blockDownloader) this.blockDownloader.clearQueue();
     if (this.inventoryManager) this.inventoryManager.stop();
     if (this.orphanPool) this.orphanPool.stop();
-    if (this.connectionManager) await this.connectionManager.stop();
     if (this.discoveryService) await this.discoveryService.stop();
     
     this.isRunning = false;
@@ -122,13 +128,23 @@ export class NetworkOrchestrator extends EventEmitter {
     
     const tcpPort = this.config.tcpPort || 8333;
     const tcpHost = this.config.externalHost || 'localhost';
+    const genesis = await this.config.blockchain.getBlock(0);
+    if (!genesis) throw new Error('cannot start networking without genesis block');
+    const genesisHash = genesis.hash;
     
     // create protocol handler
-    this.protocol = new Protocol();
+    this.protocol = new Protocol({
+      chainId: this.config.chainConfig.chainId,
+      genesisHash,
+      maxPayloadSize: this.config.chainConfig.maxBlockSize
+    });
     
     // create discovery service - uses ipfs ONLY for peer discovery
     this.discoveryService = new PeerDiscoveryService({
-      nodeId: this.config.nodeId,
+      identity: this.config.identity,
+      chainId: this.config.chainConfig.chainId,
+      genesisHash,
+      addressPrefix: this.config.chainConfig.addressPrefix,
       tcpHost: tcpHost,
       tcpPort: tcpPort,
       ipfsApi: this.config.ipfsApi
@@ -136,8 +152,11 @@ export class NetworkOrchestrator extends EventEmitter {
     
     // create connection manager
     this.connectionManager = new ConnectionManager({
-      nodeId: this.config.nodeId,
-      tcpPort: tcpPort
+      nodeId: this.config.identity.address,
+      tcpPort: tcpPort,
+      protocol: this.protocol,
+      maxMessageSize: this.config.chainConfig.maxBlockSize,
+      allowPrivatePeers: this.config.chainConfig.name === 'devnet'
     });
     
     // create inventory manager
@@ -165,7 +184,10 @@ export class NetworkOrchestrator extends EventEmitter {
       blockchain: this.config.blockchain,
       connectionManager: this.connectionManager,
       protocol: this.protocol,
-      discoveryService: this.discoveryService
+      discoveryService: this.discoveryService,
+      chainConfig: this.config.chainConfig,
+      genesisHash,
+      identity: this.config.identity
     });
     
     // create transaction relay
@@ -179,18 +201,26 @@ export class NetworkOrchestrator extends EventEmitter {
     // setup event handlers
     this.setupTCPEventHandlers();
     
-    // start services
-    await this.connectionManager.start();
-    
-    const height = await this.config.blockchain.getHeight();
-    const latestBlock = await this.config.blockchain.getLatestBlock();
-    const tipHash = latestBlock?.hash || 'genesis';
-    await this.discoveryService.start(height, tipHash);
-    
-    this.inventoryManager.start();
-    this.orphanPool.start();
-    await this.syncManager.start();
-    this.txRelay.start();
+    try {
+      await this.connectionManager.start();
+      this.inventoryManager.start();
+      this.orphanPool.start();
+      await this.syncManager.start();
+      this.txRelay.start();
+
+      const height = await this.config.blockchain.getHeight();
+      const latestBlock = await this.config.blockchain.getLatestBlock();
+      await this.discoveryService.start(height, latestBlock?.hash || genesisHash);
+    } catch (error) {
+      this.cleanupTCPEventHandlers();
+      this.txRelay.stop();
+      await this.connectionManager.stop();
+      await this.syncManager.stop();
+      this.inventoryManager.stop();
+      this.orphanPool.stop();
+      await this.discoveryService.stop();
+      throw error;
+    }
     
     logger.info('tcp mode networking started (ipfs discovery + tcp data exchange)');
   }
@@ -200,10 +230,12 @@ export class NetworkOrchestrator extends EventEmitter {
    */
   private setupTCPEventHandlers(): void {
     // handle discovered peers
-    this.discoveryService!.on('peer:discovered', async (peer) => {
+    this.peerAnnouncementHandler = (peer: PeerEndpoint) => {
       logger.info(`discovered peer ${peer.nodeId} at ${peer.tcp}`);
-      await this.connectionManager!.connectToPeer(peer);
-    });
+      void this.connectionManager!.connectToPeer(peer);
+    };
+    this.discoveryService!.on('peer:discovered', this.peerAnnouncementHandler);
+    this.discoveryService!.on('peer:updated', this.peerAnnouncementHandler);
     
     // handle blocks from sync
     this.syncManager!.on('block:received', (block: Block) => {
@@ -223,7 +255,7 @@ export class NetworkOrchestrator extends EventEmitter {
     });
     
     // handle new blocks added to blockchain
-    this.config.blockchain.on('block:added', (block: Block) => {
+    this.blockAddedHandler = (block: Block) => {
       // announce to network
       this.inventoryManager!.announceBlock(block.hash);
       
@@ -235,12 +267,14 @@ export class NetworkOrchestrator extends EventEmitter {
         block.index,
         block.hash
       );
-    });
+    };
+    this.config.blockchain.on('block:added', this.blockAddedHandler);
     
     // handle new transactions
-    this.config.mempool.on('transaction:added', (tx: Transaction) => {
+    this.transactionAddedHandler = (tx: Transaction) => {
       this.txRelay!.relayTransaction(tx);
-    });
+    };
+    this.config.mempool.on('transaction:added', this.transactionAddedHandler);
     
     // handle incoming transactions from network
     this.txRelay!.on('transaction:received', (tx: Transaction) => {
@@ -257,6 +291,18 @@ export class NetworkOrchestrator extends EventEmitter {
       logger.info('blockchain sync complete');
       this.emit('sync:complete');
     });
+  }
+
+  private cleanupTCPEventHandlers(): void {
+    if (this.peerAnnouncementHandler && this.discoveryService) {
+      this.discoveryService.off('peer:discovered', this.peerAnnouncementHandler);
+      this.discoveryService.off('peer:updated', this.peerAnnouncementHandler);
+    }
+    if (this.blockAddedHandler) this.config.blockchain.off('block:added', this.blockAddedHandler);
+    if (this.transactionAddedHandler) this.config.mempool.off('transaction:added', this.transactionAddedHandler);
+    this.blockAddedHandler = undefined;
+    this.transactionAddedHandler = undefined;
+    this.peerAnnouncementHandler = undefined;
   }
   
   /**

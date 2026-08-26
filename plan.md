@@ -28,8 +28,8 @@ resolved audit findings:
 
 open release gates:
 
-- [ ] bind peer handshakes and traffic to chain identity
-- [ ] authenticate and bound tcp transport
+- [x] bind peer handshakes and traffic to chain identity
+- [x] authenticate and bound tcp transport
 - [ ] relay transactions and synchronize by validated cumulative work
 - [ ] harden api input, exposure, pagination, and metric labels
 - [ ] pin deployment inputs

@@ -9,41 +9,47 @@ tcp: handshake, inventory, blocks, and transactions
 
 ## peer discovery
 
-`PeerDiscoveryService` connects to an ipfs rpc endpoint, attempts public libp2p bootstrap nodes as fallback connectivity, and subscribes to `/bolt/peers`. ipfs carries endpoint announcements only.
+`PeerDiscoveryService` connects to an ipfs rpc endpoint, attempts public libp2p bootstrap nodes as fallback connectivity, and subscribes to `/bolt/<chainId>/<genesisHash>/peers/<PROTOCOL_VERSION>`. ipfs carries endpoint announcements only.
 
 announcements contain:
 
 - `nodeId`
+- `publicKey`
 - `tcp`
 - `height`
-- `chainHash`
+- `tipHash`
+- `chainId`
+- `genesisHash`
 - `version`
 - `timestamp`
 - optional `capabilities`
+- `signature`
 
-received announcements are validated, stored by node id, and used to open tcp connections. stale announcements are removed. peer selection currently compares announced height only.
+announcements are signed by the advertised node identity. validation binds the public key to `nodeId`, checks chain identity, bounds fields and sender rates, and accepts bracketed ipv6 endpoints. fresh announcements update the complete peer record and trigger bounded connection attempts. stale announcements are removed. peer selection currently compares announced height only.
 
 ## tcp protocol
 
-current protocol version is `4`.
+current protocol version is `5`.
 
 ```text
-[magic:4][type:4][length:4][checksum:4][payload:length]
+[magic:4][type:4][length:4][checksum:4][sequence:8][authentication-tag:32][payload:length]
 ```
 
-- `magic` identifies bolt protocol traffic. configured networks currently share it, so it does not isolate chains.
+- `magic` identifies bolt protocol traffic and is derived from `chainId`.
 - `type` identifies protocol message.
 - `length` declares payload bytes.
 - `checksum` is first four bytes of double sha-256 over payload.
+- `sequence` is a directional session sequence number.
+- `authentication-tag` is hmac-sha-256 over the complete frame with an empty tag field.
 - `payload` contains message-specific bytes.
 
-the protocol serializes handshake, keepalive, inventory, block request, header request, block, and transaction messages. transaction payloads include `chainId` and `kind`.
+the protocol serializes handshake, keepalive, inventory, block request, header request, block, and transaction messages. transaction payloads include `chainId` and `kind`. inventory, locator, and header decoders reject collections above protocol limits.
 
 ## handshake
 
-each connection sends `version`, then expects protocol version `4`. mismatched versions are disconnected. accepted versions receive `verack`.
+each connection sends a signed `version`, then expects protocol version `5`. `version` binds protocol version, chain id, genesis hash, node id, public key, nonce, timestamp, user agent, and starting height. mismatched versions, stale timestamps, invalid signatures, and discovery identity mismatches are disconnected.
 
-version messages carry services, timestamp, peer addresses, nonce, user agent, and starting height. current handshake does not authenticate node identity or bind discovery `nodeId` to tcp peer identity.
+peers answer with a signed `verack` that binds both identities, both nonces, and connection roles. secp256k1 ecdh derives directional frame authentication keys. application messages are rejected until reciprocal authentication completes. duplicate identities resolve to one deterministic connection.
 
 ## active block synchronization
 
@@ -69,15 +75,15 @@ incoming `tx` messages decode at protocol layer but are not dispatched to `Trans
 
 ## connection lifecycle
 
-`ConnectionManager` listens with `Bun.listen`, opens outbound sockets with `Bun.connect`, buffers fragmented messages, emits complete frames, and drops idle or failed sockets. failed peers are not automatically reconnected.
+`ConnectionManager` listens with `Bun.listen`, opens outbound sockets with `Bun.connect`, parses fragmented and coalesced frames, queues partial writes, sends keepalives, and drops failed or unresponsive sockets. fresh discovery announcements and bounded deferred retries reconnect eligible peers.
 
-outbound connection attempts observe one aggregate connection setting. inbound accepts do not enforce aggregate or inbound-specific caps.
+connection admission limits aggregate, pending outbound, inbound, and per-source unauthenticated connections. per-endpoint and per-source attempt windows bound reconnect churn. pending dials are bounded and tied to one manager run, so late connections from an earlier run are rejected.
 
 ## transport security
 
-magic rejects non-bolt frames. configured networks currently share the same magic. checksum detects payload corruption. neither mechanism authenticates sender, isolates chains, or encrypts transport.
+chain-specific magic rejects frames for another configured network. checksum detects payload corruption. signed handshake transcripts authenticate node identity and chain membership. directional sequence numbers and authentication tags reject modification and replay after handshake.
 
-declared payload length is trusted before a complete frame is emitted. no payload cap or receive-buffer cap is enforced. inbound connections have no enforced cap. unauthenticated peer identity and unbounded transport input remain release blockers.
+payload, receive-buffer, send-buffer, handshake, and asynchronous dispatch limits are enforced before unbounded work occurs. mainnet and testnet outbound dialing rejects private, reserved, and non-global addresses after dns resolution. devnet permits private peers. transport payloads remain plaintext; authentication does not provide confidentiality.
 
 ## compose connectivity
 
@@ -103,6 +109,4 @@ connection and sync tuning values are constructor options. they are not environm
 - cumulative-work peer selection and validated cumulative-work sync
 - incoming transaction dispatch
 - mempool sync on connection
-- automatic reconnect
-- payload and receive-buffer caps
-- inbound connection caps
+- requested block admission outside active sequential sync

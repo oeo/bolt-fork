@@ -7,7 +7,7 @@ bolt is a proof-of-work blockchain with account state. peer discovery and blockc
 1. ipfs pubsub announces peer tcp endpoints.
 2. tcp carries protocol messages, blocks, and transactions.
 
-the ipfs discovery service attempts public libp2p bootstrap nodes before subscribing to `/bolt/peers`. blockchain data does not travel through ipfs.
+the ipfs discovery service attempts public libp2p bootstrap nodes before subscribing to a chain- and protocol-scoped topic. blockchain data does not travel through ipfs.
 
 ## consensus
 
@@ -25,13 +25,17 @@ canonical storage tracks cumulative work. competing branches can trigger a reorg
 
 ## networking
 
-active networking uses protocol version `4`.
+active networking uses protocol version `5`.
 
 ```text
 ipfs pubsub discovery -> tcp connection -> version/verack -> getblocks -> inv -> getdata -> block
 ```
 
-peer announcements include node id, tcp endpoint, height, chain hash, version, timestamp, and optional capabilities. discovered peers are connected over tcp.
+peer announcements include signed node identity, chain identity, tcp endpoint, height, tip hash, version, timestamp, and capabilities. discovered peers are connected over tcp. fresh announcements can retry disconnected peers within connection admission and cooldown limits.
+
+signed `version` and `verack` transcripts bind both peers, connection roles, nonces, protocol version, chain id, and genesis hash. secp256k1 ecdh derives directional hmac-sha-256 frame keys. authenticated frames carry monotonic sequence numbers. transport payloads are not encrypted.
+
+tcp input, output, connection, handshake, message-dispatch, discovery, and protocol collection limits bound peer-controlled resource use. mainnet and testnet outbound dialing rejects private and reserved destinations after dns resolution. devnet permits private peers.
 
 active synchronization selects the announced peer with highest height. it sends `getblocks` with a locator containing current tip and genesis, receives `inv`, requests missing blocks with `getdata`, and accepts the next expected block sequentially.
 
@@ -80,10 +84,8 @@ these paths are not implemented end to end:
 - cumulative-work peer selection and validated cumulative-work network sync
 - incoming `tx` dispatch to transaction relay
 - mempool synchronization on connection
-- automatic peer reconnection
-- tcp payload and receive-buffer caps
-- inbound connection caps
+- requested block admission outside active sequential sync
 
-tcp framing checks network magic and payload checksum. it does not authenticate peers or encrypt traffic. unbounded transport input and unauthenticated peer identity remain release blockers.
+tcp framing checks chain-specific network magic, payload checksum, sequence, and authentication tag. signed handshakes authenticate peer identity. transport does not provide confidentiality.
 
 main compose networking keeps tcp port `8333` inside `bolt-network`. it does not publish that port to the host.

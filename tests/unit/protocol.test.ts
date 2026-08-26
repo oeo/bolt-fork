@@ -5,22 +5,30 @@ import {
   InvType,
   RejectCode,
   PROTOCOL_VERSION,
+  getNetworkMagic,
 } from '../../src/network/protocol';
-import { NETWORK_MAGIC } from '../../src/constants';
 import { createCoinbaseTransaction } from '../../src/core/transaction';
 import { SyncManager } from '../../src/network/sync-manager';
 import { EventEmitter } from 'events';
+import { mainnet } from '../../src/config/chains/mainnet';
+import { generateAddress } from '../../src/crypto/address';
+
+const genesisHash = 'a'.repeat(64);
 
 describe('network protocol', () => {
   let protocol: Protocol;
 
   beforeEach(() => {
-    protocol = new Protocol();
+    protocol = new Protocol({
+      chainId: mainnet.chainId,
+      genesisHash,
+      maxPayloadSize: 1024 * 1024
+    });
   });
 
   describe('message serialization', () => {
     it('should use the chain-bound protocol version', () => {
-      expect(PROTOCOL_VERSION).toBe(4);
+      expect(PROTOCOL_VERSION).toBe(5);
     });
 
     it('should serialize and deserialize messages with correct header', () => {
@@ -28,24 +36,35 @@ describe('network protocol', () => {
       const message = protocol.serializeMessage(MessageType.PING, payload);
 
       // check message structure
-      expect(message.length).toBe(16 + payload.length); // header + payload
+      expect(message.length).toBe(56 + payload.length); // header + payload
 
       // deserialize
       const result = protocol.deserializeMessage(message);
       expect(result).not.toBeNull();
-      expect(result!.header.magic).toBe(NETWORK_MAGIC);
+      expect(result!.header.magic).toBe(getNetworkMagic(mainnet.chainId));
       expect(result!.header.type).toBe(MessageType.PING);
       expect(result!.header.length).toBe(payload.length);
       expect(result!.payload).toEqual(payload);
     });
 
     it('should reject messages with invalid magic bytes', () => {
-      const badMessage = new Uint8Array(20);
+      const badMessage = new Uint8Array(60);
       // set wrong magic bytes
       new DataView(badMessage.buffer).setUint32(0, 0xdeadbeef, false);
       
       const result = protocol.deserializeMessage(badMessage);
       expect(result).toBeNull();
+    });
+
+    it('should reject frames from another chain', () => {
+      const other = new Protocol({
+        chainId: mainnet.chainId + 1,
+        genesisHash,
+        maxPayloadSize: 1024 * 1024
+      });
+      const message = other.serializeMessage(MessageType.PING, new Uint8Array(8));
+
+      expect(protocol.deserializeMessage(message)).toBeNull();
     });
 
     it('should reject messages with invalid checksum', () => {
@@ -99,38 +118,58 @@ describe('network protocol', () => {
       expect(() => protocol.decodeMessage(message)).not.toThrow();
       expect(protocol.decodeMessage(message)).toBeNull();
     });
+
+    it('should reject malformed version payloads without throwing', () => {
+      const message = protocol.serializeMessage(MessageType.VERSION, new TextEncoder().encode('{'));
+      expect(() => protocol.decodeMessage(message)).not.toThrow();
+      expect(protocol.decodeMessage(message)).toBeNull();
+    });
   });
 
   describe('version message', () => {
-    it('should disconnect peers using an obsolete protocol version', () => {
+    it('should disconnect peers using an obsolete protocol version', async () => {
       let disconnected = false;
       let sent = false;
       const connectionManager = Object.assign(new EventEmitter(), {
         disconnect: () => { disconnected = true; },
         updatePeerInfo: () => {},
-        sendMessage: () => { sent = true; }
+        sendMessage: () => { sent = true; },
+        getConnection: () => ({ inbound: false, expectedPeerId: 'peer' })
       });
       const discoveryService = Object.assign(new EventEmitter(), {
         getPeer: () => null
       });
-      new SyncManager({
+      const identity = generateAddress(mainnet.addressPrefix);
+      const syncManager = new SyncManager({
         blockchain: {} as any,
         connectionManager: connectionManager as any,
         protocol,
-        discoveryService: discoveryService as any
+        discoveryService: discoveryService as any,
+        chainConfig: mainnet,
+        genesisHash,
+        identity: { ...identity, createdAt: 0 }
+      });
+      (syncManager as any).handshakes.set('peer', {
+        inbound: false,
+        localNonce: 1n,
+        versionReceived: false
       });
       const message = protocol.encodeMessage('version', {
         version: PROTOCOL_VERSION - 1,
         services: 1n,
         timestamp: 1234567890,
-        addrRecv: '127.0.0.1',
-        addrFrom: '127.0.0.1',
         nonce: 1n,
         userAgent: 'obsolete',
-        startHeight: 0
+        startHeight: 0,
+        chainId: mainnet.chainId,
+        genesisHash,
+        nodeId: identity.address,
+        publicKey: identity.publicKey,
+        signature: 'ab'.repeat(64)
       });
 
       connectionManager.emit('message:received', 'peer', message);
+      await Bun.sleep(0);
       expect(disconnected).toBe(true);
       expect(sent).toBe(false);
     });
@@ -140,11 +179,14 @@ describe('network protocol', () => {
         version: PROTOCOL_VERSION,
         services: 1n,
         timestamp: Math.floor(Date.now() / 1000),
-        addrRecv: '192.168.1.1',
-        addrFrom: '192.168.1.2',
         nonce: 123456789n,
         userAgent: 'bolt-test/1.0',
         startHeight: 100,
+        chainId: mainnet.chainId,
+        genesisHash,
+        nodeId: generateAddress(mainnet.addressPrefix).address,
+        publicKey: generateAddress(mainnet.addressPrefix).publicKey,
+        signature: 'ab'.repeat(64)
       };
 
       const serialized = protocol.serializeVersion(versionMsg);
@@ -154,8 +196,6 @@ describe('network protocol', () => {
       expect(deserialized!.version).toBe(versionMsg.version);
       expect(deserialized!.services).toBe(versionMsg.services);
       expect(deserialized!.timestamp).toBe(versionMsg.timestamp);
-      expect(deserialized!.addrRecv).toBe(versionMsg.addrRecv);
-      expect(deserialized!.addrFrom).toBe(versionMsg.addrFrom);
       expect(deserialized!.nonce).toBe(versionMsg.nonce);
       expect(deserialized!.userAgent).toBe(versionMsg.userAgent);
       expect(deserialized!.startHeight).toBe(versionMsg.startHeight);
@@ -166,11 +206,14 @@ describe('network protocol', () => {
         version: PROTOCOL_VERSION,
         services: 0n,
         timestamp: 1234567890,
-        addrRecv: 'localhost',
-        addrFrom: 'localhost',
         nonce: 0n,
         userAgent: 'a'.repeat(255), // max length
         startHeight: 0,
+        chainId: mainnet.chainId,
+        genesisHash,
+        nodeId: generateAddress(mainnet.addressPrefix).address,
+        publicKey: generateAddress(mainnet.addressPrefix).publicKey,
+        signature: 'ab'.repeat(64)
       };
 
       const serialized = protocol.serializeVersion(versionMsg);
@@ -178,6 +221,19 @@ describe('network protocol', () => {
 
       expect(deserialized).not.toBeNull();
       expect(deserialized!.userAgent).toBe(versionMsg.userAgent);
+    });
+
+    it('should serialize and deserialize signed verack messages', () => {
+      const verack = {
+        role: 'initiator' as const,
+        senderNodeId: generateAddress(mainnet.addressPrefix).address,
+        receiverNodeId: generateAddress(mainnet.addressPrefix).address,
+        senderNonce: 1n,
+        receiverNonce: 2n,
+        signature: 'ab'.repeat(64)
+      };
+
+      expect(protocol.deserializeVerack(protocol.serializeVerack(verack))).toEqual(verack);
     });
   });
 
@@ -239,6 +295,33 @@ describe('network protocol', () => {
 
       expect(deserialized).not.toBeNull();
       expect(deserialized!.length).toBe(100);
+    });
+
+    it('should reject oversized protocol collections', () => {
+      const hash = '0'.repeat(64);
+      const inventory = Array.from({ length: 501 }, () => ({ type: InvType.TX, hash }));
+
+      expect(() => protocol.serializeInv(inventory)).toThrow('inventory item limit');
+      expect(() => protocol.serializeGetBlocks(PROTOCOL_VERSION, Array(102).fill(hash), hash)).toThrow('locator limit');
+      expect(() => protocol.serializeGetHeaders(Array(102).fill(hash), hash)).toThrow('locator limit');
+      expect(() => protocol.serializeHeaders(Array(2001).fill({}))).toThrow('header limit');
+
+      const inventoryDeclaration = new Uint8Array(4);
+      new DataView(inventoryDeclaration.buffer).setUint32(0, 501, false);
+      expect(protocol.deserializeInv(inventoryDeclaration)).toBeNull();
+      expect(protocol.decodeMessage(protocol.serializeMessage(MessageType.GETDATA, inventoryDeclaration))).toBeNull();
+
+      const getHeadersDeclaration = new Uint8Array(36);
+      new DataView(getHeadersDeclaration.buffer).setUint32(0, 102, false);
+      expect(protocol.deserializeGetHeaders(getHeadersDeclaration)).toBeNull();
+
+      const getBlocksDeclaration = new Uint8Array(40);
+      new DataView(getBlocksDeclaration.buffer).setUint32(4, 102, false);
+      expect(protocol.deserializeGetBlocks(getBlocksDeclaration)).toBeNull();
+
+      const headersDeclaration = new Uint8Array(4);
+      new DataView(headersDeclaration.buffer).setUint32(0, 2001, false);
+      expect(protocol.deserializeHeaders(headersDeclaration)).toBeNull();
     });
   });
 
@@ -349,8 +432,8 @@ describe('network protocol', () => {
       const msg2 = protocol.serializeMessage(MessageType.PING, payload);
       
       // extract checksums
-      const view1 = new DataView(msg1.buffer, 0, 16);
-      const view2 = new DataView(msg2.buffer, 0, 16);
+      const view1 = new DataView(msg1.buffer, 0, 56);
+      const view2 = new DataView(msg2.buffer, 0, 56);
       
       const checksum1 = view1.getUint32(12, false);
       const checksum2 = view2.getUint32(12, false);
@@ -365,8 +448,8 @@ describe('network protocol', () => {
       const msg1 = protocol.serializeMessage(MessageType.PING, payload1);
       const msg2 = protocol.serializeMessage(MessageType.PING, payload2);
       
-      const view1 = new DataView(msg1.buffer, 0, 16);
-      const view2 = new DataView(msg2.buffer, 0, 16);
+      const view1 = new DataView(msg1.buffer, 0, 56);
+      const view2 = new DataView(msg2.buffer, 0, 56);
       
       const checksum1 = view1.getUint32(12, false);
       const checksum2 = view2.getUint32(12, false);

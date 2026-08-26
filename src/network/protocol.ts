@@ -2,11 +2,26 @@ import { getLogger } from '../utils/logger';
 import type { Block } from '../core/block';
 import type { Transaction } from '../core/transaction';
 import { NETWORK_MAGIC } from '../constants';
+import { deserialize, serialize } from '../utils/bigint';
+import { encodeCanonicalFields } from '../utils/serialization';
 
 const logger = getLogger(__filename);
 
 // protocol version
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_HEADER_SIZE = 56;
+export const PROTOCOL_AUTH_TAG_OFFSET = 24;
+export const PROTOCOL_AUTH_TAG_SIZE = 32;
+const MAX_INVENTORY_ITEMS = 500;
+const MAX_LOCATOR_HASHES = 101;
+const MAX_HEADERS = 2000;
+
+export function getNetworkMagic(chainId: number): number {
+  if (!Number.isInteger(chainId) || chainId < 0 || chainId > 0xffffffff) {
+    throw new Error('invalid chain id');
+  }
+  return (NETWORK_MAGIC ^ chainId) >>> 0;
+}
 
 // message types
 export enum MessageType {
@@ -52,6 +67,8 @@ export interface MessageHeader {
   type: MessageType;
   length: number;
   checksum: number;
+  sequence: bigint;
+  authTag: Uint8Array;
 }
 
 // version message
@@ -59,11 +76,29 @@ export interface VersionMessage {
   version: number;
   services: bigint;
   timestamp: number;
-  addrRecv: string;
-  addrFrom: string;
   nonce: bigint;
   userAgent: string;
   startHeight: number;
+  chainId: number;
+  genesisHash: string;
+  nodeId: string;
+  publicKey: string;
+  signature: string;
+}
+
+export interface VerackMessage {
+  role: 'initiator' | 'responder';
+  senderNodeId: string;
+  receiverNodeId: string;
+  senderNonce: bigint;
+  receiverNonce: bigint;
+  signature: string;
+}
+
+export interface ProtocolConfig {
+  chainId: number;
+  genesisHash: string;
+  maxPayloadSize: number;
 }
 
 // inventory item
@@ -85,14 +120,27 @@ export interface AddressInfo {
  * handles message serialization, deserialization, and validation
  */
 export class Protocol {
-  constructor() {
-    // hashers are created per-use since Bun doesn't support reset
+  readonly networkMagic: number;
+  private readonly config: ProtocolConfig;
+
+  constructor(config: ProtocolConfig) {
+    if (!/^[0-9a-f]{64}$/.test(config.genesisHash)) {
+      throw new Error('invalid genesis hash');
+    }
+    if (!Number.isSafeInteger(config.maxPayloadSize) || config.maxPayloadSize < 1) {
+      throw new Error('invalid maximum payload size');
+    }
+    this.config = config;
+    this.networkMagic = getNetworkMagic(config.chainId);
   }
 
   /**
    * serialize a message with header
    */
   serializeMessage(type: MessageType, payload: Uint8Array): Uint8Array {
+    if (payload.length > this.config.maxPayloadSize) {
+      throw new Error('message payload limit exceeded');
+    }
     const header = this.createHeader(type, payload);
     const headerBytes = this.serializeHeader(header);
     
@@ -108,23 +156,23 @@ export class Protocol {
    * deserialize a message from bytes
    */
   deserializeMessage(data: Uint8Array): { header: MessageHeader; payload: Uint8Array } | null {
-    if (data.length < 16) {
+    if (data.length < PROTOCOL_HEADER_SIZE) {
       logger.debug('message too short for header');
       return null;
     }
     
-    const header = this.deserializeHeader(data.slice(0, 16));
+    const header = this.deserializeHeader(data.slice(0, PROTOCOL_HEADER_SIZE));
     if (!header) {
       logger.debug('invalid message header');
       return null;
     }
     
-    if (data.length < 16 + header.length) {
+    if (data.length < PROTOCOL_HEADER_SIZE + header.length) {
       logger.debug('incomplete message payload');
       return null;
     }
     
-    const payload = data.slice(16, 16 + header.length);
+    const payload = data.slice(PROTOCOL_HEADER_SIZE, PROTOCOL_HEADER_SIZE + header.length);
     
     // validate checksum
     if (!this.validateChecksum(payload, header.checksum)) {
@@ -140,10 +188,12 @@ export class Protocol {
    */
   private createHeader(type: MessageType, payload: Uint8Array): MessageHeader {
     return {
-      magic: NETWORK_MAGIC,
+      magic: this.networkMagic,
       type,
       length: payload.length,
       checksum: this.calculateChecksum(payload),
+      sequence: 0n,
+      authTag: new Uint8Array(PROTOCOL_AUTH_TAG_SIZE),
     };
   }
 
@@ -151,13 +201,15 @@ export class Protocol {
    * serialize header to bytes
    */
   private serializeHeader(header: MessageHeader): Uint8Array {
-    const buffer = new ArrayBuffer(16);
+    const buffer = new ArrayBuffer(PROTOCOL_HEADER_SIZE);
     const view = new DataView(buffer);
     
     view.setUint32(0, header.magic, false); // big-endian
     view.setUint32(4, header.type, false);
     view.setUint32(8, header.length, false);
     view.setUint32(12, header.checksum, false);
+    view.setBigUint64(16, header.sequence, false);
+    new Uint8Array(buffer, PROTOCOL_AUTH_TAG_OFFSET, PROTOCOL_AUTH_TAG_SIZE).set(header.authTag);
     
     return new Uint8Array(buffer);
   }
@@ -166,22 +218,51 @@ export class Protocol {
    * deserialize header from bytes
    */
   private deserializeHeader(data: Uint8Array): MessageHeader | null {
-    if (data.length < 16) return null;
+    if (data.length < PROTOCOL_HEADER_SIZE) return null;
     
-    const view = new DataView(data.buffer, data.byteOffset, 16);
+    const view = new DataView(data.buffer, data.byteOffset, PROTOCOL_HEADER_SIZE);
     
     const magic = view.getUint32(0, false);
-    if (magic !== NETWORK_MAGIC) {
+    if (magic !== this.networkMagic) {
       logger.debug(`invalid magic bytes: ${magic.toString(16)}`);
       return null;
     }
     
+    const length = view.getUint32(8, false);
+    if (length > this.config.maxPayloadSize) return null;
+
     return {
       magic,
       type: view.getUint32(4, false),
-      length: view.getUint32(8, false),
+      length,
       checksum: view.getUint32(12, false),
+      sequence: view.getBigUint64(16, false),
+      authTag: data.slice(PROTOCOL_AUTH_TAG_OFFSET, PROTOCOL_AUTH_TAG_OFFSET + PROTOCOL_AUTH_TAG_SIZE),
     };
+  }
+
+  authenticateMessage(data: Uint8Array, key: Uint8Array, sequence: bigint): Uint8Array {
+    const message = data.slice();
+    const view = new DataView(message.buffer, message.byteOffset, PROTOCOL_HEADER_SIZE);
+    view.setBigUint64(16, sequence, false);
+    message.fill(0, PROTOCOL_AUTH_TAG_OFFSET, PROTOCOL_AUTH_TAG_OFFSET + PROTOCOL_AUTH_TAG_SIZE);
+    const tag = new Bun.CryptoHasher('sha256', key).update(message).digest();
+    message.set(tag, PROTOCOL_AUTH_TAG_OFFSET);
+    return message;
+  }
+
+  verifyAuthenticatedMessage(data: Uint8Array, key: Uint8Array, sequence: bigint): boolean {
+    if (data.length < PROTOCOL_HEADER_SIZE) return false;
+    const view = new DataView(data.buffer, data.byteOffset, PROTOCOL_HEADER_SIZE);
+    if (view.getBigUint64(16, false) !== sequence) return false;
+
+    const received = data.slice(PROTOCOL_AUTH_TAG_OFFSET, PROTOCOL_AUTH_TAG_OFFSET + PROTOCOL_AUTH_TAG_SIZE);
+    const message = data.slice();
+    message.fill(0, PROTOCOL_AUTH_TAG_OFFSET, PROTOCOL_AUTH_TAG_OFFSET + PROTOCOL_AUTH_TAG_SIZE);
+    const expected = new Bun.CryptoHasher('sha256', key).update(message).digest();
+    let difference = 0;
+    for (let i = 0; i < expected.length; i++) difference |= expected[i] ^ received[i];
+    return difference === 0;
   }
 
   /**
@@ -216,89 +297,76 @@ export class Protocol {
    * serialize version message
    */
   serializeVersion(msg: VersionMessage): Uint8Array {
-    const encoder = new TextEncoder();
-    const userAgentBytes = encoder.encode(msg.userAgent);
-    
-    // correct buffer size: 4 + 8 + 8 + 32 + 32 + 8 + 1 + userAgent + 4
-    const bufferSize = 97 + userAgentBytes.length;
-    const buffer = new ArrayBuffer(bufferSize);
-    const view = new DataView(buffer);
-    let offset = 0;
-    
-    view.setUint32(offset, msg.version, false); offset += 4;
-    view.setBigUint64(offset, msg.services, false); offset += 8;
-    view.setBigUint64(offset, BigInt(msg.timestamp), false); offset += 8;
-    
-    // addresses (simplified - just store as 32 bytes each)
-    const addrRecvBytes = encoder.encode(msg.addrRecv.padEnd(32, '\0'));
-    new Uint8Array(buffer, offset, 32).set(addrRecvBytes.slice(0, 32));
-    offset += 32;
-    
-    const addrFromBytes = encoder.encode(msg.addrFrom.padEnd(32, '\0'));
-    new Uint8Array(buffer, offset, 32).set(addrFromBytes.slice(0, 32));
-    offset += 32;
-    
-    view.setBigUint64(offset, msg.nonce, false); offset += 8;
-    
-    // user agent length and string
-    view.setUint8(offset, userAgentBytes.length); offset += 1;
-    new Uint8Array(buffer, offset, userAgentBytes.length).set(userAgentBytes);
-    offset += userAgentBytes.length;
-    
-    view.setUint32(offset, msg.startHeight, false); offset += 4;
-    
-    return new Uint8Array(buffer);
+    return new TextEncoder().encode(serialize(msg));
   }
 
   /**
    * deserialize version message
    */
   deserializeVersion(data: Uint8Array): VersionMessage | null {
-    if (data.length < 80) return null;
-    
-    const view = new DataView(data.buffer, data.byteOffset, data.length);
-    const decoder = new TextDecoder();
-    let offset = 0;
-    
-    const version = view.getUint32(offset, false); offset += 4;
-    const services = view.getBigUint64(offset, false); offset += 8;
-    const timestamp = Number(view.getBigUint64(offset, false)); offset += 8;
-    
-    // read addresses
-    const addrRecvBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
-    const addrRecv = decoder.decode(addrRecvBytes).replace(/\0+$/, '');
-    offset += 32;
-    
-    const addrFromBytes = new Uint8Array(data.buffer, data.byteOffset + offset, 32);
-    const addrFrom = decoder.decode(addrFromBytes).replace(/\0+$/, '');
-    offset += 32;
-    
-    const nonce = view.getBigUint64(offset, false); offset += 8;
-    
-    // read user agent
-    const userAgentLen = view.getUint8(offset); offset += 1;
-    const userAgentBytes = new Uint8Array(data.buffer, data.byteOffset + offset, userAgentLen);
-    const userAgent = decoder.decode(userAgentBytes);
-    offset += userAgentLen;
-    
-    const startHeight = view.getUint32(offset, false);
-    
-    return {
-      version,
-      services,
-      timestamp,
-      addrRecv,
-      addrFrom,
-      nonce,
-      userAgent,
-      startHeight,
-    };
+    const msg = deserialize(new TextDecoder('utf-8', { fatal: true }).decode(data)) as VersionMessage;
+    if (!msg || typeof msg !== 'object') return null;
+    if (!Number.isInteger(msg.version) || typeof msg.services !== 'bigint') return null;
+    if (!Number.isSafeInteger(msg.timestamp) || typeof msg.nonce !== 'bigint') return null;
+    if (!Number.isInteger(msg.startHeight) || msg.startHeight < 0) return null;
+    if (!Number.isInteger(msg.chainId) || msg.chainId < 0 || msg.chainId > 0xffffffff) return null;
+    if (typeof msg.userAgent !== 'string' || new TextEncoder().encode(msg.userAgent).length > 255) return null;
+    if (typeof msg.nodeId !== 'string' || msg.nodeId.length > 64) return null;
+    if (!/^(?:[0-9a-f]{66}|[0-9a-f]{130})$/.test(msg.publicKey)) return null;
+    if (!/^[0-9a-f]{64}$/.test(msg.genesisHash)) return null;
+    if (!/^[0-9a-f]{128}$/.test(msg.signature)) return null;
+    return msg;
+  }
+
+  versionSigningPayload(msg: Omit<VersionMessage, 'signature'>): Uint8Array {
+    return encodeCanonicalFields([
+      'bolt:network:version:v1',
+      msg.version.toString(),
+      msg.services.toString(),
+      msg.timestamp.toString(),
+      msg.nonce.toString(),
+      msg.userAgent,
+      msg.startHeight.toString(),
+      msg.chainId.toString(),
+      msg.genesisHash,
+      msg.nodeId,
+      msg.publicKey
+    ]);
+  }
+
+  serializeVerack(msg: VerackMessage): Uint8Array {
+    return new TextEncoder().encode(serialize(msg));
+  }
+
+  deserializeVerack(data: Uint8Array): VerackMessage | null {
+    const msg = deserialize(new TextDecoder('utf-8', { fatal: true }).decode(data)) as VerackMessage;
+    if (!msg || typeof msg !== 'object') return null;
+    if (msg.role !== 'initiator' && msg.role !== 'responder') return null;
+    if (typeof msg.senderNodeId !== 'string' || typeof msg.receiverNodeId !== 'string') return null;
+    if (typeof msg.senderNonce !== 'bigint' || typeof msg.receiverNonce !== 'bigint') return null;
+    if (!/^[0-9a-f]{128}$/.test(msg.signature)) return null;
+    return msg;
+  }
+
+  verackSigningPayload(msg: Omit<VerackMessage, 'signature'>): Uint8Array {
+    return encodeCanonicalFields([
+      'bolt:network:verack:v1',
+      PROTOCOL_VERSION.toString(),
+      this.config.chainId.toString(),
+      this.config.genesisHash,
+      msg.role,
+      msg.senderNodeId,
+      msg.receiverNodeId,
+      msg.senderNonce.toString(),
+      msg.receiverNonce.toString()
+    ]);
   }
 
   /**
    * serialize inventory message
    */
   serializeInv(items: InvItem[]): Uint8Array {
+    if (items.length > MAX_INVENTORY_ITEMS) throw new Error('inventory item limit exceeded');
     const buffer = new ArrayBuffer(4 + items.length * 36);
     const view = new DataView(buffer);
     const encoder = new TextEncoder();
@@ -329,6 +397,7 @@ export class Protocol {
     const decoder = new TextDecoder();
     
     const count = view.getUint32(0, false);
+    if (count > MAX_INVENTORY_ITEMS) return null;
     if (data.length < 4 + count * 36) return null;
     
     const items: InvItem[] = [];
@@ -371,6 +440,7 @@ export class Protocol {
    * serialize getblocks message
    */
   serializeGetBlocks(version: number, hashes: string[], stopHash: string): Uint8Array {
+    if (hashes.length > MAX_LOCATOR_HASHES) throw new Error('block locator limit exceeded');
     const buffer = new ArrayBuffer(8 + hashes.length * 32 + 32);
     const view = new DataView(buffer);
     
@@ -428,6 +498,7 @@ export class Protocol {
    * serialize getheaders message
    */
   serializeGetHeaders(locator: string[], stopHash: string): Uint8Array {
+    if (locator.length > MAX_LOCATOR_HASHES) throw new Error('header locator limit exceeded');
     const buffer = new ArrayBuffer(4 + locator.length * 32 + 32);
     const view = new DataView(buffer);
     
@@ -457,6 +528,7 @@ export class Protocol {
     const view = new DataView(data.buffer, data.byteOffset);
     
     const count = view.getUint32(0, false);
+    if (count > MAX_LOCATOR_HASHES) return null;
     if (data.length < 4 + count * 32 + 32) return null;
     
     const locator: string[] = [];
@@ -487,6 +559,7 @@ export class Protocol {
     
     // skip version (4 bytes)
     const count = view.getUint32(4, false);
+    if (count > MAX_LOCATOR_HASHES) return null;
     if (data.length < 8 + count * 32 + 32) return null;
     
     const locator: string[] = [];
@@ -511,6 +584,7 @@ export class Protocol {
    * serialize headers message (array of block headers)
    */
   serializeHeaders(headers: any[]): Uint8Array {
+    if (headers.length > MAX_HEADERS) throw new Error('header limit exceeded');
     const encoder = new TextEncoder();
     const buffer = new ArrayBuffer(4 + headers.length * 152);
     const view = new DataView(buffer);
@@ -568,6 +642,7 @@ export class Protocol {
     const decoder = new TextDecoder();
     
     const count = view.getUint32(0, false);
+    if (count > MAX_HEADERS) return null;
     if (data.length < 4 + count * 152) return null;
     
     const headers: any[] = [];
@@ -720,7 +795,7 @@ export class Protocol {
         payloadBytes = this.serializeVersion(payload);
         break;
       case MessageType.VERACK:
-        payloadBytes = new Uint8Array(0); // empty
+        payloadBytes = this.serializeVerack(payload);
         break;
       case MessageType.PING:
       case MessageType.PONG:
@@ -793,7 +868,7 @@ export class Protocol {
         decodedPayload = this.deserializeVersion(payload);
         break;
       case MessageType.VERACK:
-        decodedPayload = {}; // empty
+        decodedPayload = this.deserializeVerack(payload);
         break;
       case MessageType.PING:
       case MessageType.PONG:
@@ -828,6 +903,7 @@ export class Protocol {
       logger.warn(`invalid ${command} payload`, error);
       return null;
     }
+    if (decodedPayload === null) return null;
     
     return { command, payload: decodedPayload };
   }

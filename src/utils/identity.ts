@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { generateAddress, generateFromPrivateKey, type KeyInfo } from '../crypto/address';
+import { sign, verify } from '../crypto/signature';
 import { getLogger } from './logger';
 
 const logger = getLogger(__filename);
@@ -18,10 +19,12 @@ export interface NodeIdentity {
  */
 export class IdentityManager {
   private identityPath: string;
+  private addressPrefix: number;
   private identity: NodeIdentity | null = null;
 
-  constructor(dataDir: string = './data') {
+  constructor(dataDir: string = './data', addressPrefix: number = 0x00) {
     this.identityPath = path.join(dataDir, '.identity');
+    this.addressPrefix = addressPrefix;
   }
 
   /**
@@ -30,14 +33,16 @@ export class IdentityManager {
   async loadOrCreate(): Promise<NodeIdentity> {
     // check if identity file exists
     if (fs.existsSync(this.identityPath)) {
-      try {
-        const data = fs.readFileSync(this.identityPath, 'utf8');
-        this.identity = JSON.parse(data);
-        logger.info(`loaded node identity: ${this.identity!.address}`);
-        return this.identity!;
-      } catch (error) {
-        logger.error('failed to load identity file, generating new identity', error);
+      fs.chmodSync(this.identityPath, 0o600);
+      const data = fs.readFileSync(this.identityPath, 'utf8');
+      const identity = JSON.parse(data) as NodeIdentity;
+      const derived = generateFromPrivateKey(identity.privateKey, this.addressPrefix);
+      if (identity.address !== derived.address || identity.publicKey !== derived.publicKey) {
+        throw new Error('stored node identity does not match its private key or active network');
       }
+      this.identity = identity;
+      logger.info(`loaded node identity: ${identity.address}`);
+      return identity;
     }
 
     // generate new identity
@@ -51,7 +56,7 @@ export class IdentityManager {
     logger.info('generating new node identity...');
     
     // generate new keypair
-    const keyInfo: KeyInfo = generateAddress();
+    const keyInfo: KeyInfo = generateAddress(this.addressPrefix);
     
     // create identity object
     this.identity = {
@@ -126,23 +131,18 @@ export class IdentityManager {
   /**
    * sign data with node's private key
    */
-  sign(data: Uint8Array): string {
+  async sign(data: Uint8Array): Promise<string> {
     if (!this.identity) {
       throw new Error('identity not loaded');
     }
-    
-    // implement signing with private key
-    // for now, return a placeholder
-    return 'signature';
+    return sign(data, this.identity.privateKey);
   }
 
   /**
    * verify signature with public key
    */
-  verify(data: Uint8Array, signature: string, publicKey: string): boolean {
-    // implement signature verification
-    // for now, return true
-    return true;
+  async verify(data: Uint8Array, signature: string, publicKey: string): Promise<boolean> {
+    return verify(data, signature, publicKey);
   }
 
   /**
@@ -164,6 +164,10 @@ export class IdentityManager {
    * import identity from existing keypair
    */
   importFromKeyInfo(keyInfo: KeyInfo, alias?: string): NodeIdentity {
+    const derived = generateFromPrivateKey(keyInfo.privateKey, this.addressPrefix);
+    if (derived.address !== keyInfo.address || derived.publicKey !== keyInfo.publicKey) {
+      throw new Error('imported node identity does not match its private key or active network');
+    }
     this.identity = {
       address: keyInfo.address,
       publicKey: keyInfo.publicKey,
