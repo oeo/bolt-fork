@@ -88,7 +88,7 @@ describe('API Server Integration', () => {
 
   test('should handle non-existent block', async () => {
     const response = await fetch('http://localhost:17333/blocks/999');
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(404);
     const error = await response.json();
     expect(error.error).toContain('Block not found');
   });
@@ -138,7 +138,7 @@ describe('API Server Integration', () => {
     const result = await response.json();
     expect(result.accepted).toBe(true);
     expect(result.hash).toBe(tx.hash);
-    expect(result.broadcasted).toBe(false); // no p2p node
+    expect(result.broadcasted).toBeUndefined();
 
     // verify in mempool
     const mempoolTx = mempool.getTransaction(tx.hash);
@@ -168,9 +168,9 @@ describe('API Server Integration', () => {
       body: serialize(tx.toObject())
     });
 
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(400);
     const error = await response.json();
-    expect(error.error).toContain('Insufficient balance');
+    expect(error.error).toBe('Transaction rejected');
   });
 
   test('should get account balance', async () => {
@@ -238,19 +238,44 @@ describe('API Server Integration', () => {
     expect(data.confirmations).toBe(0);
   });
 
-  test('should handle CORS headers', async () => {
+  test('returns a confirmed transaction from one storage snapshot', async () => {
+    const hash = '12'.repeat(32);
+    const blockHash = '34'.repeat(32);
+    const getConfirmedTransaction = storage.getConfirmedTransaction;
+    storage.getConfirmedTransaction = async () => ({
+      transaction: { hash },
+      blockHeight: 2,
+      blockHash,
+      canonicalHeight: 4,
+    });
+
+    try {
+      const response = await fetch(`http://localhost:17333/transactions/${hash}`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        hash,
+        status: 'confirmed',
+        confirmations: 3,
+        blockHeight: 2,
+        blockHash,
+      });
+    } finally {
+      storage.getConfirmedTransaction = getConfirmedTransaction;
+    }
+  });
+
+  test('does not enable browser cross-origin access', async () => {
     const response = await fetch('http://localhost:17333/health');
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
-    expect(response.headers.get('Access-Control-Allow-Methods')).toContain('GET');
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
     expect(response.headers.get('Content-Type')).toBe('application/json');
   });
 
-  test('should handle OPTIONS requests', async () => {
+  test('rejects unsupported methods', async () => {
     const response = await fetch('http://localhost:17333/health', {
       method: 'OPTIONS'
     });
-    expect(response.status).toBe(204);
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(response.status).toBe(405);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
   });
 
   test('should return 404 for unknown endpoints', async () => {
@@ -260,28 +285,76 @@ describe('API Server Integration', () => {
     expect(error.error).toBe('Endpoint not found');
   });
 
-  test('should not expose peer synchronization endpoints', async () => {
-    for (const path of ['/peer/status', '/peer/blocks', '/peer/transactions']) {
+  test('does not expose network control or synchronization endpoints', async () => {
+    for (const path of [
+      '/network/status',
+      '/peers',
+      '/peers/connect',
+      '/peer/status',
+      '/peer/blocks',
+      '/peer/transactions',
+    ]) {
       const response = await fetch(`http://localhost:17333${path}`);
       expect(response.status).toBe(404);
     }
-    for (const path of ['/peer/blocks', '/peer/transactions']) {
+    for (const path of ['/peers/connect', '/peer/blocks', '/peer/transactions']) {
       const response = await fetch(`http://localhost:17333${path}`, { method: 'POST' });
       expect(response.status).toBe(404);
     }
   });
 
-  test('should handle network status without p2p node', async () => {
-    const response = await fetch('http://localhost:17333/network/status');
+  test('validates and bounds pagination', async () => {
+    for (const query of ['limit=0', 'limit=101', 'limit=1x', 'offset=-1', 'offset=1.5', 'limit=1&limit=2', 'other=1']) {
+      const response = await fetch(`http://localhost:17333/blocks?${query}`);
+      expect(response.status).toBe(400);
+    }
+
+    const response = await fetch('http://localhost:17333/blocks?limit=1&offset=5');
     expect(response.status).toBe(200);
-    const data = await response.json();
-    expect(data.error).toBe('Network node not available');
+    expect(await response.json()).toMatchObject({ blocks: [], count: 0, limit: 1, offset: 5 });
   });
 
-  test('should handle peers endpoint without p2p node', async () => {
-    const response = await fetch('http://localhost:17333/peers');
+  test('paginates mempool transactions', async () => {
+    const response = await fetch('http://localhost:17333/mempool/transactions?limit=1&offset=0');
     expect(response.status).toBe(200);
-    const data = await response.json();
-    expect(data.error).toBe('Network node not available');
+    expect(await response.json()).toMatchObject({ limit: 1, offset: 0, count: 1 });
+  });
+
+  test('validates path parameters', async () => {
+    for (const path of [
+      '/blocks/not-a-hash',
+      `/blocks/${'A'.repeat(64)}`,
+      `/transactions/${'z'.repeat(64)}`,
+      `/transactions/${'A'.repeat(64)}`,
+      '/accounts/not-an-address/balance',
+      '/accounts/not-an-address/nonce',
+    ]) {
+      const response = await fetch(`http://localhost:17333${path}`);
+      expect(response.status).toBe(400);
+    }
+    expect((await fetch('http://localhost:17333/blocks/999')).status).toBe(404);
+    expect((await fetch(`http://localhost:17333/transactions/${'0'.repeat(64)}`)).status).toBe(404);
+  });
+
+  test('requires bounded JSON transaction bodies', async () => {
+    const missingType = await fetch('http://localhost:17333/transactions', {
+      method: 'POST',
+      body: '{}',
+    });
+    expect(missingType.status).toBe(415);
+
+    const malformed = await fetch('http://localhost:17333/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+    expect(malformed.status).toBe(400);
+
+    const oversized = await fetch('http://localhost:17333/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: 'x'.repeat(128 * 1024) }),
+    });
+    expect(oversized.status).toBe(413);
   });
 });

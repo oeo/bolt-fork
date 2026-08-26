@@ -22,12 +22,13 @@ const logger = getLogger('bolt-node-ipfs');
 interface NodeConfig {
   // network
   apiPort: number;
+  apiHost: string;
   metricsPort: number;
+  metricsHost: string;
   networkMode?: 'ipfs' | 'tcp' | 'hybrid';
   tcpPort?: number;
   
   // node identity
-  nodeId: string;
   role: 'bootstrap' | 'miner' | 'full';
   
   // storage
@@ -41,6 +42,7 @@ interface NodeConfig {
   
   // ipfs
   ipfsApi?: string;
+  ipfsBootstrap?: boolean;
 }
 
 class BoltIPFSNode {
@@ -101,9 +103,6 @@ class BoltIPFSNode {
     this.identity = new IdentityManager(this.config.dataDir, chainConfig.addressPrefix);
     const nodeIdentity = await this.identity.loadOrCreate();
     
-    // override nodeId with address from identity
-    this.config.nodeId = nodeIdentity.address;
-    
     logger.info(`initializing bolt node ${this.identity.getDisplayName()} (${nodeIdentity.address}) with role: ${this.config.role}`);
     
     // create storage
@@ -150,6 +149,7 @@ class BoltIPFSNode {
       chainConfig,
       tcpPort: this.config.tcpPort || 8333,
       ipfsApi: this.config.ipfsApi,
+      ipfsBootstrap: this.config.ipfsBootstrap,
       externalHost: process.env.NODE_HOST || 'localhost'
     });
     
@@ -159,6 +159,7 @@ class BoltIPFSNode {
     // create api server
     this.api = new ApiServer({
       port: this.config.apiPort,
+      host: this.config.apiHost,
       blockchain: this.blockchain,
       mempool: this.mempool,
       storage: this.storage,
@@ -267,6 +268,7 @@ class BoltIPFSNode {
     // start metrics server
     this.metricsServer = serve({
       port: this.config.metricsPort,
+      hostname: this.config.metricsHost,
       fetch: async (request) => {
         const url = new URL(request.url);
         
@@ -449,10 +451,11 @@ function parseConfig(): NodeConfig {
   const config: NodeConfig = {
     // network ports
     apiPort: parseInt(process.env.API_PORT || '7333'),
+    apiHost: process.env.API_HOST || '127.0.0.1',
     metricsPort: parseInt(process.env.METRICS_PORT || '7336'),
+    metricsHost: process.env.METRICS_HOST || '127.0.0.1',
     
     // node identity
-    nodeId: process.env.NODE_ID || 'bolt-node',
     role: (process.env.NODE_ROLE as any) || 'full',
     
     // storage
@@ -466,6 +469,7 @@ function parseConfig(): NodeConfig {
     
     // ipfs
     ipfsApi: process.env.IPFS_API || 'http://localhost:5001',
+    ipfsBootstrap: process.env.IPFS_BOOTSTRAP_ENABLED !== 'false',
     
     // network mode (default to tcp)
     networkMode: (process.env.NETWORK_MODE as 'ipfs' | 'tcp') || 'tcp',

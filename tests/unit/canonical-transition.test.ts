@@ -121,6 +121,13 @@ function canonicalTransitionContract(
       });
 
       expect(await storage.getTransaction(transaction.hash)).toEqual(transaction);
+      expect(await storage.getConfirmedTransaction(transaction.hash)).toEqual({
+        transaction,
+        blockHash: firstBranch.hash,
+        blockHeight: 1,
+        transactionIndex: 0,
+        canonicalHeight: 1,
+      });
       expect(await storage.getTransactionsByAddress('sender')).toEqual([transaction]);
       expect(await storage.getTransactionsByAddress('recipient')).toEqual([transaction]);
       expect(await storage.isInMempool(transaction.hash)).toBe(false);
@@ -137,6 +144,7 @@ function canonicalTransitionContract(
       });
 
       expect(await storage.getTransaction(transaction.hash)).toBeNull();
+      expect(await storage.getConfirmedTransaction(transaction.hash)).toBeNull();
       expect(await storage.getTransactionsByAddress('sender')).toEqual([]);
       expect(await storage.getTransactionsByAddress('recipient')).toEqual([]);
       expect(await storage.getMempoolEntries()).toEqual([{ transaction, addedAt: 456 }]);

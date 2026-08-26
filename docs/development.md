@@ -1,6 +1,6 @@
 # development
 
-bolt is pre-alpha and release-blocked. Review [plan.md](../plan.md) before development or deployment work.
+bolt is pre-alpha. review [plan.md](../plan.md) before development or deployment work.
 
 ## prerequisites
 
@@ -16,16 +16,19 @@ cd bolt-ts
 bun install
 ```
 
-Create `.env` with settings needed for the local node:
+the compose stack does not require `.env`. create one only to override defaults. direct node startup accepts these settings:
 
 ```bash
 DATA_DIR=./data
 MINING_ENABLED=false
+API_HOST=127.0.0.1
 API_PORT=7333
 TCP_PORT=8333
+METRICS_HOST=127.0.0.1
 METRICS_PORT=7336
 BOLT_NETWORK=devnet
 IPFS_API=http://localhost:5001
+IPFS_BOOTSTRAP_ENABLED=true
 ```
 
 `BOLT_NETWORK` accepts `mainnet`, `testnet`, or `devnet`.
@@ -34,7 +37,7 @@ IPFS_API=http://localhost:5001
 
 The compose stack starts bolt, Kubo, and monitoring services.
 
-run it only on a trusted isolated host. compose publishes unauthenticated bolt api, Kubo rpc, metrics, and monitoring services to host interfaces. Grafana uses default `admin` credentials.
+compose publishes api, metrics, Prometheus, and Grafana to host loopback. tcp p2p and ipfs swarm ports publish on all host interfaces for peer connectivity. the api remains unauthenticated, and Grafana uses default `admin` credentials unless configured otherwise. Kubo rpc remains inside the docker network. set `NODE_HOST` to a routable address before connecting nodes across hosts.
 
 ```bash
 docker compose up -d
@@ -48,9 +51,13 @@ To run bolt directly, start Kubo first and set `IPFS_API` to its api address:
 bun run src/index.ts
 ```
 
-## multi-node cluster
+## multi-node deployment test
 
-the cluster scripts are not safe to use. generated node compose files do not set `IPFS_API` to the Kubo sidecar, so bolt containers cannot complete startup. the stop script removes cluster volumes, and `--clean` can delete unrelated volumes matching its broad name pattern. fix sidecar wiring and volume scoping before running these scripts.
+`docker-compose.bats.yml` starts two bolt nodes with separate Kubo daemons. the test connects those daemons explicitly and disables public bootstrap so discovery does not depend on internet peers.
+
+```bash
+bun run test:bats
+```
 
 ## monitoring
 
@@ -58,7 +65,6 @@ Root compose services use these addresses:
 
 - Grafana: `http://localhost:3000`
 - Prometheus: `http://localhost:9090`
-- Loki: `http://localhost:3100`
 - bolt metrics: `http://localhost:7336/metrics`
 - bolt health: `http://localhost:7333/health`
 
@@ -75,7 +81,7 @@ bun test --bail tests/unit
 bun test --bail tests/integration
 bun test --bail tests/unit/protocol.test.ts
 bun test --bail --coverage
-bats tests/bats
+bun run test:bats
 ```
 
 Unit tests cover isolated behavior. Integration tests cover component boundaries. Bats tests exercise deployed nodes through docker.

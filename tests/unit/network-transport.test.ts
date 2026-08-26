@@ -820,7 +820,8 @@ describe('peer discovery authentication', () => {
     };
     const now = Date.now();
     const publish = async (timestamp: number) => handler({
-      from: new Uint8Array([1]),
+      type: 'signed',
+      from: { toString: () => 'peer-id' },
       data: new TextEncoder().encode(JSON.stringify(await createAnnouncement(timestamp)))
     });
 

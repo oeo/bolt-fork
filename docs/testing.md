@@ -8,7 +8,7 @@ bolt uses bun test suites for unit, integration, and end-to-end behavior. bats c
 - integration tests verify boundaries between bolt components.
 - end-to-end tests verify complete application flows in bun.
 - a bun integration test opens authenticated tcp connections between two nodes and verifies block synchronization and transaction relay.
-- bats currently starts one deployed node and verifies genesis persistence across restart. multi-node deployment coverage remains a release gate.
+- bats builds two deployed nodes with separate explicitly peered Kubo daemons. it verifies non-genesis block synchronization, pending transaction relay, and block and transaction persistence across restart.
 - docker coverage belongs in bats, not bun suites.
 
 ## local checks
@@ -44,6 +44,6 @@ ci performs these gates:
 1. install dependencies from the frozen lockfile.
 2. run type checking.
 3. run bun tests with a timeout and bail on first failure.
-4. run bats deployment smoke tests.
+4. run a ten-minute-bounded bats deployment test.
 
 only active suites contribute to these gates. report test totals, coverage, or performance only from current generated output.

@@ -250,7 +250,20 @@ describe('Metrics Service', async () => {
       
       const metricsOutput = await metrics.getMetrics();
       expect(metricsOutput).toContain('bolt_api_request_errors_total');
-      expect(metricsOutput).toContain('error_type="validation_error"');
+      expect(metricsOutput).toContain('error_type="internal"');
+    });
+
+    test('should bound attacker-controlled API labels', async () => {
+      metrics.recordApiRequest('DELETE', `/blocks/${'a'.repeat(64)}`, 404, 0.01);
+      metrics.recordApiRequest('TRACE', '/random/path', 404, 0.01);
+      metrics.recordApiError('PATCH', `/accounts/${'x'.repeat(200)}/balance`, 'arbitrary-message');
+
+      const metricsOutput = await metrics.getMetrics();
+      expect(metricsOutput).toContain('method="OTHER",endpoint="/blocks/:id"');
+      expect(metricsOutput).toContain('method="OTHER",endpoint="unmatched"');
+      expect(metricsOutput).toContain('error_type="internal"');
+      expect(metricsOutput).not.toContain('arbitrary-message');
+      expect(metricsOutput).not.toContain('x'.repeat(200));
     });
     
     test('should track API connections', async () => {

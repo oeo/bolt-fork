@@ -1,20 +1,28 @@
 import { serve } from 'bun';
 import { Blockchain } from '../core/blockchain';
+import type { Block } from '../core/block';
 import { Mempool } from '../core/mempool';
 import { StorageAdapter } from '../storage/adapter';
 import { getLogger } from '../utils/logger';
 import { formatWatts } from '../utils/currency';
 import { serialize, deserialize } from '../utils/bigint';
 import { getMetricsService } from '../services/metrics';
+import { validateAddress } from '../crypto/address';
 
 const logger = getLogger(__filename);
+const MAX_REQUEST_BODY_SIZE = 128 * 1024;
+const MAX_PAGE_SIZE = 100;
+const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
-interface BoltNode {
-  isStarted(): boolean;
-  broadcastTransaction(transaction: any): Promise<void>;
-  getStats(): any;
-  getPeers(): any;
-  connectToPeer(address: string): Promise<void>;
+class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly metricType: 'bad_request' | 'not_found' | 'method_not_allowed' | 'internal'
+  ) {
+    super(message);
+  }
 }
 
 export interface ApiServerConfig {
@@ -22,7 +30,6 @@ export interface ApiServerConfig {
   host?: string;
   blockchain: Blockchain;
   mempool: Mempool;
-  node?: BoltNode;
   storage: StorageAdapter;
 }
 
@@ -48,11 +55,12 @@ export class ApiServer {
     }
 
     const port = this.config.port || parseInt(process.env.API_PORT || '7333');
-    const host = this.config.host || '0.0.0.0';
+    const host = this.config.host || '127.0.0.1';
 
     this.server = serve({
       port,
       hostname: host,
+      maxRequestBodySize: MAX_REQUEST_BODY_SIZE,
       fetch: this.handleRequest.bind(this),
     });
 
@@ -68,106 +76,114 @@ export class ApiServer {
     const path = url.pathname;
     const method = req.method;
     const startTime = Date.now();
-
-    // cors headers
-    const headers = {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    };
-
-    // handle options for cors
-    if (method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers });
-    }
+    const endpoint = this.matchEndpoint(path);
+    let response: Response;
 
     try {
-      // route requests
-      let result: any;
+      if (endpoint === 'unmatched') throw new ApiError(404, 'Endpoint not found', 'not_found');
+      const allowedMethod = endpoint === '/transactions' ? 'POST' : 'GET';
+      if (method !== allowedMethod) throw new ApiError(405, 'Method not allowed', 'method_not_allowed');
 
-      // blockchain endpoints
-      if (path === '/blocks' && method === 'GET') {
-        result = await this.getBlocks(url);
-      } else if (path.startsWith('/blocks/') && method === 'GET') {
-        const hashOrHeight = path.split('/')[2];
-        result = await this.getBlock(hashOrHeight);
-      } else if (path === '/blockchain/info' && method === 'GET') {
-        result = await this.getBlockchainInfo();
-      }
+      let result: unknown;
+      if (endpoint === '/blocks') result = await this.getBlocks(url);
+      else if (endpoint === '/blocks/:id') result = await this.getBlock(path.slice('/blocks/'.length));
+      else if (endpoint === '/blockchain/info') result = await this.getBlockchainInfo();
+      else if (endpoint === '/transactions') result = await this.submitTransaction(await this.readJson(req));
+      else if (endpoint === '/transactions/:hash') result = await this.getTransaction(path.slice('/transactions/'.length));
+      else if (endpoint === '/accounts/:address/balance') result = await this.getBalance(path.split('/')[2]);
+      else if (endpoint === '/accounts/:address/nonce') result = await this.getNonce(path.split('/')[2]);
+      else if (endpoint === '/mempool') result = await this.getMempoolInfo();
+      else if (endpoint === '/mempool/transactions') result = this.getMempoolTransactions(url);
+      else result = { status: 'ok', timestamp: Date.now() };
 
-      // transaction endpoints
-      else if (path === '/transactions' && method === 'POST') {
-        const text = await req.text();
-        const body = deserialize(text);
-        result = await this.submitTransaction(body);
-      } else if (path.startsWith('/transactions/') && method === 'GET') {
-        const hash = path.split('/')[2];
-        result = await this.getTransaction(hash);
-      }
-
-      // account endpoints
-      else if (path.startsWith('/accounts/') && path.endsWith('/balance') && method === 'GET') {
-        const address = path.split('/')[2];
-        result = await this.getBalance(address);
-      } else if (path.startsWith('/accounts/') && path.endsWith('/nonce') && method === 'GET') {
-        const address = path.split('/')[2];
-        result = await this.getNonce(address);
-      }
-
-      // mempool endpoints
-      else if (path === '/mempool' && method === 'GET') {
-        result = await this.getMempoolInfo();
-      } else if (path === '/mempool/transactions' && method === 'GET') {
-        result = await this.getMempoolTransactions();
-      }
-
-      // network endpoints
-      else if (path === '/network/status' && method === 'GET') {
-        result = await this.getNetworkStatus();
-      } else if (path === '/peers' && method === 'GET') {
-        result = await this.getPeers();
-      } else if (path === '/peers/connect' && method === 'POST') {
-        const text = await req.text();
-        const body = text ? deserialize(text) : {};
-        result = await this.connectPeer(body.address);
-      }
-
-      // health check
-      else if (path === '/health' && method === 'GET') {
-        result = { status: 'ok', timestamp: Date.now() };
-      }
-
-      // not found
-      else {
-        const duration = (Date.now() - startTime) / 1000;
-        const metrics = getMetricsService();
-        metrics.recordApiRequest(method, path, 404, duration);
-        return new Response(
-          JSON.stringify({ error: 'Endpoint not found' }),
-          { status: 404, headers }
-        );
-      }
-
-      // return result - record successful request
-      const duration = (Date.now() - startTime) / 1000;
-      const metrics = getMetricsService();
-      metrics.recordApiRequest(method, path, 200, duration);
-      return new Response(
-        serialize(result),
-        { status: 200, headers }
+      response = new Response(serialize(result), { status: 200, headers: JSON_HEADERS });
+    } catch (error) {
+      const apiError = error instanceof ApiError
+        ? error
+        : new ApiError(500, 'Internal server error', 'internal');
+      if (apiError.status === 500) logger.error('API request failed', error);
+      response = new Response(
+        JSON.stringify({ error: apiError.message }),
+        { status: apiError.status, headers: JSON_HEADERS }
       );
+      getMetricsService().recordApiError(method, endpoint, apiError.metricType);
+    }
 
-    } catch (error: any) {
-      logger.error('API request failed', error);
-      const duration = (Date.now() - startTime) / 1000;
-      const metrics = getMetricsService();
-      metrics.recordApiRequest(method, path, 500, duration);
-      metrics.recordApiError(method, path, error.name || 'UnknownError');
-      return new Response(
-        JSON.stringify({ error: error.message || 'Internal server error' }),
-        { status: 500, headers }
-      );
+    getMetricsService().recordApiRequest(
+      method,
+      endpoint,
+      response.status,
+      (Date.now() - startTime) / 1000
+    );
+    return response;
+  }
+
+  private matchEndpoint(path: string): string {
+    if (
+      path === '/health' ||
+      path === '/blockchain/info' ||
+      path === '/blocks' ||
+      path === '/transactions' ||
+      path === '/mempool' ||
+      path === '/mempool/transactions'
+    ) return path;
+    if (/^\/blocks\/[^/]+$/.test(path)) return '/blocks/:id';
+    if (/^\/transactions\/[^/]+$/.test(path)) return '/transactions/:hash';
+    if (/^\/accounts\/[^/]+\/balance$/.test(path)) return '/accounts/:address/balance';
+    if (/^\/accounts\/[^/]+\/nonce$/.test(path)) return '/accounts/:address/nonce';
+    return 'unmatched';
+  }
+
+  private async readJson(req: Request): Promise<Record<string, unknown>> {
+    if (!/^application\/json(?:\s*;|$)/i.test(req.headers.get('content-type') || '')) {
+      throw new ApiError(415, 'Content-Type must be application/json', 'bad_request');
+    }
+    const text = await req.text();
+    if (!text) throw new ApiError(400, 'Request body is required', 'bad_request');
+    try {
+      const value = deserialize(text);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+      return value;
+    } catch {
+      throw new ApiError(400, 'Invalid JSON body', 'bad_request');
+    }
+  }
+
+  private parsePagination(url: URL): { limit: number; offset: number } {
+    for (const key of url.searchParams.keys()) {
+      if (key !== 'limit' && key !== 'offset') {
+        throw new ApiError(400, `Unknown query parameter: ${key}`, 'bad_request');
+      }
+    }
+    if (url.searchParams.getAll('limit').length > 1 || url.searchParams.getAll('offset').length > 1) {
+      throw new ApiError(400, 'Duplicate pagination parameter', 'bad_request');
+    }
+    const limit = this.parseUnsignedInteger(url.searchParams.get('limit') ?? '10', 'limit');
+    const offset = this.parseUnsignedInteger(url.searchParams.get('offset') ?? '0', 'offset');
+    if (limit < 1 || limit > MAX_PAGE_SIZE) {
+      throw new ApiError(400, `limit must be between 1 and ${MAX_PAGE_SIZE}`, 'bad_request');
+    }
+    return { limit, offset };
+  }
+
+  private parseUnsignedInteger(value: string, name: string): number {
+    if (!/^(?:0|[1-9]\d*)$/.test(value)) {
+      throw new ApiError(400, `${name} must be a non-negative integer`, 'bad_request');
+    }
+    const number = Number(value);
+    if (!Number.isSafeInteger(number)) {
+      throw new ApiError(400, `${name} exceeds the safe integer range`, 'bad_request');
+    }
+    return number;
+  }
+
+  private assertHash(hash: string): void {
+    if (!/^[a-f\d]{64}$/.test(hash)) throw new ApiError(400, 'Invalid hash', 'bad_request');
+  }
+
+  private assertAddress(address: string): void {
+    if (!validateAddress(address, this.config.blockchain.getChainConfig().addressPrefix)) {
+      throw new ApiError(400, 'Invalid address', 'bad_request');
     }
   }
 
@@ -175,16 +191,23 @@ export class ApiServer {
    * get blocks with pagination
    */
   private async getBlocks(url: URL): Promise<any> {
-    const limit = parseInt(url.searchParams.get('limit') || '10');
-    const offset = parseInt(url.searchParams.get('offset') || '0');
+    const { limit, offset } = this.parsePagination(url);
 
     const height = await this.config.blockchain.getHeight();
-    const blocks = [];
+    const blocks: Block[] = [];
+    let responseBytes = 0;
 
-    for (let i = Math.max(0, height - offset); i >= Math.max(0, height - offset - limit + 1); i--) {
+    if (offset > height) {
+      return { blocks, total: height + 1, limit, offset, count: 0 };
+    }
+
+    for (let i = height - offset; i >= Math.max(0, height - offset - limit + 1); i--) {
       const block = await this.config.blockchain.getBlock(i);
       if (block) {
+        const blockBytes = new TextEncoder().encode(serialize(block)).byteLength;
+        if (responseBytes + blockBytes > MAX_RESPONSE_BYTES) break;
         blocks.push(block);
+        responseBytes += blockBytes;
       }
     }
 
@@ -192,7 +215,8 @@ export class ApiServer {
       blocks,
       total: height + 1,
       limit,
-      offset
+      offset,
+      count: blocks.length,
     };
   }
 
@@ -204,16 +228,17 @@ export class ApiServer {
     const isHeight = /^\d+$/.test(hashOrHeight);
 
     if (isHeight) {
-      const height = parseInt(hashOrHeight);
+      const height = this.parseUnsignedInteger(hashOrHeight, 'height');
       const block = await this.config.blockchain.getBlock(height);
       if (!block) {
-        throw new Error('Block not found');
+        throw new ApiError(404, 'Block not found', 'not_found');
       }
       return block;
     } else {
+      this.assertHash(hashOrHeight);
       const block = await this.config.blockchain.getBlockByHash(hashOrHeight);
       if (!block) {
-        throw new Error('Block not found');
+        throw new ApiError(404, 'Block not found', 'not_found');
       }
       return block;
     }
@@ -246,32 +271,16 @@ export class ApiServer {
    * submit a transaction
    */
   private async submitTransaction(txData: any): Promise<any> {
-    // validate against account state if not coinbase
-    if (txData.from) {
-      const balance = await this.config.blockchain.getBalance(txData.from);
-      const nonce = await this.config.blockchain.getNonce(txData.from);
-      
-      const { TransactionClass } = require('../core/transaction');
-      const txClass = TransactionClass.fromObject(txData);
-      const validation = txClass.validateAgainstAccount(balance, nonce);
-      
-      if (!validation.valid) {
-        throw new Error(validation.error);
-      }
-    }
-    
-    // add to mempool - will throw if invalid
-    await this.config.mempool.addTransaction(txData);
-
-    // broadcast if node is available
-    if (this.config.node && this.config.node.isStarted()) {
-      await this.config.node.broadcastTransaction(txData);
+    try {
+      await this.config.mempool.addTransaction(txData);
+    } catch (error) {
+      logger.debug('Transaction rejected by mempool', error);
+      throw new ApiError(400, 'Transaction rejected', 'bad_request');
     }
 
     return {
       hash: txData.hash,
       accepted: true,
-      broadcasted: this.config.node?.isStarted() || false
     };
   }
 
@@ -279,6 +288,7 @@ export class ApiServer {
    * get transaction by hash
    */
   private async getTransaction(hash: string): Promise<any> {
+    this.assertHash(hash);
     // check mempool first
     const mempoolTx = this.config.mempool.getTransaction(hash);
     if (mempoolTx) {
@@ -290,28 +300,15 @@ export class ApiServer {
     }
 
     // check blockchain
-    const tx = await this.config.storage.getTransaction(hash);
-    if (!tx) {
-      throw new Error('Transaction not found');
-    }
-
-    // find block containing transaction
-    const height = await this.config.blockchain.getHeight();
-    let blockHeight = -1;
-
-    for (let i = height; i >= 0; i--) {
-      const block = await this.config.blockchain.getBlock(i);
-      if (block && block.transactions.some(t => t.hash === hash)) {
-        blockHeight = i;
-        break;
-      }
-    }
+    const confirmed = await this.config.storage.getConfirmedTransaction(hash);
+    if (!confirmed) throw new ApiError(404, 'Transaction not found', 'not_found');
 
     return {
-      ...tx,
+      ...confirmed.transaction,
       status: 'confirmed',
-      confirmations: blockHeight >= 0 ? height - blockHeight + 1 : 0,
-      blockHeight
+      confirmations: confirmed.canonicalHeight - confirmed.blockHeight + 1,
+      blockHeight: confirmed.blockHeight,
+      blockHash: confirmed.blockHash,
     };
   }
 
@@ -319,6 +316,7 @@ export class ApiServer {
    * get account balance
    */
   private async getBalance(address: string): Promise<any> {
+    this.assertAddress(address);
     const balance = await this.config.blockchain.getBalance(address);
 
     return {
@@ -332,6 +330,7 @@ export class ApiServer {
    * get account nonce
    */
   private async getNonce(address: string): Promise<any> {
+    this.assertAddress(address);
     const nonce = await this.config.blockchain.getNonce(address);
 
     return {
@@ -359,70 +358,24 @@ export class ApiServer {
   /**
    * get mempool transactions
    */
-  private async getMempoolTransactions(): Promise<any> {
+  private getMempoolTransactions(url: URL): any {
+    const { limit, offset } = this.parsePagination(url);
     const transactions = this.config.mempool.getTransactions();
-
-    return {
-      transactions,
-      count: transactions.length
-    };
-  }
-
-  /**
-   * get network status
-   */
-  private async getNetworkStatus(): Promise<any> {
-    if (!this.config.node) {
-      return {
-        error: 'Network node not available'
-      };
+    const page = [];
+    let responseBytes = 0;
+    for (const transaction of transactions.slice(offset, offset + limit)) {
+      const transactionBytes = new TextEncoder().encode(serialize(transaction)).byteLength;
+      if (responseBytes + transactionBytes > MAX_RESPONSE_BYTES) break;
+      page.push(transaction);
+      responseBytes += transactionBytes;
     }
 
-    const stats = this.config.node.getStats();
-    const height = await this.config.blockchain.getHeight();
-
     return {
-      peerId: stats.peerId,
-      multiaddrs: stats.multiaddrs,
-      connectedPeers: stats.peers,
-      protocols: stats.protocols,
-      topics: stats.subscribedTopics,
-      blockHeight: height,
-      syncing: false // TODO: implement sync status
-    };
-  }
-
-  /**
-   * get connected peers
-   */
-  private async getPeers(): Promise<any> {
-    if (!this.config.node) {
-      return {
-        error: 'Network node not available'
-      };
-    }
-
-    const peers = this.config.node.getPeers();
-
-    return {
-      peers,
-      count: peers.length
-    };
-  }
-
-  /**
-   * connect to a peer
-   */
-  private async connectPeer(address: string): Promise<any> {
-    if (!this.config.node) {
-      throw new Error('Network node not available');
-    }
-
-    await this.config.node.connectToPeer(address);
-
-    return {
-      connected: true,
-      address
+      transactions: page,
+      total: transactions.length,
+      limit,
+      offset,
+      count: page.length,
     };
   }
 

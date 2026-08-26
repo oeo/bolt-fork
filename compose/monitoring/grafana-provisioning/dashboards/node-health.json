@@ -600,34 +600,6 @@
       ],
       "title": "API Request Rate",
       "type": "stat"
-    },
-    {
-      "datasource": "Loki",
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 12,
-        "y": 14
-      },
-      "id": 9,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "targets": [
-        {
-          "expr": "{container_name=~\"node.*\"}",
-          "refId": "A"
-        }
-      ],
-      "title": "Recent Node Logs",
-      "type": "logs"
     }
   ],
   "refresh": "5s",

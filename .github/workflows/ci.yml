@@ -6,19 +6,22 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: timeout 120 bun test --bail
 
   deployment:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-      - run: sudo apt-get update && sudo apt-get install -y bats
-      - run: bun run test:bats
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: |
+          git clone https://github.com/bats-core/bats-core.git /tmp/bats-core
+          git -C /tmp/bats-core checkout 713504bc0224a19b3d7c7958c18dc07f64f54b44
+          sudo /tmp/bats-core/install.sh /usr/local
+      - run: timeout 600 bats tests/bats/*.bats

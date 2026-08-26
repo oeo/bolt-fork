@@ -503,8 +503,8 @@ async function elaborateActivityDemo() {
     console.log('  • Storage performance and blockchain state size');
     
     console.log('\n📊 ADVANCED DASHBOARDS AVAILABLE:');
-    console.log('  • Grafana: http://localhost:7340 (admin/admin)');
-    console.log('  • Prometheus: http://localhost:7338');
+    console.log('  • Grafana: http://localhost:3000 (admin/admin)');
+    console.log('  • Prometheus: http://localhost:9090');
     console.log('  • Bolt Metrics API: http://localhost:7336/metrics');
     
     console.log('\n🔍 SUGGESTED GRAFANA QUERIES:');

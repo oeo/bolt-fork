@@ -6,6 +6,8 @@
 
 metrics change through blockchain and mempool events, mining timers and events, api requests, and work performed immediately before a scrape.
 
+api metric labels use finite values. methods normalize to `GET`, `POST`, or `OTHER`; routes normalize to active route templates or `unmatched`; errors normalize to `bad_request`, `not_found`, `method_not_allowed`, or `internal`.
+
 ## production updates
 
 | trigger | current updates |
@@ -117,7 +119,7 @@ histograms also expose prometheus-generated `_bucket`, `_sum`, and `_count` seri
 
 ## node metrics server
 
-normal node startup serves metrics on `METRICS_PORT`, default `7336`.
+normal node startup serves metrics on `METRICS_HOST` and `METRICS_PORT`, default `127.0.0.1:7336`. compose binds inside the container and publishes the metrics port to host loopback.
 
 | route | behavior |
 |---|---|

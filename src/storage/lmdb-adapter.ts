@@ -1,5 +1,6 @@
 import {
   CanonicalTransition,
+  ConfirmedTransactionSnapshot,
   MempoolUpdate,
   PersistedMempoolEntry,
   StaleChainTipError,
@@ -227,8 +228,19 @@ export class LMDBAdapter extends StorageAdapter {
   }
 
   async getTransaction(hash: string): Promise<Transaction | null> {
-    const data = this.manager.confirmedTransactions.get(hash);
-    return data ? this.deserializeConfirmedTransaction(data).transaction : null;
+    return (await this.getConfirmedTransaction(hash))?.transaction ?? null;
+  }
+
+  async getConfirmedTransaction(hash: string): Promise<ConfirmedTransactionSnapshot | null> {
+    return this.manager.transactionSync(() => {
+      const data = this.manager.confirmedTransactions.get(hash);
+      if (!data) return null;
+      const height = this.manager.metadata.get('chainHeight');
+      return {
+        ...this.deserializeConfirmedTransaction(data),
+        canonicalHeight: height === undefined ? -1 : Number(height.toString()),
+      };
+    });
   }
 
   async getMempoolTransactions(): Promise<Transaction[]> {

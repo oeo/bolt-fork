@@ -60,6 +60,8 @@ transactions are chain-bound and identify transfer or coinbase kind. block execu
 
 canonical transitions carry expected tip and cumulative-work values. storage implementations reject stale writes instead of silently replacing a changed tip. automatic backup, recovery, and startup integrity verification are not provided. `Blockchain.verifyChainIntegrity()` is an explicit operation.
 
+confirmed transaction lookup returns transaction location and current canonical height from one storage snapshot. canonical transitions rebuild or update transaction locations when branches change.
+
 ## runtime structure
 
 ```text

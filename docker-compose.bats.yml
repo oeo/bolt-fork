@@ -1,38 +1,88 @@
-services:
-  bolt:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    environment:
-      API_PORT: 7333
-      BOLT_NETWORK: devnet
-      DATA_DIR: /data
-      ENABLE_IPFS: "false"
-      IPFS_API: http://ipfs:5001
-      METRICS_PORT: 7336
-      MINING_ENABLED: "false"
-      NETWORK_MODE: tcp
-      STORAGE_TYPE: lmdb
-      TCP_PORT: 8333
-    ports:
-      - "127.0.0.1::7333"
-    volumes:
-      - bolt-data:/data
-    depends_on:
-      ipfs:
-        condition: service_healthy
+x-bolt-environment: &bolt-environment
+  API_HOST: 0.0.0.0
+  API_PORT: 7333
+  BOLT_NETWORK: devnet
+  DATA_DIR: /data
+  IPFS_BOOTSTRAP_ENABLED: "false"
+  METRICS_HOST: 0.0.0.0
+  METRICS_PORT: 7336
+  NETWORK_MODE: tcp
+  STORAGE_TYPE: lmdb
+  TCP_PORT: 8333
 
-  ipfs:
-    image: ipfs/kubo:latest
+x-bolt: &bolt
+  build:
+    context: .
+    dockerfile: Dockerfile
+  depends_on:
+    ipfs-a:
+      condition: service_healthy
+    ipfs-b:
+      condition: service_healthy
+  ports:
+    - "127.0.0.1::7333"
+
+services:
+  bolt-a:
+    <<: *bolt
+    environment:
+      <<: *bolt-environment
+      MINER_ADDRESS: 2fQ4Xu3dv16nKNxZfBKkHfC759K79xRpsYC
+      MINING_ENABLED: "${BOLT_A_MINING_ENABLED:-true}"
+      MINING_INTERVAL: 20000
+      NODE_HOST: bolt-a
+      NODE_ROLE: miner
+      IPFS_API: http://ipfs-a:5001
+    volumes:
+      - bolt-a-data:/data
+
+  bolt-b:
+    <<: *bolt
+    environment:
+      <<: *bolt-environment
+      MINING_ENABLED: "false"
+      NODE_HOST: bolt-b
+      NODE_ROLE: full
+      IPFS_API: http://ipfs-b:5001
+    volumes:
+      - bolt-b-data:/data
+
+  ipfs-a:
+    image: ipfs/kubo:v0.43.0@sha256:63f5502f7a01b82a675e45bae81b2f5dfa90248ec4a86cd0a58c218347e1f2d2
     command: ["daemon", "--migrate=true", "--enable-pubsub-experiment"]
+    configs:
+      - source: disable-ipfs-bootstrap
+        target: /container-init.d/001-disable-bootstrap.sh
+        mode: 0555
     healthcheck:
       test: ["CMD-SHELL", "ipfs id"]
       interval: 2s
       timeout: 2s
       retries: 10
     volumes:
-      - ipfs-data:/data/ipfs
+      - ipfs-a-data:/data/ipfs
+
+  ipfs-b:
+    image: ipfs/kubo:v0.43.0@sha256:63f5502f7a01b82a675e45bae81b2f5dfa90248ec4a86cd0a58c218347e1f2d2
+    command: ["daemon", "--migrate=true", "--enable-pubsub-experiment"]
+    configs:
+      - source: disable-ipfs-bootstrap
+        target: /container-init.d/001-disable-bootstrap.sh
+        mode: 0555
+    healthcheck:
+      test: ["CMD-SHELL", "ipfs id"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    volumes:
+      - ipfs-b-data:/data/ipfs
 
 volumes:
-  bolt-data:
-  ipfs-data:
+  bolt-a-data:
+  bolt-b-data:
+  ipfs-a-data:
+  ipfs-b-data:
+
+configs:
+  disable-ipfs-bootstrap:
+    file: ./tests/bats/disable-ipfs-bootstrap.sh

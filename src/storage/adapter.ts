@@ -21,6 +21,14 @@ export interface PersistedMempoolEntry {
   addedAt: number;
 }
 
+export interface ConfirmedTransactionSnapshot {
+  transaction: Transaction;
+  blockHash: string;
+  blockHeight: number;
+  transactionIndex: number;
+  canonicalHeight: number;
+}
+
 export interface MempoolAdmissionState {
   tip: ChainPoint;
   accountState: AccountState | null;
@@ -195,6 +203,8 @@ export abstract class StorageAdapter {
    * get a transaction by its hash
    */
   abstract getTransaction(hash: string): Promise<Transaction | null>;
+
+  abstract getConfirmedTransaction(hash: string): Promise<ConfirmedTransactionSnapshot | null>;
   
   /**
    * save a transaction

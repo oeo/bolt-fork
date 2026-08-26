@@ -29,6 +29,7 @@ export interface NetworkOrchestratorConfig {
   chainConfig: ChainConfig;
   tcpPort?: number;
   ipfsApi?: string;
+  ipfsBootstrap?: boolean;
   externalHost?: string;
 }
 
@@ -140,7 +141,8 @@ export class NetworkOrchestrator extends EventEmitter {
       addressPrefix: this.config.chainConfig.addressPrefix,
       tcpHost: tcpHost,
       tcpPort: tcpPort,
-      ipfsApi: this.config.ipfsApi
+      ipfsApi: this.config.ipfsApi,
+      bootstrap: this.config.ipfsBootstrap ?? true
     });
     
     // create connection manager

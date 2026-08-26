@@ -5,6 +5,39 @@ import type { Mempool } from '../core/mempool';
 
 const logger = getLogger(__filename);
 
+const API_ENDPOINTS = new Set([
+  '/health',
+  '/blockchain/info',
+  '/blocks',
+  '/blocks/:id',
+  '/transactions',
+  '/transactions/:hash',
+  '/accounts/:address/balance',
+  '/accounts/:address/nonce',
+  '/mempool',
+  '/mempool/transactions',
+]);
+
+function normalizeApiEndpoint(endpoint: string): string {
+  if (API_ENDPOINTS.has(endpoint)) return endpoint;
+  if (/^\/blocks\/(?:\d+|[a-f\d]{64})$/i.test(endpoint)) return '/blocks/:id';
+  if (/^\/transactions\/[a-f\d]{64}$/i.test(endpoint)) return '/transactions/:hash';
+  if (/^\/accounts\/[^/]+\/(?:balance|nonce)$/.test(endpoint)) {
+    return endpoint.endsWith('/balance') ? '/accounts/:address/balance' : '/accounts/:address/nonce';
+  }
+  return 'unmatched';
+}
+
+function normalizeApiMethod(method: string): string {
+  return method === 'GET' || method === 'POST' ? method : 'OTHER';
+}
+
+function normalizeApiError(errorType: string): string {
+  return errorType === 'bad_request' || errorType === 'not_found' || errorType === 'method_not_allowed'
+    ? errorType
+    : 'internal';
+}
+
 /**
  * Comprehensive metrics service for bolt blockchain
  * Provides Prometheus metrics for monitoring and observability
@@ -745,19 +778,17 @@ export class MetricsService {
    */
   recordApiRequest(method: string, endpoint: string, status: number, duration: number): void {
     try {
-      // simplify endpoint to avoid cardinality issues
-      const simplifiedEndpoint = endpoint.replace(/\/[a-f0-9]{64}/i, '/:hash')
-        .replace(/\/\d+/g, '/:id')
-        .replace(/\/0x[a-f0-9]+/i, '/:address');
+      const normalizedMethod = normalizeApiMethod(method);
+      const normalizedEndpoint = normalizeApiEndpoint(endpoint);
       
       this.apiRequestsTotal.inc({ 
-        method, 
-        endpoint: simplifiedEndpoint, 
+        method: normalizedMethod,
+        endpoint: normalizedEndpoint,
         status: status.toString() 
       });
       this.apiRequestDuration.observe({ 
-        method, 
-        endpoint: simplifiedEndpoint 
+        method: normalizedMethod,
+        endpoint: normalizedEndpoint
       }, duration);
     } catch (error) {
       console.error('Failed to record API metrics:', error);
@@ -768,7 +799,11 @@ export class MetricsService {
    * Record API error
    */
   recordApiError(method: string, endpoint: string, errorType: string): void {
-    this.apiRequestErrors.inc({ method, endpoint, error_type: errorType });
+    this.apiRequestErrors.inc({
+      method: normalizeApiMethod(method),
+      endpoint: normalizeApiEndpoint(endpoint),
+      error_type: normalizeApiError(errorType),
+    });
   }
   
   /**

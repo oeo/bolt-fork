@@ -86,9 +86,9 @@ payload, receive-buffer, send-buffer, handshake, and asynchronous dispatch limit
 
 ## compose connectivity
 
-main `docker-compose.yml` joins bolt and ipfs services to `bolt-network`. bolt advertises its docker hostname for peer discovery when `NODE_HOST` is set by compose. tcp port `8333` is reachable inside docker network but is not published to host. api and metrics ports are published separately.
+main `docker-compose.yml` joins bolt and ipfs services to `bolt-network`. tcp port `8333` is published for peer traffic. api and metrics ports bind to host loopback. the default `NODE_HOST` is the docker hostname; cross-host deployments must set it to a routable address.
 
-`docker-compose.bats.yml` also leaves tcp port `8333` unpublished. deployment tests reach services through compose networking or published api port, not host tcp.
+`docker-compose.bats.yml` gives each bolt node a separate Kubo daemon, explicitly peers those daemons, and disables public bootstrap. it leaves tcp port `8333` unpublished. deployment tests reach services through compose networking or a loopback-published api port, not host tcp.
 
 ## configuration
 
@@ -97,6 +97,7 @@ network startup reads these environment variables:
 - `NETWORK_MODE`, defaults to `tcp`. legacy `ipfs` mode falls back to tcp mode.
 - `TCP_PORT`, tcp listen and announcement port.
 - `IPFS_API`, ipfs rpc endpoint.
+- `IPFS_BOOTSTRAP_ENABLED`, defaults to `true`. this controls bolt's explicit fallback connections and does not modify Kubo's bootstrap list. isolated deployments must disable both.
 - `NODE_HOST`, host placed in tcp peer announcements.
 
 connection and sync tuning values are constructor options. they are not environment variables in current startup wiring.

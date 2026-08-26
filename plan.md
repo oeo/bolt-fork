@@ -1,6 +1,6 @@
 # bolt remediation plan
 
-current focus: pass consensus, persistence, networking, dependency, and deployment release gates before adding protocol features.
+current focus: preserve completed consensus, persistence, networking, dependency, api, and deployment release gates before adding protocol features.
 
 ## status
 
@@ -31,9 +31,9 @@ open release gates:
 - [x] bind peer handshakes and traffic to chain identity
 - [x] authenticate and bound tcp transport
 - [x] relay transactions and synchronize by validated cumulative work
-- [ ] harden api input, exposure, pagination, and metric labels
-- [ ] pin deployment inputs
-- [ ] pass real multi-node deployment tests
+- [x] harden api input, exposure, pagination, and metric labels
+- [x] pin deployment inputs
+- [x] pass real multi-node deployment tests
 
 ## sequence
 
@@ -48,4 +48,4 @@ open release gates:
 9. remove obsolete peer http routes and harden remaining api routes
 10. complete deployment tests, reproducible builds, cleanup, and documentation
 
-Smart contracts and private transactions remain blocked until every release gate passes.
+smart contracts and private transactions remain out of scope until separately designed and reviewed.

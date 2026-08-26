@@ -485,9 +485,8 @@ async function advancedDemo() {
     console.log('');
     console.log('Monitoring endpoints:');
     console.log('  - Bolt Metrics:      http://localhost:7336/metrics');
-    console.log('  - Grafana Dashboard: http://localhost:7340 (admin/admin)');
-    console.log('  - Prometheus Server: http://localhost:7338');
-    console.log('  - Loki Log Server:   http://localhost:7339');
+    console.log('  - Grafana Dashboard: http://localhost:3000 (admin/admin)');
+    console.log('  - Prometheus Server: http://localhost:9090');
     console.log('  - Redis Storage:     localhost:7337');
     console.log('');
     console.log('Available metrics include:');
@@ -502,7 +501,7 @@ async function advancedDemo() {
     console.log('To see metrics in Grafana:');
     console.log('  1. Run: bun run metrics (in separate terminal)');
     console.log('  2. Wait 10-15 seconds for Prometheus to scrape');
-    console.log('  3. Open Grafana at http://localhost:7340');
+    console.log('  3. Open Grafana at http://localhost:3000');
     console.log('  4. Explore > Metrics browser > Search for "bolt_"');
     
     // Cleanup

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { create, multiaddr, type KuboRPCClient } from 'kubo-rpc-client';
+import { create, multiaddr, type KuboRPCClient, type Message } from 'kubo-rpc-client';
 import { getLogger } from '../utils/logger';
 import { publicKeyMatchesAddress, validateAddress } from '../crypto/address';
 import { sign, verify } from '../crypto/signature';
@@ -44,6 +44,7 @@ export interface PeerDiscoveryConfig {
   tcpHost: string;
   tcpPort: number;
   ipfsApi?: string;
+  bootstrap?: boolean;
   announceInterval?: number; // ms
   cleanupInterval?: number; // ms
   peerTimeout?: number; // ms
@@ -86,6 +87,7 @@ export class PeerDiscoveryService extends EventEmitter {
       maxKnownPeers: 1000,
       maxAnnouncementsPerMinute: 30,
       maxTotalAnnouncementsPerMinute: 1000,
+      bootstrap: true,
       ipfsApi: process.env.IPFS_API || 'http://localhost:5001',
       ...config
     };
@@ -116,7 +118,7 @@ export class PeerDiscoveryService extends EventEmitter {
       logger.info(`connected to ipfs node: ${id.id}`);
       
       // connect to bootstrap nodes for network connectivity
-      await this.connectToBootstrapNodes(client);
+      if (this.config.bootstrap) await this.connectToBootstrapNodes(client);
       if (generation !== this.runGeneration) throw new Error('peer discovery start cancelled');
       
       // subscribe to peer discovery topic
@@ -209,11 +211,11 @@ export class PeerDiscoveryService extends EventEmitter {
    * subscribe to peer announcements
    */
   private async subscribeToPeers(client: KuboRPCClient, generation: number): Promise<void> {
-    const handler = async (msg: any) => {
+    const handler = async (msg: Message) => {
       try {
         if (!this.isRunning || generation !== this.runGeneration) return;
         if (!(msg.data instanceof Uint8Array) || msg.data.length > 4096) return;
-        const sender = msg.from ? Buffer.from(msg.from).toString('hex') : 'unknown';
+        const sender = msg.type === 'signed' ? msg.from.toString() : 'unsigned';
         if (!this.acceptAnnouncement(sender)) return;
         const data = JSON.parse(new TextDecoder().decode(msg.data));
         

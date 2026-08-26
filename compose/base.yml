@@ -3,19 +3,18 @@
 
 services:
   node:
-    image: bolt-node:latest
     build: 
       context: ..
       dockerfile: Dockerfile
     environment:
       BOLT_NETWORK: ${BOLT_NETWORK:-testnet}
       API_PORT: 7333
+      API_HOST: 0.0.0.0
+      METRICS_HOST: 0.0.0.0
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_DIR: /app/logs
-      ENABLE_IPFS: ${ENABLE_IPFS:-false}
     volumes:
       - ../logs:/app/logs
-      - ../src:/app/src:ro
     networks:
       - bolt-network
     restart: unless-stopped

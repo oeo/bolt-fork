@@ -2,13 +2,11 @@
 
 services:
   ipfs:
-    image: ipfs/kubo:latest
+    image: ipfs/kubo:v0.43.0@sha256:63f5502f7a01b82a675e45bae81b2f5dfa90248ec4a86cd0a58c218347e1f2d2
     container_name: ${NODE_NAME:-bolt}-ipfs
     command: ["daemon", "--migrate=true", "--enable-pubsub-experiment", "--agent-version-suffix=docker"]
     ports:
       - "${IPFS_SWARM_PORT:-4001}:4001"
-      - "${IPFS_API_PORT:-5001}:5001"
-      - "${IPFS_GATEWAY_PORT:-8080}:8080"
     volumes:
       - ipfs-data:/data/ipfs
     environment:

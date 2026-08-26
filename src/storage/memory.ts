@@ -1,5 +1,6 @@
 import {
   CanonicalTransition,
+  ConfirmedTransactionSnapshot,
   MempoolUpdate,
   PersistedMempoolEntry,
   StaleChainTipError,
@@ -19,6 +20,7 @@ export class MemoryAdapter extends StorageAdapter {
   private blockHashes: Map<string, number> = new Map();
   private accounts: Map<string, AccountState> = new Map();
   private transactions: Map<string, Transaction> = new Map();
+  private transactionLocations: Map<string, Omit<ConfirmedTransactionSnapshot, 'canonicalHeight'>> = new Map();
   private txByAddress: Map<string, Set<string>> = new Map();
   private mempool: Map<string, PersistedMempoolEntry> = new Map();
   private metadata: Map<string, any> = new Map();
@@ -42,6 +44,7 @@ export class MemoryAdapter extends StorageAdapter {
     this.blockHashes.clear();
     this.accounts.clear();
     this.transactions.clear();
+    this.transactionLocations.clear();
     this.txByAddress.clear();
     this.mempool.clear();
     this.metadata.clear();
@@ -145,18 +148,25 @@ export class MemoryAdapter extends StorageAdapter {
     }
 
     const nextTransactions = new Map<string, Transaction>();
+    const nextTransactionLocations = new Map<string, Omit<ConfirmedTransactionSnapshot, 'canonicalHeight'>>();
     const nextTxByAddress = new Map<string, Set<string>>();
     for (const block of nextBlocks.values()) {
-      for (const tx of block.transactions) {
+      block.transactions.forEach((tx, transactionIndex) => {
         if (nextTransactions.has(tx.hash)) throw new Error(`Duplicate confirmed transaction: ${tx.hash}`);
         nextTransactions.set(tx.hash, tx);
+        nextTransactionLocations.set(tx.hash, {
+          transaction: tx,
+          blockHash: block.hash,
+          blockHeight: block.index,
+          transactionIndex,
+        });
         if (tx.from) {
           if (!nextTxByAddress.has(tx.from)) nextTxByAddress.set(tx.from, new Set());
           nextTxByAddress.get(tx.from)!.add(tx.hash);
         }
         if (!nextTxByAddress.has(tx.to)) nextTxByAddress.set(tx.to, new Set());
         nextTxByAddress.get(tx.to)!.add(tx.hash);
-      }
+      });
     }
 
     const nextAccounts = new Map<string, AccountState>();
@@ -174,6 +184,7 @@ export class MemoryAdapter extends StorageAdapter {
     this.blocks = nextBlocks;
     this.blockHashes = nextBlockHashes;
     this.transactions = nextTransactions;
+    this.transactionLocations = nextTransactionLocations;
     this.txByAddress = nextTxByAddress;
     this.accounts = nextAccounts;
     this.mempool = nextMempool;
@@ -258,6 +269,12 @@ export class MemoryAdapter extends StorageAdapter {
   async getTransaction(hash: string): Promise<Transaction | null> {
     this.checkConnection();
     return this.transactions.get(hash) || null;
+  }
+
+  async getConfirmedTransaction(hash: string): Promise<ConfirmedTransactionSnapshot | null> {
+    this.checkConnection();
+    const record = this.transactionLocations.get(hash);
+    return record ? structuredClone({ ...record, canonicalHeight: this.chainHeight }) : null;
   }
   
   async saveTransaction(tx: Transaction): Promise<void> {
