@@ -19,6 +19,16 @@ Assume monk tools are available. Refuse audit if required repository-mapping and
 - Exclude dependency caches, generated files, and vendored code from source findings unless dependency risk itself is finding.
 - Do not create audit file without explicit operator approval.
 
+## Greenfield Independence
+
+- Audit only current `HEAD` and current worktree behavior.
+- Do not read existing audit artifacts or use previous findings as candidates.
+- Do not validate, reject, reconcile, inherit, or renumber findings from an earlier audit.
+- Do not report fixed issues, remediation history, old finding IDs, or commit-by-commit lineage.
+- If meditation recall exposes an earlier audit claim, disregard it and establish the issue independently from current source, tests, and probes.
+- History may identify current ownership context, but it must not supply audit evidence or findings.
+- Every reported finding must be independently reproducible from current repository state.
+
 ## Identity
 
 Determine exact model ID before auditing.
@@ -47,7 +57,7 @@ Before audit:
 1. Run `monk_tree` on repository.
 2. Read project skills.
 3. Read root and scoped `AGENTS.md` or `CLAUDE.md`.
-4. Recall recent reflection commits when supported.
+4. Recall recent reflection commits for architecture context only. Disregard audit claims and prior findings.
 5. Read `cur.md` when present.
 6. Gauge context size before ingestion.
 7. Select largest safe importance threshold from printed histogram.
@@ -129,6 +139,8 @@ Severity meanings:
 Do not report formatting preferences or generic best practices.
 
 Merge duplicate symptoms under root cause. Preserve strongest evidence and all relevant locations.
+
+Report only issues present in current repository state. Keep prior audits and fixed defects out of findings, summaries, coverage, and maturity rationale.
 
 ## Maturity
 
