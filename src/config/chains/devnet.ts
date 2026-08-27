@@ -4,6 +4,7 @@ export const devnet: ChainConfig = {
   // identity
   chainId: 1059,
   name: 'devnet',
+  startupEnabled: true,
   
   // timing
   targetBlockTime: 10,                     // 10 second blocks for rapid development
@@ -35,10 +36,4 @@ export const devnet: ChainConfig = {
   genesisTimestamp: 1_700_000_001_000,
   genesisNonce: 0,
   genesisMemo: 'bolt devnet - local development',
-  
-  // features (all active from start)
-  features: {
-    blockMemo: 0,
-    compressedKeys: 0,
-  }
 };

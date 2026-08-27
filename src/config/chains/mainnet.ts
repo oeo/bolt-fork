@@ -4,6 +4,7 @@ export const mainnet: ChainConfig = {
   // identity
   chainId: 1057,
   name: 'mainnet',
+  startupEnabled: false,
   
   // timing
   targetBlockTime: 300,
@@ -33,12 +34,6 @@ export const mainnet: ChainConfig = {
   
   // genesis
   genesisTimestamp: 1_757_000_000_000,
-  genesisNonce: 0,
+  genesisNonce: 61,
   genesisMemo: 'we will craft citadels in the clouds or bury vaults within the ashes.',
-  
-  // features
-  features: {
-    blockMemo: 0,
-    compressedKeys: 100000,
-  }
 };

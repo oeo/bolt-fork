@@ -236,7 +236,7 @@ describe('Blockchain E2E Simulation', () => {
     });
     await mempool.initialize();
     
-    gbtService = new GetBlockTemplateService(blockchain, mempool, storage);
+    gbtService = new GetBlockTemplateService(blockchain, mempool);
     
     // create actors
     alice = new BlockchainActor('Alice', blockchain, mempool);
@@ -622,7 +622,7 @@ describe('GetBlockTemplate Integration', () => {
     mempool = new Mempool(storage, chainConfig);
     await mempool.initialize();
     
-    gbtService = new GetBlockTemplateService(blockchain, mempool, storage);
+    gbtService = new GetBlockTemplateService(blockchain, mempool);
   });
   
   afterEach(async () => {
@@ -659,7 +659,6 @@ describe('GetBlockTemplate Integration', () => {
     await mempool.addTransaction(tx);
     
     // pool should get new template with transaction
-    await gbtService['invalidateAllTemplates'](); // force refresh
     const template2 = await gbtService.getBlockTemplate({ payoutAddress });
     
     expect(template2.transactions).toHaveLength(1);

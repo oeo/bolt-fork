@@ -90,7 +90,7 @@ export interface BlockTemplate {
   // transaction data
   transactions: Transaction[];
   coinbaseTransaction: Transaction;
-  coinbaseValue: bigint; // kept for compatibility
+  coinbaseValue: bigint;
   totalFees: bigint;
   blockReward: bigint;
   
@@ -108,7 +108,6 @@ export interface BlockSubmission {
   templateId: string;
   nonce: number;
   timestamp?: number;
-  coinbaseNonce?: string;
 }
 
 export interface BlockTemplateRequest {

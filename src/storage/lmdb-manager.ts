@@ -53,12 +53,7 @@ export class LMDBManager {
       maxDbs,
       maxReaders,
       
-      // performance optimizations
-      overlappingSync: true,  // allows readers during sync
-      useWritemap: true,      // direct memory writes
-      noMetaSync: true,       // don't sync metadata immediately
-      
-      // bun optimizations
+      overlappingSync: true,
       encoding: 'binary',     // use binary encoding by default
       compression,
     });

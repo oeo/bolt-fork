@@ -25,7 +25,7 @@ mainnet parameters:
 
 ## quick start
 
-the compose stack works without `.env`. mining defaults to disabled. api, metrics, Prometheus, and Grafana host ports bind to loopback. tcp p2p and ipfs swarm ports bind to all host interfaces. the api remains unauthenticated, and Grafana uses default `admin` credentials unless configured otherwise.
+the compose stack works without `.env`. mining and mining api default to disabled. api, metrics, Prometheus, and Grafana host ports bind to loopback. tcp p2p and ipfs swarm ports bind to all host interfaces. public api routes remain unauthenticated, and Grafana uses default `admin` credentials unless configured otherwise.
 
 ```bash
 bun install
@@ -36,7 +36,7 @@ docker compose down
 
 ## multi-node deployment test
 
-the bats suite builds two bolt nodes with separate Kubo daemons. it verifies block synchronization, pending transaction relay, and state persistence across restart.
+the bats suite places two bolt nodes and their Kubo daemons on separate Docker networks joined only by a pinned router fixture. it verifies routed discovery, block synchronization, pending transaction relay, router interruption and recovery, and state persistence across restart.
 
 ```bash
 bun run test:bats
@@ -65,12 +65,17 @@ bun run test:bats
 - `GET /mempool`
 - `GET /mempool/transactions`
 - `GET /health`
+- `POST /mining/template`, disabled by default and bearer-authenticated
+- `POST /mining/submit`, disabled by default and bearer-authenticated
 
 ## configuration
 
 ```bash
 DATA_DIR=./data
 MINING_ENABLED=false
+MINER_ADDRESS=
+MINING_API_ENABLED=false
+MINING_API_TOKEN=
 API_HOST=127.0.0.1
 API_PORT=7333
 TCP_PORT=8333
@@ -81,7 +86,7 @@ IPFS_API=http://localhost:5001
 IPFS_BOOTSTRAP_ENABLED=true
 ```
 
-`BOLT_NETWORK` accepts `mainnet`, `testnet`, or `devnet`.
+`BOLT_NETWORK` accepts `mainnet`, `testnet`, or `devnet`. mainnet startup is disabled until launch difficulty is selected.
 
 ## testing
 
@@ -94,6 +99,18 @@ bun run test:bats
 ```
 
 See [docs/development.md](docs/development.md) for development setup.
+
+## cold recovery
+
+stop the node before storage maintenance. backups include an LMDB snapshot, node identity, and chain manifest.
+
+```bash
+bun run storage verify ./data
+bun run storage backup ./data ./backup
+bun run storage restore ./backup ./restored-data
+```
+
+restore requires an empty destination and verifies staged data before replacing it.
 
 ## license
 

@@ -2,15 +2,17 @@
 
 ## exposure
 
-the api has no authentication, authorization, cors policy, or rate limiting. node startup binds to `127.0.0.1` by default. `API_HOST` changes the bind host. expose it only through a trusted authenticated gateway.
+public routes have no authentication, authorization, cors policy, or rate limiting. node startup binds to `127.0.0.1` by default. `API_HOST` changes the bind host. expose public routes only through a trusted authenticated gateway.
 
-compose binds the process to `0.0.0.0` inside the container and publishes port `7333` to host loopback. block and transaction exchange between nodes uses authenticated tcp protocol messages. no network-control or mining http routes are implemented.
+compose binds the process to `0.0.0.0` inside the container and publishes port `7333` to host loopback. block and transaction exchange between nodes uses authenticated tcp protocol messages. network-control routes are not implemented. mining routes remain disabled unless explicitly configured.
 
 ## configuration
 
 ```bash
 API_HOST=127.0.0.1
 API_PORT=7333
+MINING_API_ENABLED=false
+MINING_API_TOKEN=
 ```
 
 request bodies are limited to 128 KiB. collection pages allow 1 through 100 items and default to `limit=10&offset=0`. block and mempool transaction pages stop before their encoded entries exceed 16 MiB.
@@ -52,6 +54,15 @@ responses do not include wildcard cors headers. pagination routes return `400` f
 | `GET` | `/mempool/transactions` | returns a bounded page with `total`, `limit`, `offset`, and `count` |
 
 confirmed transaction responses calculate confirmations from the block location and canonical height read by the same storage operation. transaction submission does not report network broadcast state.
+
+### mining
+
+| method | path | behavior |
+|---|---|---|
+| `POST` | `/mining/template` | returns payout-specific bounded in-memory proof-of-work job |
+| `POST` | `/mining/submit` | validates bounded submission against retained job |
+
+mining routes require `MINING_API_ENABLED=true`, non-empty `MINING_API_TOKEN`, and bearer authorization. disabled routes return `404`. request concurrency, submission rate, body size, job count, identifiers, and numeric fields are bounded.
 
 ## bigint encoding
 

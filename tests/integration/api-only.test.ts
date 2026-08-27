@@ -7,12 +7,15 @@ import { config as chainConfig } from '../../src/config/chain';
 import { generateAddress } from '../../src/crypto/address';
 import { TransactionClass } from '../../src/core/transaction';
 import { serialize } from '../../src/utils/bigint';
+import { GetBlockTemplateService } from '../../src/services/getblocktemplate';
 
 describe('API Server Integration', () => {
   let apiServer: ApiServer;
   let blockchain: Blockchain;
   let mempool: Mempool;
   let storage: any;
+  let blockTemplates: GetBlockTemplateService;
+  const miningToken = 'test-mining-token';
 
   beforeAll(async () => {
     // create storage
@@ -24,13 +27,21 @@ describe('API Server Integration', () => {
 
     // create mempool
     mempool = new Mempool(storage, chainConfig);
+    await mempool.initialize();
+    blockTemplates = new GetBlockTemplateService(blockchain, mempool);
 
     // create api server WITHOUT p2p node
     apiServer = new ApiServer({
       port: 17333, // test port
       blockchain,
       mempool,
-      storage
+      storage,
+      mining: {
+        enabled: true,
+        token: miningToken,
+        service: blockTemplates,
+        maxSubmissionsPerMinute: 2,
+      },
       // note: no node provided
     });
 
@@ -40,6 +51,7 @@ describe('API Server Integration', () => {
 
   afterAll(async () => {
     await apiServer.stop();
+    await blockTemplates.shutdown();
     await storage.close();
   });
 
@@ -356,5 +368,55 @@ describe('API Server Integration', () => {
       body: JSON.stringify({ data: 'x'.repeat(128 * 1024) }),
     });
     expect(oversized.status).toBe(413);
+  });
+
+  test('authenticates and bounds mining routes', async () => {
+    const payoutAddress = generateAddress(chainConfig.addressPrefix).address;
+    const unauthorized = await fetch('http://localhost:17333/mining/template', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payoutAddress }),
+    });
+    expect(unauthorized.status).toBe(401);
+
+    const invalidPayout = await fetch('http://localhost:17333/mining/template', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${miningToken}` },
+      body: JSON.stringify({ payoutAddress: 'invalid' }),
+    });
+    expect(invalidPayout.status).toBe(400);
+
+    const response = await fetch('http://localhost:17333/mining/template', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${miningToken}` },
+      body: JSON.stringify({ payoutAddress }),
+    });
+    expect(response.status).toBe(200);
+    const template = await response.json();
+    expect(template.coinbaseTransaction.to).toBe(payoutAddress);
+
+    const malformed = await fetch('http://localhost:17333/mining/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${miningToken}` },
+      body: JSON.stringify({ templateId: template.templateId, nonce: -1 }),
+    });
+    expect(malformed.status).toBe(400);
+  });
+
+  test('keeps mining routes disabled without explicit configuration', () => {
+    expect(() => new ApiServer({
+      blockchain,
+      mempool,
+      storage,
+      mining: { enabled: true, service: blockTemplates },
+    })).toThrow('token');
+  });
+
+  test('returns not found for mining routes when disabled', async () => {
+    const disabled = new ApiServer({ blockchain, mempool, storage });
+    const response = await disabled['handleRequest'](new Request('http://localhost/mining/template', {
+      method: 'POST',
+    }));
+    expect(response.status).toBe(404);
   });
 });

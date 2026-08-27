@@ -4,6 +4,7 @@ export const testnet: ChainConfig = {
   // identity
   chainId: 1058,
   name: 'testnet',
+  startupEnabled: true,
   
   // timing
   targetBlockTime: 60,                     // 1 minute blocks for faster testing
@@ -33,12 +34,6 @@ export const testnet: ChainConfig = {
   
   // genesis
   genesisTimestamp: 1_700_000_000_000,
-  genesisNonce: 0,
+  genesisNonce: 172272,
   genesisMemo: 'bolt testnet genesis',
-  
-  // features (activate earlier for testing)
-  features: {
-    blockMemo: 0,
-    compressedKeys: 1000,
-  }
 };

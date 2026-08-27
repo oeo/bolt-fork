@@ -1,11 +1,10 @@
-import { readFileSync } from 'fs';
 import { join } from 'path';
-import { hash } from '../crypto/hash';
 
 export interface ChainConfig {
   // identity
   chainId: number;                       // unique chain identifier (e.g., 1057 for bolt)
   name: string;                          // network name (mainnet, testnet, devnet)
+  startupEnabled: boolean;
 
   // timing
   targetBlockTime: number;              // seconds between blocks
@@ -38,8 +37,6 @@ export interface ChainConfig {
   genesisNonce: number;                 // nonce of genesis block
   genesisMemo?: string;                 // optional message in genesis block
 
-  // feature activation heights
-  features?: Record<string, number>;    // features and their activation block heights
 }
 
 // load once at startup
@@ -50,21 +47,6 @@ export const config: ChainConfig = configModule[network] || configModule.default
 // get the configured hash algorithm for mining
 export const miningHashAlgorithm = config.hashAlgorithm || 'sha256';
 
-
-// simple feature check
-export function isFeatureActive(feature: string, height: number): boolean {
-  const activation = config.features?.[feature];
-  return activation !== undefined && height >= activation;
-}
-
-// get all active features at a given height
-export function getActiveFeatures(height: number): string[] {
-  if (!config.features) return [];
-
-  return Object.entries(config.features)
-    .filter(([_, activationHeight]) => height >= activationHeight)
-    .map(([feature]) => feature);
-}
 
 // get chain config
 export function getChainConfig(): ChainConfig {

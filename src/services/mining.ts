@@ -1,11 +1,10 @@
 import { EventEmitter } from 'events';
 import { Blockchain } from '../core/blockchain';
 import { Mempool } from '../core/mempool';
-import { BlockClass } from '../core/block';
-import { createCoinbaseTransaction } from '../core/transaction';
 import { getLogger } from '../utils/logger';
 import { formatWatts } from '../utils/currency';
-import { generateAddress } from '../crypto/address';
+import { validateAddress } from '../crypto/address';
+import { buildBlockCandidate } from './block-candidate';
 
 const logger = getLogger(__filename);
 
@@ -27,17 +26,18 @@ export class MiningService extends EventEmitter {
   private blockchain: Blockchain;
   private mempool: Mempool;
   private enabled: boolean;
-  private minerAddress?: string;
+  private minerAddress: string;
   private interval: number;
   private maxIterations: number;
   private miningTimer?: NodeJS.Timeout;
   private stats: MiningStats;
   private isMining: boolean = false;
+  private miningTask?: Promise<void>;
   
   constructor(options: {
     blockchain: Blockchain;
     mempool: Mempool;
-    minerAddress?: string;
+    minerAddress: string;
     autoStart?: boolean;
     interval?: number;
     maxIterations?: number;
@@ -49,12 +49,9 @@ export class MiningService extends EventEmitter {
     // use provided options or read from environment
     this.enabled = options.autoStart !== undefined ? options.autoStart : process.env.ENABLE_MINING === 'true';
     
-    // use provided address, env address, or generate a random one
-    this.minerAddress = options.minerAddress || process.env.MINER_ADDRESS;
-    if (!this.minerAddress && this.enabled) {
-      const randomMiner = generateAddress();
-      this.minerAddress = randomMiner.address;
-      logger.info(`Generated random miner address: ${this.minerAddress}`);
+    this.minerAddress = options.minerAddress;
+    if (!validateAddress(this.minerAddress, this.blockchain.getChainConfig().addressPrefix)) {
+      throw new Error('Invalid mining payout address for active network');
     }
     
     this.interval = options.interval || parseInt(process.env.MINING_INTERVAL || '30000'); // default 30s
@@ -66,7 +63,7 @@ export class MiningService extends EventEmitter {
       startTime: Date.now()
     };
     
-    if (this.enabled && this.minerAddress) {
+    if (this.enabled) {
       logger.info('Mining service configured', {
         minerAddress: this.minerAddress,
         interval: `${this.interval / 1000}s`,
@@ -82,11 +79,7 @@ export class MiningService extends EventEmitter {
    * start mining loop
    */
   start(): void {
-    if (!this.minerAddress) {
-      logger.error('Cannot start mining without miner address');
-      return;
-    }
-    
+    this.enabled = true;
     if (this.miningTimer) {
       return; // already running
     }
@@ -98,11 +91,13 @@ export class MiningService extends EventEmitter {
   /**
    * stop mining
    */
-  stop(): void {
+  async stop(): Promise<void> {
+    this.enabled = false;
     if (this.miningTimer) {
       clearTimeout(this.miningTimer);
       this.miningTimer = undefined;
     }
+    await this.miningTask;
     
     logger.info('Mining service stopped', {
       blocksFound: this.stats.blocksFound,
@@ -114,12 +109,13 @@ export class MiningService extends EventEmitter {
    * schedule next mining attempt
    */
   private scheduleNextMine(): void {
-    this.miningTimer = setTimeout(async () => {
-      await this.mine();
-      
-      if (this.enabled) {
-        this.scheduleNextMine();
-      }
+    this.miningTimer = setTimeout(() => {
+      this.miningTimer = undefined;
+      this.miningTask = this.mine();
+      void this.miningTask.finally(() => {
+        this.miningTask = undefined;
+        if (this.enabled) this.scheduleNextMine();
+      });
     }, this.interval);
   }
   
@@ -127,7 +123,7 @@ export class MiningService extends EventEmitter {
    * attempt to mine one block
    */
   private async mine(): Promise<void> {
-    if (this.isMining || !this.minerAddress) {
+    if (this.isMining) {
       return;
     }
     
@@ -135,53 +131,12 @@ export class MiningService extends EventEmitter {
     let currentHeight = -1;
     
     try {
-      const startTime = Date.now();
-      
-      // get blockchain state
       currentHeight = await this.blockchain.getHeight();
-      const height = currentHeight + 1;
-      const previousBlock = await this.blockchain.getLatestBlock();
-      
-      if (!previousBlock) {
-        throw new Error('No previous block found');
-      }
-      
-      const difficulty = await this.blockchain.getDifficulty();
-      const blockReward = this.blockchain.getBlockReward(height);
       const chainConfig = this.blockchain.getConfig();
-      
-      // get blockchain config
-      
-      // get transactions from mempool
-      const transactions = this.mempool.getTransactionsForBlock();
-      
-      // calculate total fees
-      let totalFees = 0n;
-      for (const tx of transactions) {
-        totalFees += tx.fee;
-      }
-      
-      const timestamp = Math.max(Date.now(), previousBlock.timestamp + 1);
-
-      // create coinbase
-      const coinbase = createCoinbaseTransaction(
-        chainConfig.chainId,
-        this.minerAddress,
-        blockReward,
-        totalFees,
-        timestamp
-      );
-      
-      // create block
-      const block = new BlockClass(
-        height,
-        timestamp,
-        previousBlock.hash,
-        [coinbase.toObject(), ...transactions],
-        difficulty,
-        this.minerAddress
-      );
-      await this.blockchain.prepareBlock(block);
+      const candidate = await buildBlockCandidate(this.blockchain, this.mempool, this.minerAddress);
+      const { block, transactions, blockReward, totalFees } = candidate;
+      const height = block.index;
+      const difficulty = block.difficulty;
       
       logger.debug(`Mining block ${height}`, {
         transactions: transactions.length,

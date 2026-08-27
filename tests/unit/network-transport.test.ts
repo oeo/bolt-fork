@@ -58,6 +58,28 @@ function admit(manager: ConnectionManager, socket: any, inbound = true, expected
   return sessions[sessions.length - 1];
 }
 
+function createDispatchSync(overrides: Record<string, unknown> = {}) {
+  const identity = createIdentity();
+  const protocol = createProtocol();
+  const disconnected: string[] = [];
+  const connectionManager = Object.assign(new EventEmitter(), {
+    getConnection: () => ({ authenticated: true }),
+    disconnect: (_peerId: string, reason: string) => { disconnected.push(reason); },
+    sendMessage: () => true
+  });
+  const sync = new SyncManager({
+    blockchain: {} as any,
+    connectionManager: connectionManager as any,
+    protocol,
+    discoveryService: Object.assign(new EventEmitter(), { getPeer: () => null }) as any,
+    chainConfig: mainnet,
+    genesisHash,
+    identity,
+    ...overrides
+  });
+  return { sync, protocol, connectionManager, disconnected };
+}
+
 describe('connection manager transport', () => {
   it('extracts authenticated fragmented and coalesced frames', () => {
     const protocol = createProtocol();
@@ -583,6 +605,63 @@ describe('authenticated peer handshake', () => {
     expect(disconnected).toBe(true);
   });
 
+  it('disconnects authenticated command floods when session work is exhausted', async () => {
+    const { protocol, connectionManager, disconnected } = createDispatchSync({
+      messageWorkCapacity: 2,
+      messageWorkRefillPerSecond: 0,
+      globalMessageWorkCapacity: 100,
+      globalMessageWorkRefillPerSecond: 0
+    });
+    const ping = protocol.encodeMessage('ping', { nonce: 1n });
+
+    connectionManager.emit('message:received', 'peer', ping, 'session');
+    connectionManager.emit('message:received', 'peer', ping, 'session');
+    await Bun.sleep(0);
+
+    expect(disconnected).toContain('message work limit exceeded');
+  });
+
+  it('refills message work and clears closed session state', () => {
+    const { sync, connectionManager } = createDispatchSync({
+      messageWorkCapacity: 2,
+      messageWorkRefillPerSecond: 2,
+      globalMessageWorkCapacity: 100,
+      globalMessageWorkRefillPerSecond: 0
+    });
+
+    expect((sync as any).chargeMessageWork('session', 'ping', {}, PROTOCOL_HEADER_SIZE + 1)).toBe(true);
+    expect((sync as any).chargeMessageWork('session', 'ping', {}, PROTOCOL_HEADER_SIZE + 1)).toBe(false);
+    (sync as any).messageWork.get('session').updatedAt -= 1000;
+    expect((sync as any).chargeMessageWork('session', 'ping', {}, PROTOCOL_HEADER_SIZE + 1)).toBe(true);
+    connectionManager.emit('connection:closed', 'session', 'peer');
+    expect((sync as any).messageWork.has('session')).toBe(false);
+  });
+
+  it('keeps work capacity independent between authenticated sessions', () => {
+    const { sync } = createDispatchSync({
+      messageWorkCapacity: 2,
+      messageWorkRefillPerSecond: 0,
+      globalMessageWorkCapacity: 100,
+      globalMessageWorkRefillPerSecond: 0
+    });
+
+    expect((sync as any).chargeMessageWork('one', 'ping', {}, PROTOCOL_HEADER_SIZE + 1)).toBe(true);
+    expect((sync as any).chargeMessageWork('one', 'ping', {}, PROTOCOL_HEADER_SIZE + 1)).toBe(false);
+    expect((sync as any).chargeMessageWork('two', 'ping', {}, PROTOCOL_HEADER_SIZE + 1)).toBe(true);
+  });
+
+  it('bounds aggregate authenticated work across sessions', () => {
+    const { sync } = createDispatchSync({
+      messageWorkCapacity: 100,
+      messageWorkRefillPerSecond: 0,
+      globalMessageWorkCapacity: 2,
+      globalMessageWorkRefillPerSecond: 0
+    });
+
+    expect((sync as any).chargeMessageWork('one', 'ping', {}, PROTOCOL_HEADER_SIZE + 1)).toBe(true);
+    expect((sync as any).chargeMessageWork('two', 'ping', {}, PROTOCOL_HEADER_SIZE + 1)).toBe(false);
+  });
+
   it('retains aggregate queue accounting until closed sessions release', async () => {
     const identity = createIdentity();
     const protocol = createProtocol();
@@ -663,6 +742,8 @@ describe('authenticated peer handshake', () => {
     expect(lookups).toBe(1);
     expect((sync as any).messageQueues.size).toBe(0);
     expect((sync as any).totalQueuedMessageBytes).toBe(0);
+    expect((sync as any).messageWork.size).toBe(0);
+    expect((sync as any).globalMessageWork.tokens).toBe((sync as any).config.globalMessageWorkCapacity);
   });
 
   it('drains discovery-triggered storage work before stopping', async () => {
@@ -873,6 +954,139 @@ describe('peer discovery authentication', () => {
     expect((service as any).acceptAnnouncement('attacker')).toBe(false);
     expect((service as any).acceptAnnouncement('attacker')).toBe(false);
     expect((service as any).acceptAnnouncement('honest')).toBe(true);
+  });
+
+  it('bounds invalid announcement verification floods after structural checks', async () => {
+    const service = new PeerDiscoveryService({
+      identity: createIdentity(),
+      chainId: mainnet.chainId,
+      genesisHash,
+      addressPrefix: mainnet.addressPrefix,
+      tcpHost: 'localhost',
+      tcpPort: 8333,
+      maxAnnouncementsPerMinute: 10,
+      maxTotalAnnouncementsPerMinute: 5
+    });
+    let handler!: (message: any) => Promise<void>;
+    const client = { pubsub: { subscribe: async (_topic: string, callback: typeof handler) => { handler = callback; } } };
+    (service as any).isRunning = true;
+    (service as any).runGeneration = 1;
+    await (service as any).subscribeToPeers(client, 1);
+    let verifications = 0;
+    (service as any).validatePeerEndpoint = async () => { verifications++; return false; };
+    const invalid = {
+      nodeId: 'x',
+      publicKey: `02${'1'.repeat(64)}`,
+      tcp: '1.1.1.1:8333',
+      height: 0,
+      tipHash: genesisHash,
+      chainId: mainnet.chainId,
+      genesisHash,
+      version: '1',
+      timestamp: Date.now(),
+      capabilities: [],
+      signature: '1'.repeat(128)
+    };
+
+    for (let index = 0; index < 1000; index++) {
+      await handler({
+        type: 'signed',
+        from: { toString: () => `sender-${index}` },
+        data: new TextEncoder().encode(JSON.stringify(index % 2 ? invalid : { broken: true }))
+      });
+    }
+
+    expect(verifications).toBe(5);
+    expect((service as any).validAnnouncementWindow.count).toBe(0);
+    expect((service as any).candidates.size).toBe(0);
+  });
+
+  it('fairly rotates bounded candidates across thousands of cheap valid identities', async () => {
+    const service = new PeerDiscoveryService({
+      identity: createIdentity(),
+      chainId: mainnet.chainId,
+      genesisHash,
+      addressPrefix: mainnet.addressPrefix,
+      tcpHost: 'localhost',
+      tcpPort: 8333,
+      maxCandidatePeers: 16,
+      maxPeersPerEndpointPrefix: 4,
+      maxAnnouncementsPerMinute: 10,
+      maxTotalAnnouncementsPerMinute: 2500,
+      maxValidAnnouncementsPerMinute: 2500
+    });
+    let handler!: (message: any) => Promise<void>;
+    const client = { pubsub: { subscribe: async (_topic: string, callback: typeof handler) => { handler = callback; } } };
+    (service as any).isRunning = true;
+    (service as any).runGeneration = 1;
+    await (service as any).subscribeToPeers(client, 1);
+    (service as any).validatePeerEndpoint = async () => true;
+
+    for (let index = 0; index < 2000; index++) {
+      const announcement = {
+        nodeId: `peer-${index}`,
+        publicKey: `02${index.toString(16).padStart(64, '0')}`,
+        tcp: `${1 + index % 20}.2.3.${1 + index % 200}:8333`,
+        height: 0,
+        tipHash: genesisHash,
+        chainId: mainnet.chainId,
+        genesisHash,
+        version: '1',
+        timestamp: Date.now(),
+        capabilities: [],
+        signature: '1'.repeat(128)
+      };
+      await handler({
+        type: 'signed',
+        from: { toString: () => `sender-${index}` },
+        data: new TextEncoder().encode(JSON.stringify(announcement))
+      });
+    }
+
+    const candidates = [...(service as any).candidates.values()].map((value: any) => value.peer);
+    const prefixes = new Map<string, number>();
+    for (const peer of candidates) {
+      const prefix = (service as any).endpointPrefix(peer.tcp);
+      prefixes.set(prefix, (prefixes.get(prefix) || 0) + 1);
+    }
+    expect(candidates).toHaveLength(16);
+    expect(Math.max(...prefixes.values())).toBeLessThanOrEqual(4);
+    expect(candidates.some(peer => peer.nodeId === 'peer-1999')).toBe(true);
+    expect(service.getKnownPeers()).toHaveLength(0);
+  });
+
+  it('promotes authenticated candidates with observed endpoints without refreshing residency', () => {
+    const service = new PeerDiscoveryService({
+      identity: createIdentity(),
+      chainId: mainnet.chainId,
+      genesisHash,
+      addressPrefix: mainnet.addressPrefix,
+      tcpHost: 'localhost',
+      tcpPort: 8333,
+      candidateTimeout: 1000
+    });
+    const peer = {
+      nodeId: 'candidate',
+      publicKey: `02${'1'.repeat(64)}`,
+      tcp: 'peer.example:8333',
+      height: 0,
+      tipHash: genesisHash,
+      chainId: mainnet.chainId,
+      genesisHash,
+      version: '1',
+      timestamp: Date.now(),
+      lastSeen: Date.now(),
+      capabilities: [],
+      signature: '1'.repeat(128)
+    };
+    (service as any).addPeer((service as any).candidates, peer, Date.now() + 1000);
+    const expiresAt = (service as any).candidates.get(peer.nodeId).expiresAt;
+    (service as any).candidates.get(peer.nodeId).peer = { ...peer, timestamp: peer.timestamp + 1 };
+
+    expect((service as any).candidates.get(peer.nodeId).expiresAt).toBe(expiresAt);
+    expect(service.promotePeer(peer.nodeId, '1.1.1.1:8333')?.tcp).toBe('1.1.1.1:8333');
+    expect(service.getKnownPeers()).toHaveLength(1);
+    expect((service as any).candidates.size).toBe(0);
   });
 });
 

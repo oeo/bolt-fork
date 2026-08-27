@@ -8,7 +8,9 @@ bolt uses bun test suites for unit, integration, and end-to-end behavior. bats c
 - integration tests verify boundaries between bolt components.
 - end-to-end tests verify complete application flows in bun.
 - a bun integration test opens authenticated tcp connections between two nodes and verifies block synchronization and transaction relay.
-- bats builds two deployed nodes with separate explicitly peered Kubo daemons. it verifies non-genesis block synchronization, pending transaction relay, and block and transaction persistence across restart.
+- network unit tests cover authenticated command flooding, refill, session isolation, aggregate work exhaustion, invalid discovery floods, and bounded rotation across thousands of accepted candidate identities.
+- bats places two deployed nodes and their Kubo daemons on separate Docker networks joined only by a pinned router fixture. it verifies routed endpoint announcements, non-genesis block synchronization, pending transaction relay, router interruption and restoration, SIGKILL recovery, persistence, and cold backup restore.
+- cross-host connectivity remains a release gate. local Docker routing does not test outbound NAT or prove public routing, firewall behavior, or inbound NAT traversal.
 - docker coverage belongs in bats, not bun suites.
 
 ## local checks

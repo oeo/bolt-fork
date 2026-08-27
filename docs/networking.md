@@ -25,7 +25,11 @@ announcements contain:
 - optional `capabilities`
 - `signature`
 
-announcements are signed by the advertised node identity. validation binds the public key to `nodeId`, checks chain identity, bounds fields and sender rates, and accepts bracketed ipv6 endpoints. fresh announcements update the complete peer record and trigger bounded connection attempts. stale announcements are removed. advertised height and tip hash do not determine chain selection.
+announcements are signed by the advertised node identity. validation first rejects oversized or malformed fields, then applies sender and aggregate verification limits before public-key and signature work. a separate aggregate limit charges only announcements that pass identity, chain, timestamp, and signature validation.
+
+validated announcements enter a short-lived candidate table. repeat announcements can update candidate data but cannot extend its original residency deadline. candidate and durable peer tables use endpoint-prefix caps and replace the oldest entry from the most represented prefix when full. successful authenticated outbound tcp sessions promote candidates to the durable table with the resolved endpoint used by the connection. inbound sessions cannot provide an observed listening port, so they promote only when a matching candidate exists and retain its signed endpoint.
+
+these limits preserve bounded and rotating discovery capacity. they do not prevent sybil identities. advertised height and tip hash do not determine chain selection.
 
 ## tcp protocol
 
@@ -84,11 +88,15 @@ chain-specific magic rejects frames for another configured network. checksum det
 
 payload, receive-buffer, send-buffer, handshake, and asynchronous dispatch limits are enforced before unbounded work occurs. mainnet and testnet outbound dialing rejects private, reserved, and non-global addresses after dns resolution. devnet permits private peers. transport payloads remain plaintext; authentication does not provide confidentiality.
 
+authenticated dispatch charges one per-session token bucket before storage or validation handlers run. cost combines command weight, bounded collection count, and bounded payload size. one global bucket limits aggregate work across sessions. exhausted sessions disconnect. session state is removed on connection close, and all dispatch state is reset when synchronization stops.
+
 ## compose connectivity
 
 main `docker-compose.yml` joins bolt and ipfs services to `bolt-network`. tcp port `8333` is published for peer traffic. api and metrics ports bind to host loopback. the default `NODE_HOST` is the docker hostname; cross-host deployments must set it to a routable address.
 
-`docker-compose.bats.yml` gives each bolt node a separate Kubo daemon, explicitly peers those daemons, and disables public bootstrap. it leaves tcp port `8333` unpublished. deployment tests reach services through compose networking or a loopback-published api port, not host tcp.
+`docker-compose.bats.yml` gives each bolt node a separate Kubo daemon and Docker network. only a pinned router fixture joins both networks. tests install routes through that fixture, peer Kubo by routed IP address, verify routable endpoint announcements, and disable public bootstrap. tcp port `8333` remains unpublished.
+
+this topology verifies routed layer-3 discovery and data exchange on one Docker host. it does not test outbound NAT behavior or verify inbound NAT traversal, public firewall policy, internet routing, or cross-host deployment. a two-host deployment remains a release gate and requires operator-provided reachable hosts and routable `NODE_HOST` values.
 
 ## configuration
 

@@ -6,6 +6,7 @@ import { sign, verify } from '../crypto/signature';
 import { encodeCanonicalFields } from '../utils/serialization';
 import { PROTOCOL_VERSION } from './protocol';
 import type { NodeIdentity } from '../utils/identity';
+import { isIP } from 'node:net';
 
 const logger = getLogger(__filename);
 
@@ -49,8 +50,12 @@ export interface PeerDiscoveryConfig {
   cleanupInterval?: number; // ms
   peerTimeout?: number; // ms
   maxKnownPeers?: number;
+  maxCandidatePeers?: number;
+  candidateTimeout?: number;
+  maxPeersPerEndpointPrefix?: number;
   maxAnnouncementsPerMinute?: number;
   maxTotalAnnouncementsPerMinute?: number;
+  maxValidAnnouncementsPerMinute?: number;
 }
 
 /**
@@ -61,6 +66,7 @@ export class PeerDiscoveryService extends EventEmitter {
   private config: PeerDiscoveryConfig;
   private ipfs: KuboRPCClient | null = null;
   private knownPeers: Map<string, PeerEndpoint> = new Map();
+  private candidates = new Map<string, { peer: PeerEndpoint; expiresAt: number }>();
   private announceTimer: any;
   private cleanupTimer: any;
   private chainUpdateHandler?: (update: { height: number; hash: string }) => void;
@@ -68,6 +74,7 @@ export class PeerDiscoveryService extends EventEmitter {
   private isStarting = false;
   private announcementWindows = new Map<string, { startedAt: number; count: number }>();
   private totalAnnouncementWindow = { startedAt: Date.now(), count: 0 };
+  private validAnnouncementWindow = { startedAt: Date.now(), count: 0 };
   private runGeneration = 0;
   
   // ipfs bootstrap nodes for network connectivity
@@ -85,8 +92,12 @@ export class PeerDiscoveryService extends EventEmitter {
       cleanupInterval: 60000, // 1 minute
       peerTimeout: 120000, // 2 minutes
       maxKnownPeers: 1000,
+      maxCandidatePeers: 256,
+      candidateTimeout: 30000,
+      maxPeersPerEndpointPrefix: 8,
       maxAnnouncementsPerMinute: 30,
       maxTotalAnnouncementsPerMinute: 1000,
+      maxValidAnnouncementsPerMinute: 250,
       bootstrap: true,
       ipfsApi: process.env.IPFS_API || 'http://localhost:5001',
       ...config
@@ -177,10 +188,12 @@ export class PeerDiscoveryService extends EventEmitter {
     this.ipfs = null;
     
     this.knownPeers.clear();
+    this.candidates.clear();
     if (this.chainUpdateHandler) this.off('chain:updated', this.chainUpdateHandler);
     this.chainUpdateHandler = undefined;
     this.announcementWindows.clear();
     this.totalAnnouncementWindow = { startedAt: Date.now(), count: 0 };
+    this.validAnnouncementWindow = { startedAt: Date.now(), count: 0 };
     this.isRunning = false;
     
     logger.info('peer discovery service stopped');
@@ -216,20 +229,18 @@ export class PeerDiscoveryService extends EventEmitter {
         if (!this.isRunning || generation !== this.runGeneration) return;
         if (!(msg.data instanceof Uint8Array) || msg.data.length > 4096) return;
         const sender = msg.type === 'signed' ? msg.from.toString() : 'unsigned';
-        if (!this.acceptAnnouncement(sender)) return;
         const data = JSON.parse(new TextDecoder().decode(msg.data));
-        
-        // ignore our own announcements
+        if (!this.hasValidStructure(data)) return;
         if (data.nodeId === this.config.identity.address) return;
-        if (!this.knownPeers.has(data.nodeId) && this.knownPeers.size >= this.config.maxKnownPeers!) return;
-        
-        // validate peer endpoint
+        const prior = this.knownPeers.get(data.nodeId) || this.candidates.get(data.nodeId)?.peer;
+        if (prior && data.timestamp <= prior.timestamp) return;
+        if (!this.acceptAnnouncement(sender)) return;
         if (!(await this.validatePeerEndpoint(data))) {
           logger.debug(`invalid peer announcement from ${data.nodeId}`);
           return;
         }
         if (!this.isRunning || generation !== this.runGeneration) return;
-        if (!this.knownPeers.has(data.nodeId) && this.knownPeers.size >= this.config.maxKnownPeers!) return;
+        if (!this.acceptValidAnnouncement()) return;
         
         const peer: PeerEndpoint = {
           nodeId: data.nodeId,
@@ -248,19 +259,22 @@ export class PeerDiscoveryService extends EventEmitter {
         
         // check if new or updated peer
         const existing = this.knownPeers.get(peer.nodeId);
-        if (!existing) {
-          logger.info(`discovered new peer: ${peer.nodeId} at ${peer.tcp}`);
-          this.knownPeers.set(peer.nodeId, peer);
-          this.emit('peer:discovered', peer);
-        } else {
+        const candidate = this.candidates.get(peer.nodeId);
+        if (existing) {
           if (peer.timestamp <= existing.timestamp) return;
-          const changed = existing.tcp !== peer.tcp || existing.height !== peer.height ||
-            existing.tipHash !== peer.tipHash || existing.version !== peer.version ||
-            existing.publicKey !== peer.publicKey ||
-            JSON.stringify(existing.capabilities) !== JSON.stringify(peer.capabilities);
-          this.knownPeers.set(peer.nodeId, peer);
-          if (changed) logger.debug(`peer updated: ${peer.nodeId} height=${peer.height}`);
+          const updated = { ...peer, tcp: existing.tcp };
+          this.knownPeers.set(peer.nodeId, updated);
+          this.emit('peer:updated', updated);
+        } else if (candidate) {
+          if (peer.timestamp <= candidate.peer.timestamp) return;
+          const expiresAt = candidate.expiresAt;
+          this.candidates.delete(peer.nodeId);
+          this.addPeer(this.candidates, peer, expiresAt);
           this.emit('peer:updated', peer);
+        } else {
+          this.addPeer(this.candidates, peer, Date.now() + this.config.candidateTimeout!);
+          logger.debug(`discovered new peer: ${peer.nodeId} at ${peer.tcp}`);
+          this.emit('peer:discovered', peer);
         }
         
       } catch (error) {
@@ -298,6 +312,15 @@ export class PeerDiscoveryService extends EventEmitter {
     }
     this.totalAnnouncementWindow.count++;
     return this.totalAnnouncementWindow.count <= this.config.maxTotalAnnouncementsPerMinute!;
+  }
+
+  private acceptValidAnnouncement(): boolean {
+    const now = Date.now();
+    if (now - this.validAnnouncementWindow.startedAt >= 60000) {
+      this.validAnnouncementWindow = { startedAt: now, count: 0 };
+    }
+    this.validAnnouncementWindow.count++;
+    return this.validAnnouncementWindow.count <= this.config.maxValidAnnouncementsPerMinute!;
   }
   
   /**
@@ -371,6 +394,9 @@ export class PeerDiscoveryService extends EventEmitter {
           this.emit('peer:removed', peer);
         }
       }
+      for (const [nodeId, candidate] of this.candidates) {
+        if (candidate.expiresAt <= now) this.candidates.delete(nodeId);
+      }
       for (const [sender, window] of this.announcementWindows) {
         if (now - window.startedAt >= 60000) this.announcementWindows.delete(sender);
       }
@@ -381,22 +407,77 @@ export class PeerDiscoveryService extends EventEmitter {
    * validate peer endpoint data
    */
   private async validatePeerEndpoint(data: any): Promise<boolean> {
-    if (!data.nodeId || typeof data.nodeId !== 'string') return false;
-    if (!validateAddress(data.nodeId, this.config.addressPrefix)) return false;
-    if (typeof data.publicKey !== 'string' || !publicKeyMatchesAddress(data.publicKey, data.nodeId)) return false;
-    if (!data.tcp || typeof data.tcp !== 'string') return false;
-    if (!Number.isSafeInteger(data.height) || data.height < 0) return false;
-    if (!/^[0-9a-f]{64}$/.test(data.tipHash)) return false;
+    if (!this.hasValidStructure(data)) return false;
     if (data.chainId !== this.config.chainId || data.genesisHash !== this.config.genesisHash) return false;
-    if (!data.version || typeof data.version !== 'string') return false;
     if (!Number.isSafeInteger(data.timestamp) || Math.abs(Date.now() - data.timestamp) > this.config.peerTimeout!) return false;
-    if (!Array.isArray(data.capabilities) || data.capabilities.some((value: unknown) => typeof value !== 'string')) return false;
-    if (!/^[0-9a-f]{128}$/.test(data.signature)) return false;
-    
-    // validate tcp format (host:port)
-    if (!parsePeerEndpoint(data.tcp)) return false;
-    
+    if (!validateAddress(data.nodeId, this.config.addressPrefix)) return false;
+    if (!publicKeyMatchesAddress(data.publicKey, data.nodeId)) return false;
     return verify(this.announcementPayload(data), data.signature, data.publicKey);
+  }
+
+  private hasValidStructure(data: any): boolean {
+    if (!data || typeof data !== 'object' || typeof data.nodeId !== 'string' || data.nodeId.length > 64) return false;
+    if (typeof data.publicKey !== 'string' || !/^(?:[0-9a-f]{66}|[0-9a-f]{130})$/.test(data.publicKey)) return false;
+    if (typeof data.tcp !== 'string' || data.tcp.length > 255 || !parsePeerEndpoint(data.tcp)) return false;
+    if (!Number.isSafeInteger(data.height) || data.height < 0) return false;
+    if (!/^[0-9a-f]{64}$/.test(data.tipHash) || !/^[0-9a-f]{64}$/.test(data.genesisHash)) return false;
+    if (!Number.isInteger(data.chainId) || data.chainId < 0 || data.chainId > 0xffffffff) return false;
+    if (typeof data.version !== 'string' || data.version.length === 0 || data.version.length > 64) return false;
+    if (!Number.isSafeInteger(data.timestamp)) return false;
+    if (!Array.isArray(data.capabilities) || data.capabilities.length > 16 ||
+        data.capabilities.some((value: unknown) => typeof value !== 'string' || value.length > 64)) return false;
+    return /^[0-9a-f]{128}$/.test(data.signature);
+  }
+
+  private endpointPrefix(endpoint: string): string {
+    const host = parsePeerEndpoint(endpoint)!.host.toLowerCase();
+    if (isIP(host) === 4) return host.split('.').slice(0, 3).join('.');
+    if (isIP(host) === 6) return host.split(':').slice(0, 4).join(':');
+    return host;
+  }
+
+  private addPeer(
+    peers: Map<string, PeerEndpoint> | Map<string, { peer: PeerEndpoint; expiresAt: number }>,
+    peer: PeerEndpoint,
+    expiresAt?: number
+  ): void {
+    const entries = [...peers.entries()].map(([nodeId, value]) => ({
+      nodeId,
+      peer: 'peer' in value ? value.peer : value
+    }));
+    const prefix = this.endpointPrefix(peer.tcp);
+    const samePrefix = entries.filter(entry => this.endpointPrefix(entry.peer.tcp) === prefix);
+    let victim = samePrefix.length >= this.config.maxPeersPerEndpointPrefix!
+      ? samePrefix.reduce((oldest, entry) => entry.peer.lastSeen < oldest.peer.lastSeen ? entry : oldest)
+      : undefined;
+    const capacity = expiresAt === undefined ? this.config.maxKnownPeers! : this.config.maxCandidatePeers!;
+    if (!victim && entries.length >= capacity) {
+      const counts = new Map<string, number>();
+      for (const entry of entries) {
+        const key = this.endpointPrefix(entry.peer.tcp);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      const maxCount = Math.max(...counts.values());
+      victim = entries
+        .filter(entry => counts.get(this.endpointPrefix(entry.peer.tcp)) === maxCount)
+        .reduce((oldest, entry) => entry.peer.lastSeen < oldest.peer.lastSeen ? entry : oldest);
+    }
+    if (victim) peers.delete(victim.nodeId);
+    if (expiresAt === undefined) (peers as Map<string, PeerEndpoint>).set(peer.nodeId, peer);
+    else (peers as Map<string, { peer: PeerEndpoint; expiresAt: number }>).set(peer.nodeId, { peer, expiresAt });
+  }
+
+  promotePeer(nodeId: string, observedEndpoint?: string): PeerEndpoint | undefined {
+    const candidate = this.candidates.get(nodeId);
+    if (!candidate || observedEndpoint && !parsePeerEndpoint(observedEndpoint)) return;
+    const peer = {
+      ...candidate.peer,
+      tcp: observedEndpoint || candidate.peer.tcp,
+      lastSeen: Date.now()
+    };
+    this.candidates.delete(nodeId);
+    this.addPeer(this.knownPeers, peer);
+    return peer;
   }
 
   private announcementPayload(data: Omit<PeerEndpoint, 'signature' | 'lastSeen'>): Uint8Array {
@@ -434,7 +515,7 @@ export class PeerDiscoveryService extends EventEmitter {
    * get peer by node id
    */
   getPeer(nodeId: string): PeerEndpoint | undefined {
-    return this.knownPeers.get(nodeId);
+    return this.knownPeers.get(nodeId) || this.candidates.get(nodeId)?.peer;
   }
   
   /**

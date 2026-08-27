@@ -12,6 +12,7 @@ import type { ChainConfig } from '../../src/config/chain';
 const testConfig: ChainConfig = {
   chainId: 9999,
   name: 'test',
+  startupEnabled: true,
   targetBlockTime: 1,
   difficultyAdjustmentInterval: 100,
   maxSupply: 21_000_000n * 100_000_000n,
@@ -28,8 +29,7 @@ const testConfig: ChainConfig = {
   addressPrefix: 0x00,
   genesisTimestamp: 1000000000000,
   genesisNonce: 0,
-  genesisMemo: 'test genesis',
-  features: {}
+  genesisMemo: 'test genesis'
 };
 
 describe('MiningService', () => {
@@ -60,7 +60,7 @@ describe('MiningService', () => {
   afterEach(async () => {
     // cleanup
     if (miningService) {
-      miningService.stop();
+      await miningService.stop();
     }
     
     await storage.close();
@@ -70,28 +70,46 @@ describe('MiningService', () => {
   });
   
   describe('configuration', () => {
+    it('supports repeated start and stop without leaving timers', async () => {
+      const miner = generateAddress(testConfig.addressPrefix);
+      miningService = new MiningService({
+        blockchain,
+        mempool,
+        minerAddress: miner.address,
+        autoStart: false,
+        interval: 1000,
+      });
+
+      miningService.start();
+      await miningService.stop();
+      miningService.start();
+      await miningService.stop();
+
+      expect(miningService.isEnabled()).toBe(false);
+    });
+
     it('should not start when mining disabled', () => {
       process.env.ENABLE_MINING = 'false';
+      const miner = generateAddress(testConfig.addressPrefix);
       
       miningService = new MiningService({
         blockchain,
-        mempool
+        mempool,
+        minerAddress: miner.address,
       });
       
       expect(miningService.isEnabled()).toBe(false);
     });
     
-    it('should not start without miner address', () => {
+    it('should require a caller-provided active-network payout', () => {
       process.env.ENABLE_MINING = 'true';
-      delete process.env.MINER_ADDRESS;
-      
-      miningService = new MiningService({
+
+      expect(() => new MiningService({ blockchain, mempool } as any)).toThrow('payout');
+      expect(() => new MiningService({
         blockchain,
-        mempool
-      });
-      
-      expect(miningService.isEnabled()).toBe(true);
-      // but should not actually mine without address
+        mempool,
+        minerAddress: generateAddress(0x6f).address,
+      })).toThrow('active network');
     });
     
     it('should start when properly configured', () => {

@@ -16,7 +16,7 @@
 }
 ```
 
-`miner` is excluded from block hashing. it remains part of serialized block size, so it can affect `maxBlockSize` validation.
+`miner` is non-consensus metadata. it is excluded from block hashing and consensus block-size measurement.
 
 ## transactions array
 
@@ -53,7 +53,7 @@ transactions: [
 
 ## transaction identity
 
-transfer signatures commit to the domain `bolt:transaction:v1`, chain id, kind, sender, recipient, amount, nonce, fee, and timestamp. each utf-8 field is length-prefixed. transfer hashes commit to the same canonical bytes and the signature. coinbase hashes commit to the canonical unsigned fields because coinbase transactions have no signature.
+transfer signatures commit to the domain `bolt:transaction:v1`, chain id, kind, sender, recipient, amount, nonce, fee, and timestamp. each utf-8 field is length-prefixed. transfer hashes commit to the same canonical bytes, signature, and canonical compressed 33-byte public key. alternate public key encodings are invalid. coinbase hashes commit to canonical unsigned fields because coinbase transactions have no signature or public key.
 
 transactions from another chain are invalid. transfer `from` and `to` addresses must use the configured chain prefix. coinbase `to` addresses must also use that prefix.
 
@@ -76,6 +76,7 @@ transactions from another chain are invalid. transfer `from` and `to` addresses 
 - timestamp cannot be more than 2 hours in future
 - coinbase value must equal block reward + sum of transaction fees
 - coinbase timestamp must equal block timestamp
+- transfer timestamps must not exceed block timestamp
 - all transfer transactions must have valid signatures
 - all transactions must match configured chain id
 - transfer senders and recipients, and coinbase recipients, must match configured address prefix
@@ -84,6 +85,6 @@ transactions from another chain are invalid. transfer `from` and `to` addresses 
 
 ## size limits
 
-- total UTF-8 serialized block size must not exceed configured `maxBlockSize`. this is a consensus rule.
+- total UTF-8 serialized consensus block size must not exceed configured `maxBlockSize`. non-consensus `miner` metadata is excluded.
 - `maxTransactionSize` defaults to 100,000 bytes. this is mempool policy, not a block validity rule.
 - `minFeePerByte` is configured per network. this is mempool policy, not a block validity rule.

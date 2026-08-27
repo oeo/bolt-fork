@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { chmod, mkdtemp, rm, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { IdentityManager } from '../../src/utils/identity';
@@ -33,6 +33,21 @@ describe('node identity', () => {
       await mainnet.loadOrCreate();
 
       await expect(new IdentityManager(directory, 0xef).loadOrCreate()).rejects.toThrow('active network');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves identity when an interrupted temporary write remains', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'bolt-identity-'));
+    try {
+      const identity = await new IdentityManager(directory, 0xef).loadOrCreate();
+      await writeFile(join(directory, '.identity.interrupted.tmp'), '{');
+
+      const restored = await new IdentityManager(directory, 0xef).loadOrCreate();
+
+      expect(restored).toEqual(identity);
+      expect(JSON.parse(await readFile(join(directory, '.identity'), 'utf8'))).toEqual(identity);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

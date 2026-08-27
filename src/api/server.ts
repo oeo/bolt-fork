@@ -8,6 +8,8 @@ import { formatWatts } from '../utils/currency';
 import { serialize, deserialize } from '../utils/bigint';
 import { getMetricsService } from '../services/metrics';
 import { validateAddress } from '../crypto/address';
+import type { GetBlockTemplateService } from '../services/getblocktemplate';
+import { timingSafeEqual } from 'node:crypto';
 
 const logger = getLogger(__filename);
 const MAX_REQUEST_BODY_SIZE = 128 * 1024;
@@ -31,6 +33,13 @@ export interface ApiServerConfig {
   blockchain: Blockchain;
   mempool: Mempool;
   storage: StorageAdapter;
+  mining?: {
+    enabled: boolean;
+    token?: string;
+    service: GetBlockTemplateService;
+    maxConcurrentRequests?: number;
+    maxSubmissionsPerMinute?: number;
+  };
 }
 
 /**
@@ -40,8 +49,13 @@ export class ApiServer {
   private server: any;
   private config: ApiServerConfig;
   private started: boolean = false;
+  private activeMiningRequests = 0;
+  private submissionWindow = { startedAt: 0, count: 0 };
 
   constructor(config: ApiServerConfig) {
+    if (config.mining?.enabled && (!config.mining.token || config.mining.token.length > 1024)) {
+      throw new Error('Mining API token is required when mining API is enabled');
+    }
     this.config = config;
   }
 
@@ -81,7 +95,7 @@ export class ApiServer {
 
     try {
       if (endpoint === 'unmatched') throw new ApiError(404, 'Endpoint not found', 'not_found');
-      const allowedMethod = endpoint === '/transactions' ? 'POST' : 'GET';
+      const allowedMethod = endpoint === '/transactions' || endpoint.startsWith('/mining/') ? 'POST' : 'GET';
       if (method !== allowedMethod) throw new ApiError(405, 'Method not allowed', 'method_not_allowed');
 
       let result: unknown;
@@ -94,6 +108,8 @@ export class ApiServer {
       else if (endpoint === '/accounts/:address/nonce') result = await this.getNonce(path.split('/')[2]);
       else if (endpoint === '/mempool') result = await this.getMempoolInfo();
       else if (endpoint === '/mempool/transactions') result = this.getMempoolTransactions(url);
+      else if (endpoint === '/mining/template') result = await this.handleMiningRequest(req, false);
+      else if (endpoint === '/mining/submit') result = await this.handleMiningRequest(req, true);
       else result = { status: 'ok', timestamp: Date.now() };
 
       response = new Response(serialize(result), { status: 200, headers: JSON_HEADERS });
@@ -119,6 +135,7 @@ export class ApiServer {
   }
 
   private matchEndpoint(path: string): string {
+    if (this.config.mining?.enabled && (path === '/mining/template' || path === '/mining/submit')) return path;
     if (
       path === '/health' ||
       path === '/blockchain/info' ||
@@ -132,6 +149,61 @@ export class ApiServer {
     if (/^\/accounts\/[^/]+\/balance$/.test(path)) return '/accounts/:address/balance';
     if (/^\/accounts\/[^/]+\/nonce$/.test(path)) return '/accounts/:address/nonce';
     return 'unmatched';
+  }
+
+  private async handleMiningRequest(req: Request, submission: boolean): Promise<unknown> {
+    const mining = this.config.mining!;
+    const authorization = req.headers.get('authorization') ?? '';
+    const expected = `Bearer ${mining.token}`;
+    const digest = (value: string): Buffer => {
+      const hasher = new Bun.CryptoHasher('sha256');
+      hasher.update(value);
+      return Buffer.from(hasher.digest());
+    };
+    if (!timingSafeEqual(digest(authorization), digest(expected))) {
+      throw new ApiError(401, 'Unauthorized', 'bad_request');
+    }
+    if (this.activeMiningRequests >= (mining.maxConcurrentRequests ?? 8)) {
+      throw new ApiError(429, 'Mining request concurrency limit reached', 'bad_request');
+    }
+
+    this.activeMiningRequests++;
+    try {
+      const body = await this.readJson(req);
+      if (!submission) {
+        const keys = Object.keys(body);
+        if (keys.some(key => key !== 'payoutAddress' && key !== 'longpollId') ||
+            typeof body.payoutAddress !== 'string' || body.payoutAddress.length > 35 ||
+            (body.longpollId !== undefined && (typeof body.longpollId !== 'string' || body.longpollId.length > 64))) {
+          throw new ApiError(400, 'Invalid template request', 'bad_request');
+        }
+        this.assertAddress(body.payoutAddress);
+        return mining.service.getBlockTemplate({
+          payoutAddress: body.payoutAddress,
+          longpollId: body.longpollId as string | undefined,
+        });
+      }
+
+      const now = Date.now();
+      if (now - this.submissionWindow.startedAt >= 60_000) this.submissionWindow = { startedAt: now, count: 0 };
+      if (++this.submissionWindow.count > (mining.maxSubmissionsPerMinute ?? 60)) {
+        throw new ApiError(429, 'Mining submission rate limit reached', 'bad_request');
+      }
+      const keys = Object.keys(body);
+      if (keys.some(key => key !== 'templateId' && key !== 'nonce' && key !== 'timestamp') ||
+          typeof body.templateId !== 'string' || body.templateId.length > 64 ||
+          !Number.isSafeInteger(body.nonce) || (body.nonce as number) < 0 ||
+          (body.timestamp !== undefined && (!Number.isSafeInteger(body.timestamp) || (body.timestamp as number) < 0))) {
+        throw new ApiError(400, 'Invalid block submission', 'bad_request');
+      }
+      return mining.service.submitBlock({
+        templateId: body.templateId,
+        nonce: body.nonce as number,
+        timestamp: body.timestamp as number | undefined,
+      });
+    } finally {
+      this.activeMiningRequests--;
+    }
   }
 
   private async readJson(req: Request): Promise<Record<string, unknown>> {

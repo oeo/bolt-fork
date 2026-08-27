@@ -14,7 +14,8 @@
     "test:integration": "bun test tests/integration",
     "test:bats": "bats tests/bats/*.bats",
     "test:metrics": "bun test tests/unit/metrics.test.ts",
-    "test:gbt": "bun test tests/unit/getblocktemplate.test.ts"
+    "test:gbt": "bun test tests/unit/getblocktemplate.test.ts",
+    "storage": "bun run scripts/storage.ts"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",

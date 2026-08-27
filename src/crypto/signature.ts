@@ -152,7 +152,8 @@ export function serializeTransactionData(txData: TransactionData): Uint8Array {
  */
 export function calculateTransactionHash(
   txData: TransactionData,
-  signature?: string
+  signature?: string,
+  publicKey?: string
 ): string {
   const serialized = serializeTransactionData(txData);
   if (!signature) return hash(serialized, 'sha256');
@@ -160,7 +161,14 @@ export function calculateTransactionHash(
     throw new Error('Invalid transaction signature');
   }
 
-  const encodedSignature = encodeCanonicalFields([hexToBytes(signature.toLowerCase())]);
+  if (!publicKey || !/^(02|03)[0-9a-f]{64}$/.test(publicKey)) {
+    throw new Error('Invalid transaction public key');
+  }
+
+  const encodedSignature = encodeCanonicalFields([
+    hexToBytes(signature.toLowerCase()),
+    hexToBytes(publicKey)
+  ]);
   const signed = new Uint8Array(serialized.length + encodedSignature.length);
   signed.set(serialized);
   signed.set(encodedSignature, serialized.length);
@@ -218,8 +226,9 @@ export function isValidPublicKey(publicKey: Uint8Array | string): boolean {
       ? hexToBytes(publicKey)
       : publicKey;
     
-    // check if it's a valid point on the curve
-    return pubKeyBytes.length === 33 || pubKeyBytes.length === 65;
+    return pubKeyBytes.length === 33 && secp256k1.Point.fromHex(pubKeyBytes).toRawBytes(true).every(
+      (byte, index) => byte === pubKeyBytes[index]
+    );
   } catch {
     return false;
   }

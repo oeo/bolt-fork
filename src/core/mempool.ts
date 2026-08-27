@@ -7,6 +7,7 @@ import { config as chainConfig } from '../config/chain';
 import { formatWatts } from '../utils/currency';
 
 const logger = getLogger(__filename);
+const TRANSACTION_FUTURE_TIME_MS = 15 * 60 * 1000;
 
 export interface MempoolConfig {
   chainId?: number;
@@ -95,6 +96,7 @@ export class Mempool extends EventEmitter {
   private entries: Map<string, MempoolEntry>;
   private totalBytes: number;
   private writeTail: Promise<void> = Promise.resolve();
+  private unsubscribeCanonicalUpdate: () => void;
   
   constructor(storage: StorageAdapter, config: MempoolConfig = {}) {
     super();
@@ -116,7 +118,7 @@ export class Mempool extends EventEmitter {
       maxTransactionSize: this.config.maxTransactionSize!,
       minFeePerByte: this.config.minFeePerByte!,
     });
-    this.storage.onCanonicalMempoolUpdate((additions, removals) => {
+    this.unsubscribeCanonicalUpdate = this.storage.onCanonicalMempoolUpdate((additions, removals) => {
       for (const hash of removals) this.removeEntry(hash);
       for (const { transaction, addedAt } of additions) {
         this.removeEntry(transaction.hash);
@@ -130,6 +132,11 @@ export class Mempool extends EventEmitter {
         this.totalBytes += size;
       }
     });
+  }
+
+  async shutdown(): Promise<void> {
+    this.unsubscribeCanonicalUpdate();
+    await this.writeTail;
   }
   
   /**
@@ -177,7 +184,11 @@ export class Mempool extends EventEmitter {
           for (let index = 0; index < queue.length; index++) {
             const entry = queue[index];
             const transaction = TransactionClass.fromObject(entry.transaction);
-            const validation = transaction.validate(this.config.chainId!, this.config.addressPrefix!);
+            const validation = transaction.validate(
+              this.config.chainId!,
+              this.config.addressPrefix!,
+              Date.now() + TRANSACTION_FUTURE_TIME_MS
+            );
             if (!validation.valid) {
               throw new Error(`Invalid stored transaction ${transaction.hash}: ${validation.error}`);
             }
@@ -245,7 +256,11 @@ export class Mempool extends EventEmitter {
     if (txClass.isCoinbase()) {
       throw new Error('Coinbase transactions cannot enter mempool');
     }
-    const validation = txClass.validate(this.config.chainId!, this.config.addressPrefix!);
+    const validation = txClass.validate(
+      this.config.chainId!,
+      this.config.addressPrefix!,
+      Date.now() + TRANSACTION_FUTURE_TIME_MS
+    );
     if (!validation.valid) {
       throw new Error(`Invalid transaction: ${validation.error}`);
     }
@@ -366,16 +381,45 @@ export class Mempool extends EventEmitter {
       queue.sort((a, b) => a.transaction.nonce - b.transaction.nonce);
     }
 
+    const higherPriority = (a: MempoolEntry, b: MempoolEntry): boolean => {
+      if (a.feePerByte !== b.feePerByte) return a.feePerByte > b.feePerByte;
+      if (a.addedAt !== b.addedAt) return a.addedAt < b.addedAt;
+      return a.transaction.hash < b.transaction.hash;
+    };
+    const heap: MempoolEntry[] = [];
+    const push = (entry: MempoolEntry): void => {
+      heap.push(entry);
+      let index = heap.length - 1;
+      while (index > 0) {
+        const parent = Math.floor((index - 1) / 2);
+        if (!higherPriority(heap[index], heap[parent])) break;
+        [heap[index], heap[parent]] = [heap[parent], heap[index]];
+        index = parent;
+      }
+    };
+    const pop = (): MempoolEntry => {
+      const first = heap[0];
+      const last = heap.pop()!;
+      if (heap.length === 0) return first;
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        if (left >= heap.length) break;
+        const best = right < heap.length && higherPriority(heap[right], heap[left]) ? right : left;
+        if (!higherPriority(heap[best], heap[index])) break;
+        [heap[index], heap[best]] = [heap[best], heap[index]];
+        index = best;
+      }
+      return first;
+    };
+    for (const queue of queues.values()) push(queue[0]);
+
     const transactions: Transaction[] = [];
     let currentSize = 0;
-    while (queues.size > 0) {
-      const [entry] = Array.from(queues.values(), queue => queue[0]).sort((a, b) => {
-        const feeDifference = b.feePerByte - a.feePerByte;
-        if (feeDifference > 0n) return 1;
-        if (feeDifference < 0n) return -1;
-        if (a.addedAt !== b.addedAt) return a.addedAt - b.addedAt;
-        return a.transaction.hash.localeCompare(b.transaction.hash);
-      });
+    while (heap.length > 0) {
+      const entry = pop();
       const sender = entry.transaction.from!;
       if (currentSize + entry.size > maxSize) {
         queues.delete(sender);
@@ -386,6 +430,7 @@ export class Mempool extends EventEmitter {
       const queue = queues.get(sender)!;
       queue.shift();
       if (queue.length === 0) queues.delete(sender);
+      else push(queue[0]);
     }
     return transactions;
   }

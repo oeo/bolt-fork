@@ -34,7 +34,7 @@ describe('Full Blockchain Flow Integration', () => {
     });
     await mempool.initialize();
     
-    gbtService = new GetBlockTemplateService(blockchain, mempool, storage);
+    gbtService = new GetBlockTemplateService(blockchain, mempool);
   });
   
   afterEach(async () => {

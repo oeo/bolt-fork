@@ -88,9 +88,27 @@ export class IdentityManager {
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    // write identity file with restricted permissions
     const data = JSON.stringify(this.identity, null, 2);
-    fs.writeFileSync(this.identityPath, data, { mode: 0o600 });
+    const temporaryPath = `${this.identityPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    const file = fs.openSync(temporaryPath, 'wx', 0o600);
+    try {
+      fs.writeFileSync(file, data);
+      fs.fsyncSync(file);
+    } finally {
+      fs.closeSync(file);
+    }
+    try {
+      fs.renameSync(temporaryPath, this.identityPath);
+      const directory = fs.openSync(dir, 'r');
+      try {
+        fs.fsyncSync(directory);
+      } finally {
+        fs.closeSync(directory);
+      }
+    } catch (error) {
+      fs.rmSync(temporaryPath, { force: true });
+      throw error;
+    }
     logger.debug('saved identity to file');
   }
 

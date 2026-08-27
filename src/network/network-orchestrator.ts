@@ -49,6 +49,7 @@ export class NetworkOrchestrator extends EventEmitter {
   private txRelay?: TransactionRelay;
   private blockAddedHandler?: (block: Block) => void;
   private peerAnnouncementHandler?: (peer: PeerEndpoint) => void;
+  private peerAuthenticatedHandler?: (peerId: string, sessionId: string) => void;
   
   private isRunning: boolean = false;
   
@@ -71,16 +72,24 @@ export class NetworkOrchestrator extends EventEmitter {
     
     logger.info(`starting network services in ${this.mode} mode`);
     
-    switch (this.mode) {
-      case NetworkMode.IPFS:
-        await this.startIPFSMode();
-        break;
-      case NetworkMode.TCP:
-        await this.startTCPMode();
-        break;
+    try {
+      switch (this.mode) {
+        case NetworkMode.IPFS:
+          await this.startIPFSMode();
+          break;
+        case NetworkMode.TCP:
+          await this.startTCPMode();
+          break;
+      }
+      this.isRunning = true;
+    } catch (error) {
+      try {
+        await this.stop();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'network startup and cleanup failed');
+      }
+      throw error;
     }
-    
-    this.isRunning = true;
     logger.info('network orchestrator started');
   }
   
@@ -88,20 +97,19 @@ export class NetworkOrchestrator extends EventEmitter {
    * stop all network services
    */
   async stop(): Promise<void> {
-    if (!this.isRunning) return;
-    
     logger.info('stopping network orchestrator');
+    const errors: unknown[] = [];
     this.cleanupTCPEventHandlers();
     
-    // stop tcp services
-    if (this.syncManager) await this.syncManager.stop();
-    if (this.connectionManager) await this.connectionManager.stop();
-    if (this.txRelay) this.txRelay.stop();
-    if (this.inventoryManager) this.inventoryManager.stop();
-    if (this.discoveryService) await this.discoveryService.stop();
+    if (this.discoveryService) try { await this.discoveryService.stop(); } catch (error) { errors.push(error); }
+    if (this.connectionManager) try { await this.connectionManager.stop(); } catch (error) { errors.push(error); }
+    if (this.syncManager) try { await this.syncManager.stop(); } catch (error) { errors.push(error); }
+    if (this.txRelay) try { this.txRelay.stop(); } catch (error) { errors.push(error); }
+    if (this.inventoryManager) try { this.inventoryManager.stop(); } catch (error) { errors.push(error); }
     
     this.isRunning = false;
     logger.info('network orchestrator stopped');
+    if (errors.length > 0) throw new AggregateError(errors, 'network shutdown failed');
   }
   
   /**
@@ -197,11 +205,15 @@ export class NetworkOrchestrator extends EventEmitter {
       await this.discoveryService.start(height, latestBlock?.hash || genesisHash);
     } catch (error) {
       this.cleanupTCPEventHandlers();
-      this.txRelay.stop();
-      await this.syncManager.stop();
-      await this.connectionManager.stop();
-      this.inventoryManager.stop();
-      await this.discoveryService.stop();
+      try {
+        await this.discoveryService.stop();
+        await this.connectionManager.stop();
+        await this.syncManager.stop();
+        this.txRelay.stop();
+        this.inventoryManager.stop();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'tcp startup and cleanup failed');
+      }
       throw error;
     }
     
@@ -219,6 +231,11 @@ export class NetworkOrchestrator extends EventEmitter {
     };
     this.discoveryService!.on('peer:discovered', this.peerAnnouncementHandler);
     this.discoveryService!.on('peer:updated', this.peerAnnouncementHandler);
+    this.peerAuthenticatedHandler = (peerId: string, sessionId: string) => {
+      const connection = this.connectionManager!.getConnection(sessionId);
+      this.discoveryService!.promotePeer(peerId, connection?.dialEndpoint);
+    };
+    this.connectionManager!.on('peer:authenticated', this.peerAuthenticatedHandler);
     
     // handle blocks from sync
     this.syncManager!.on('block:received', (block: Block) => {
@@ -255,9 +272,13 @@ export class NetworkOrchestrator extends EventEmitter {
       this.discoveryService.off('peer:discovered', this.peerAnnouncementHandler);
       this.discoveryService.off('peer:updated', this.peerAnnouncementHandler);
     }
+    if (this.peerAuthenticatedHandler && this.connectionManager) {
+      this.connectionManager.off('peer:authenticated', this.peerAuthenticatedHandler);
+    }
     if (this.blockAddedHandler) this.config.blockchain.off('block:added', this.blockAddedHandler);
     this.blockAddedHandler = undefined;
     this.peerAnnouncementHandler = undefined;
+    this.peerAuthenticatedHandler = undefined;
   }
   
   /**

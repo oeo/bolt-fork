@@ -14,7 +14,7 @@ each block hash commits to:
 - difficulty
 - proof-of-work nonce
 
-the optional `miner` field is excluded from block hashing. it remains part of serialized block size and can affect `maxBlockSize` validation.
+the optional `miner` field is excluded from block hashing and consensus block-size measurement.
 
 sha-256 is the only consensus hash.
 
@@ -24,9 +24,9 @@ block timestamps must be strictly greater than their parent block timestamp and 
 
 `executeBlock()` is the state transition function. it receives a block, complete parent account state, chain configuration, and block reward. it performs no storage writes.
 
-execution validates transaction structure, chain id, transfer sender and recipient address prefixes, coinbase recipient address prefix, signatures, nonce order, balances, coinbase position, coinbase value, coinbase timestamp, and transaction hash uniqueness. the coinbase timestamp must equal the block timestamp. output contains complete resulting account state and its root. storage commits output only after block validation succeeds.
+execution validates transaction structure, chain id, transfer sender and recipient address prefixes, coinbase recipient address prefix, canonical compressed transfer public keys, signatures, nonce order, balances, coinbase position, coinbase value, timestamps, and transaction hash uniqueness. coinbase timestamp must equal block timestamp. transfer timestamps must not exceed block timestamp. output contains complete resulting account state and its root. storage commits output only after block validation succeeds.
 
-transfer hashes commit to canonical signed fields and the signature. coinbase hashes commit to canonical unsigned fields.
+transfer hashes commit to canonical signed fields, signature, and canonical compressed 33-byte public key. coinbase hashes commit to canonical unsigned fields.
 
 state roots sort addresses by ascii value. each address, balance, and nonce uses length-prefixed utf-8 encoding under the `bolt:state:v1` domain before sha-256 hashing.
 
@@ -36,11 +36,17 @@ block work is calculated from the proof-of-work target. cumulative work is the s
 
 ## limits
 
-total UTF-8 serialized block size must not exceed configured `maxBlockSize`. `maxTransactionSize` and `minFeePerByte` govern mempool admission and reorganization restoration, not block validity.
+total UTF-8 serialized consensus block size must not exceed configured `maxBlockSize`. `miner` metadata is excluded. `maxTransactionSize` and `minFeePerByte` govern mempool admission and reorganization restoration, not block validity.
 
 ## genesis
 
-genesis uses fixed millisecond timestamps, configured nonce and difficulty, empty transaction merkle root, and empty account state root. persisted stores carry storage version and chain id metadata. nodes reject data from older schemas or another chain.
+genesis uses fixed millisecond timestamps, configured nonce and difficulty, empty transaction merkle root, and empty account state root. every shipped nonce satisfies proof of work at its current configured difficulty. startup validates configured genesis before storage writes and rejects stored genesis that differs from configuration. persisted stores carry storage version and chain id metadata. nodes reject data from older schemas or another chain.
+
+mainnet startup is disabled until launch difficulty is selected. current mainnet difficulty is not a launch decision.
+
+## issuance
+
+genesis issues no currency. reward at a target height is calculated after exact rewards for heights `1` through `target - 1`. halving uses integer division by powers of two. issuance stops when reward reaches zero or maximum supply is reached.
 
 ## reorganization
 

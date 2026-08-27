@@ -56,7 +56,7 @@ export async function executeBlock(
   };
 
   for (const transaction of transactions) {
-    const validation = transaction.validate(config.chainId, config.addressPrefix);
+    const validation = transaction.validate(config.chainId, config.addressPrefix, block.timestamp);
     if (!validation.valid) throw new Error(`Transaction ${transaction.hash}: ${validation.error}`);
     if (!transaction.isCoinbase() && !(await transaction.verify())) {
       throw new Error(`Transaction ${transaction.hash}: Invalid signature`);

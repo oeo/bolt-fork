@@ -7,6 +7,7 @@ import type { ConnectionManager } from './connection-manager';
 import {
   InvType,
   MAX_HEADERS,
+  PROTOCOL_HEADER_SIZE,
   PROTOCOL_VERSION,
   type Protocol,
   type VerackMessage,
@@ -45,6 +46,10 @@ export interface SyncManagerConfig {
   handshakeClockSkew?: number;
   maxQueuedMessageBytes?: number;
   maxTotalQueuedMessageBytes?: number;
+  messageWorkCapacity?: number;
+  messageWorkRefillPerSecond?: number;
+  globalMessageWorkCapacity?: number;
+  globalMessageWorkRefillPerSecond?: number;
 }
 
 interface HandshakeState {
@@ -101,6 +106,8 @@ export class SyncManager extends EventEmitter {
   private messageQueues = new Map<string, Promise<void>>();
   private queuedMessageBytes = new Map<string, number>();
   private totalQueuedMessageBytes = 0;
+  private messageWork = new Map<string, { tokens: number; updatedAt: number }>();
+  private globalMessageWork = { tokens: 0, updatedAt: Date.now() };
   private acceptingMessages = true;
   private backgroundTasks = new Set<Promise<unknown>>();
   private lifecycleController = new AbortController();
@@ -118,8 +125,13 @@ export class SyncManager extends EventEmitter {
       handshakeClockSkew: 120000,
       maxQueuedMessageBytes: 2 * config.chainConfig.maxBlockSize,
       maxTotalQueuedMessageBytes: 4 * config.chainConfig.maxBlockSize,
+      messageWorkCapacity: 512,
+      messageWorkRefillPerSecond: 128,
+      globalMessageWorkCapacity: 4096,
+      globalMessageWorkRefillPerSecond: 1024,
       ...config
     };
+    this.globalMessageWork.tokens = this.config.globalMessageWorkCapacity!;
     
     this.setupEventHandlers();
   }
@@ -170,6 +182,7 @@ export class SyncManager extends EventEmitter {
 
     this.config.connectionManager.on('connection:closed', (sessionId: string, peerId?: string) => {
       this.handshakes.delete(sessionId);
+      this.messageWork.delete(sessionId);
       this.headerRequests.delete(sessionId);
       for (const [hash, request] of this.transactionRequests) {
         if (request.sessionId === sessionId) this.transactionRequests.delete(hash);
@@ -200,6 +213,11 @@ export class SyncManager extends EventEmitter {
         const message = this.config.protocol.decodeMessage(data);
         if (!message) {
           this.config.connectionManager.disconnect(peerId, 'invalid protocol message');
+          return;
+        }
+        if (message.command !== 'version' && message.command !== 'verack' &&
+            !this.chargeMessageWork(sessionId, message.command, message.payload, data.length)) {
+          this.config.connectionManager.disconnect(peerId, 'message work limit exceeded');
           return;
         }
         await this.handleMessage(peerId, sessionId, message.command, message.payload);
@@ -264,7 +282,53 @@ export class SyncManager extends EventEmitter {
     this.messageQueues.clear();
     this.queuedMessageBytes.clear();
     this.totalQueuedMessageBytes = 0;
+    this.messageWork.clear();
+    this.globalMessageWork = {
+      tokens: this.config.globalMessageWorkCapacity!,
+      updatedAt: Date.now()
+    };
     this.handshakes.clear();
+  }
+
+  private chargeMessageWork(sessionId: string, command: string, payload: any, messageBytes: number): boolean {
+    const now = Date.now();
+    const refill = (bucket: { tokens: number; updatedAt: number }, capacity: number, rate: number) => {
+      bucket.tokens = Math.min(capacity, bucket.tokens + (now - bucket.updatedAt) * rate / 1000);
+      bucket.updatedAt = now;
+    };
+    let session = this.messageWork.get(sessionId);
+    if (!session) {
+      session = { tokens: this.config.messageWorkCapacity!, updatedAt: now };
+      this.messageWork.set(sessionId, session);
+    }
+    refill(session, this.config.messageWorkCapacity!, this.config.messageWorkRefillPerSecond!);
+    refill(
+      this.globalMessageWork,
+      this.config.globalMessageWorkCapacity!,
+      this.config.globalMessageWorkRefillPerSecond!
+    );
+
+    const commandCost: Record<string, number> = {
+      ping: 1,
+      inv: 2,
+      tx: 8,
+      block: 16,
+      headers: 16,
+      getdata: 4,
+      getheaders: 8,
+      getblocks: 8
+    };
+    const items = Array.isArray(payload) ? payload.length
+      : Array.isArray(payload?.locator) ? payload.locator.length
+      : Array.isArray(payload?.transactions) ? payload.transactions.length
+      : 0;
+    const cost = (commandCost[command] || 1) +
+      Math.min(128, Math.ceil(Math.max(0, messageBytes - PROTOCOL_HEADER_SIZE) / 65536)) +
+      Math.min(128, Math.ceil(items / 16));
+    if (session.tokens < cost || this.globalMessageWork.tokens < cost) return false;
+    session.tokens -= cost;
+    this.globalMessageWork.tokens -= cost;
+    return true;
   }
   
   /**

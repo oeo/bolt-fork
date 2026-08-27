@@ -35,7 +35,7 @@ peer announcements include signed node identity, chain identity, tcp endpoint, h
 
 signed `version` and `verack` transcripts bind both peers, connection roles, nonces, protocol version, chain id, and genesis hash. secp256k1 ecdh derives directional hmac-sha-256 frame keys. authenticated frames carry monotonic sequence numbers. transport payloads are not encrypted.
 
-tcp input, output, connection, handshake, message-dispatch, discovery, and protocol collection limits bound peer-controlled resource use. mainnet and testnet outbound dialing rejects private and reserved destinations after dns resolution. devnet permits private peers.
+tcp input, output, connection, handshake, message-dispatch, discovery, and protocol collection limits bound peer-controlled resource use. authenticated dispatch uses weighted per-session and aggregate work buckets before storage and validation. discovery keeps signed announcements in expiring prefix-diverse candidate capacity until authenticated tcp success promotes them. these controls limit resource use but do not prevent sybil identities. mainnet and testnet outbound dialing rejects private and reserved destinations after dns resolution. devnet permits private peers.
 
 `SyncManager` owns authenticated protocol dispatch. active synchronization sends `getheaders` with an exponential canonical locator, validates contiguous headers and cumulative work through `Blockchain`, then requests candidate block bodies sequentially. canonical extensions use normal block admission. complete replacement branches use bounded reorganization. block inventory starts header discovery rather than direct body download.
 
@@ -58,7 +58,9 @@ transactions are chain-bound and identify transfer or coinbase kind. block execu
 - `LMDBAdapter` for persistent storage
 - `MemoryAdapter` for in-memory use
 
-canonical transitions carry expected tip and cumulative-work values. storage implementations reject stale writes instead of silently replacing a changed tip. automatic backup, recovery, and startup integrity verification are not provided. `Blockchain.verifyChainIntegrity()` is an explicit operation.
+canonical transitions carry expected tip and cumulative-work values. storage implementations reject stale writes instead of silently replacing a changed tip. startup verifies chain specification, configured genesis, every canonical block and state root, final account state, cumulative work, and confirmed transaction locations before serving traffic.
+
+the cold storage command snapshots LMDB through its supported backup operation. backups include node identity and a chain manifest. restore requires a stopped node and empty destination, verifies a staged copy, then renames it into place. online restore is not supported.
 
 confirmed transaction lookup returns transaction location and current canonical height from one storage snapshot. canonical transitions rebuild or update transaction locations when branches change.
 
@@ -76,6 +78,8 @@ src/utils/      logging, serialization, identity, currency
 ```
 
 bun runs typescript directly. tcp uses `Bun.listen` and `Bun.connect`. hashing uses `Bun.CryptoHasher` without unsupported performance multipliers or benchmark claims.
+
+`src/index.ts` owns fallback miner, getblocktemplate, and api composition. fallback mining requires configured active-network payout. optional mining routes share getblocktemplate service, require bearer token, and are disabled by default.
 
 ## current network limits
 

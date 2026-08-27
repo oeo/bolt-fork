@@ -14,38 +14,78 @@ x-bolt: &bolt
   build:
     context: .
     dockerfile: Dockerfile
-  depends_on:
-    ipfs-a:
-      condition: service_healthy
-    ipfs-b:
-      condition: service_healthy
+  cap_add:
+    - NET_ADMIN
   ports:
     - "127.0.0.1::7333"
+  healthcheck:
+    test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:7333/health').then(r=>{if(!r.ok)process.exit(1)})"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
 
 services:
   bolt-a:
     <<: *bolt
+    depends_on:
+      ipfs-a:
+        condition: service_healthy
     environment:
       <<: *bolt-environment
       MINER_ADDRESS: 2fQ4Xu3dv16nKNxZfBKkHfC759K79xRpsYC
       MINING_ENABLED: "${BOLT_A_MINING_ENABLED:-true}"
       MINING_INTERVAL: 20000
-      NODE_HOST: bolt-a
+      NODE_HOST: 172.29.10.10
       NODE_ROLE: miner
       IPFS_API: http://ipfs-a:5001
     volumes:
       - bolt-a-data:/data
+      - bolt-backups:/backups
+    networks:
+      side-a:
+        ipv4_address: 172.29.10.10
 
   bolt-b:
     <<: *bolt
+    depends_on:
+      ipfs-b:
+        condition: service_healthy
     environment:
       <<: *bolt-environment
       MINING_ENABLED: "false"
-      NODE_HOST: bolt-b
+      NODE_HOST: 172.29.20.10
       NODE_ROLE: full
       IPFS_API: http://ipfs-b:5001
     volumes:
       - bolt-b-data:/data
+      - bolt-backups:/backups
+    networks:
+      side-b:
+        ipv4_address: 172.29.20.10
+
+  bolt-recovery:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["tools"]
+    environment:
+      BOLT_NETWORK: devnet
+    volumes:
+      - bolt-backups:/backups
+      - bolt-restore-data:/restore
+    networks:
+      - side-a
+
+  router:
+    image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+    command: ["sh", "-c", "trap : TERM INT; sleep infinity & wait"]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    networks:
+      side-a:
+        ipv4_address: 172.29.10.2
+      side-b:
+        ipv4_address: 172.29.20.2
 
   ipfs-a:
     image: ipfs/kubo:v0.43.0@sha256:63f5502f7a01b82a675e45bae81b2f5dfa90248ec4a86cd0a58c218347e1f2d2
@@ -61,6 +101,11 @@ services:
       retries: 10
     volumes:
       - ipfs-a-data:/data/ipfs
+    cap_add:
+      - NET_ADMIN
+    networks:
+      side-a:
+        ipv4_address: 172.29.10.11
 
   ipfs-b:
     image: ipfs/kubo:v0.43.0@sha256:63f5502f7a01b82a675e45bae81b2f5dfa90248ec4a86cd0a58c218347e1f2d2
@@ -76,13 +121,32 @@ services:
       retries: 10
     volumes:
       - ipfs-b-data:/data/ipfs
+    cap_add:
+      - NET_ADMIN
+    networks:
+      side-b:
+        ipv4_address: 172.29.20.11
 
 volumes:
   bolt-a-data:
   bolt-b-data:
+  bolt-backups:
+  bolt-restore-data:
   ipfs-a-data:
   ipfs-b-data:
 
 configs:
   disable-ipfs-bootstrap:
     file: ./tests/bats/disable-ipfs-bootstrap.sh
+
+networks:
+  side-a:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.10.0/24
+  side-b:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.20.0/24

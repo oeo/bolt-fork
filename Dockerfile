@@ -9,6 +9,7 @@ RUN bun install --frozen-lockfile --production
 
 # copy source code
 COPY src ./src
+COPY scripts/storage.ts ./scripts/storage.ts
 
 RUN mkdir -p /data/lmdb
 

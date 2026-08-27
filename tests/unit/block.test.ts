@@ -221,11 +221,19 @@ describe('Block Class', () => {
         1,
         '⚡'.repeat(100)
       );
-      const size = new TextEncoder().encode(serialize(block.toObject())).byteLength;
+      const { miner: _miner, ...consensusBlock } = block.toObject();
+      const size = new TextEncoder().encode(serialize(consensusBlock)).byteLength;
 
       expect(block.getSize()).toBe(size);
       expect(block.validateSize(size).valid).toBe(true);
       expect(block.validateSize(size - 1).valid).toBe(false);
+    });
+
+    it('should exclude miner metadata from consensus size', () => {
+      const withoutMiner = new BlockClass(1, Date.now(), genesis.hash, [], 1);
+      const withMiner = new BlockClass(1, withoutMiner.timestamp, genesis.hash, [], 1, 'x'.repeat(1000));
+
+      expect(withMiner.getSize()).toBe(withoutMiner.getSize());
     });
   });
   

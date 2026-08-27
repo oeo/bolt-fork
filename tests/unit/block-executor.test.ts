@@ -71,4 +71,28 @@ describe('block executor', () => {
     await expect(executeBlock(block.toObject(), new Map(), devnet, 5000000000n))
       .rejects.toThrow('Invalid coinbase transaction');
   });
+
+  it('should reject transfers after the block timestamp', async () => {
+    const sender = generateAddress(devnet.addressPrefix);
+    const recipient = generateAddress(devnet.addressPrefix);
+    const transfer = await createSignedTransaction(
+      devnet.chainId,
+      sender.address,
+      recipient.address,
+      1n,
+      0,
+      1n,
+      sender.privateKey,
+      2001
+    );
+    const coinbase = createCoinbaseTransaction(devnet.chainId, recipient.address, 1n, 1n, 2000);
+    const block = new BlockClass(1, 2000, '0'.repeat(64), [coinbase, transfer], 1);
+
+    await expect(executeBlock(
+      block.toObject(),
+      new Map([[sender.address, { balance: 2n, nonce: 0 }]]),
+      devnet,
+      1n
+    )).rejects.toThrow('future');
+  });
 });

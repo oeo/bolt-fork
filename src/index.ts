@@ -5,10 +5,10 @@ import { Mempool } from './core/mempool';
 import { NetworkOrchestrator, NetworkMode } from './network/network-orchestrator';
 import { ApiServer } from './api/server';
 import { MiningService } from './services/mining';
+import { GetBlockTemplateService } from './services/getblocktemplate';
 import { getMetricsService } from './services/metrics';
 import { createStorage } from './storage';
 import { config as chainConfig } from './config/chain';
-import { generateAddress } from './crypto/address';
 import { getLogger } from './utils/logger';
 import { serialize } from './utils/bigint';
 import { TransactionClass } from './core/transaction';
@@ -16,6 +16,7 @@ import { IdentityManager } from './utils/identity';
 import { serve } from 'bun';
 import * as fs from 'fs';
 import * as path from 'path';
+import { currentProcessIdentity, processIdentityIsRunning, type ProcessIdentity } from './utils/pid';
 
 const logger = getLogger('bolt-node-ipfs');
 
@@ -39,6 +40,8 @@ interface NodeConfig {
   // mining
   minerAddress?: string;
   miningEnabled?: boolean;
+  miningApiEnabled?: boolean;
+  miningApiToken?: string;
   
   // ipfs
   ipfsApi?: string;
@@ -54,9 +57,22 @@ class BoltIPFSNode {
   private networkOrchestrator?: NetworkOrchestrator;
   private api!: ApiServer;
   private miner?: MiningService;
+  private blockTemplates?: GetBlockTemplateService;
   private metrics: any; // will use singleton
   private metricsServer: any;
   private running: boolean = false;
+  private stopped = false;
+  private stopping?: Promise<void>;
+  private statusInterval?: ReturnType<typeof setInterval>;
+  private miningMetricsInterval?: ReturnType<typeof setInterval>;
+  private blockHandler?: (block: any) => Promise<void>;
+  private minedBlockHandler?: (block: any, miningStats: any) => Promise<void>;
+  private mempoolHandler?: () => void;
+  private signalHandlers = new Map<NodeJS.Signals, () => void>();
+  private uncaughtExceptionHandler?: (error: Error) => void;
+  private unhandledRejectionHandler?: (reason: unknown, promise: Promise<unknown>) => void;
+  private pidPath?: string;
+  private processIdentity?: ProcessIdentity;
   
   constructor(config: NodeConfig) {
     this.config = config;
@@ -64,25 +80,21 @@ class BoltIPFSNode {
   }
   
   private setupSignalHandlers(): void {
-    process.on('SIGINT', async () => {
-      logger.info('Received SIGINT, shutting down gracefully...');
-      await this.stop();
-      process.exit(0);
-    });
+    if (this.signalHandlers.size > 0) return;
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      const handler = () => void this.stop().then(() => process.exit(0));
+      this.signalHandlers.set(signal, handler);
+      process.on(signal, handler);
+    }
     
-    process.on('SIGTERM', async () => {
-      logger.info('Received SIGTERM, shutting down gracefully...');
-      await this.stop();
-      process.exit(0);
-    });
-    
-    process.on('uncaughtException', (error) => {
+    this.uncaughtExceptionHandler = (error) => {
       logger.error('Uncaught exception:', error);
       console.error('Full error:', error);
       process.exit(1);
-    });
+    };
+    process.on('uncaughtException', this.uncaughtExceptionHandler);
     
-    process.on('unhandledRejection', (reason, promise) => {
+    this.unhandledRejectionHandler = (reason, promise) => {
       logger.error('Unhandled rejection:', {
         reason: reason,
         promise: promise,
@@ -90,14 +102,36 @@ class BoltIPFSNode {
       });
       console.error('Full rejection details:', reason);
       process.exit(1);
-    });
+    };
+    process.on('unhandledRejection', this.unhandledRejectionHandler);
   }
   
   async initialize(): Promise<void> {
+    this.stopped = false;
+    try {
+      await this.initializeResources();
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
+  }
+
+  private async initializeResources(): Promise<void> {
+    if (!chainConfig.startupEnabled) {
+      throw new Error(`${chainConfig.name} startup is disabled until launch difficulty is selected`);
+    }
+    if (this.config.miningEnabled && !this.config.minerAddress) {
+      throw new Error('MINER_ADDRESS is required when mining is enabled');
+    }
+    if (this.config.miningApiEnabled && !this.config.miningApiToken) {
+      throw new Error('MINING_API_TOKEN is required when mining API is enabled');
+    }
+
     // ensure data directory exists
     if (!fs.existsSync(this.config.dataDir)) {
       fs.mkdirSync(this.config.dataDir, { recursive: true });
     }
+    this.acquireDataDirectory();
     
     // load or create node identity
     this.identity = new IdentityManager(this.config.dataDir, chainConfig.addressPrefix);
@@ -156,6 +190,10 @@ class BoltIPFSNode {
     // setup network orchestrator event handlers
     this.setupNetworkHandlers();
     
+    if (this.config.miningApiEnabled) {
+      this.blockTemplates = new GetBlockTemplateService(this.blockchain, this.mempool);
+    }
+
     // create api server
     this.api = new ApiServer({
       port: this.config.apiPort,
@@ -163,6 +201,11 @@ class BoltIPFSNode {
       blockchain: this.blockchain,
       mempool: this.mempool,
       storage: this.storage,
+      mining: this.blockTemplates ? {
+        enabled: true,
+        token: this.config.miningApiToken,
+        service: this.blockTemplates,
+      } : undefined,
     });
     
     // get metrics service singleton
@@ -173,7 +216,7 @@ class BoltIPFSNode {
     
     // create mining service if enabled
     if (this.config.miningEnabled) {
-      const minerAddress = this.config.minerAddress || generateAddress(chainConfig.addressPrefix).address;
+      const minerAddress = this.config.minerAddress!;
       this.miner = new MiningService({
         blockchain: this.blockchain,
         mempool: this.mempool,
@@ -185,10 +228,26 @@ class BoltIPFSNode {
     
     logger.info('Node initialization complete');
   }
+
+  private acquireDataDirectory(): void {
+    this.pidPath = path.join(this.config.dataDir, 'node.pid');
+    if (fs.existsSync(this.pidPath)) {
+      try {
+        const identity = JSON.parse(fs.readFileSync(this.pidPath, 'utf8')) as ProcessIdentity;
+        if (processIdentityIsRunning(identity)) throw new Error(`data directory is in use by process ${identity.pid}`);
+      } catch (error) {
+        if (error instanceof SyntaxError) throw new Error('invalid node process lock');
+        throw error;
+      }
+      fs.rmSync(this.pidPath);
+    }
+    this.processIdentity = currentProcessIdentity();
+    fs.writeFileSync(this.pidPath, JSON.stringify(this.processIdentity), { flag: 'wx', mode: 0o600 });
+  }
   
   private setupBlockchainHandlers(): void {
     // record metrics for ALL blocks added to the chain, regardless of source
-    this.blockchain.on('block:added', async (block) => {
+    this.blockHandler = async (block) => {
       try {
         const blockSize = serialize(block).length;
         
@@ -236,7 +295,8 @@ class BoltIPFSNode {
       } catch (error: any) {
         logger.error('Failed to record block metrics:', error);
       }
-    });
+    };
+    this.blockchain.on('block:added', this.blockHandler);
   }
   
   private setupNetworkHandlers(): void {
@@ -254,19 +314,13 @@ class BoltIPFSNode {
     }
     
     logger.info('starting bolt node...');
+    this.stopped = false;
+    this.setupSignalHandlers();
     
-    // start network services
-    if (this.networkOrchestrator) {
-      await this.networkOrchestrator.start();
-      logger.info(`network services started in ${this.config.networkMode || 'tcp'} mode`);
-    }
-    
-    // start api server
-    await this.api.start();
-    logger.info(`API server started on port ${this.config.apiPort}`);
-    
-    // start metrics server
-    this.metricsServer = serve({
+    try {
+      if (this.networkOrchestrator) await this.networkOrchestrator.start();
+      await this.api.start();
+      this.metricsServer = serve({
       port: this.config.metricsPort,
       hostname: this.config.metricsHost,
       fetch: async (request) => {
@@ -320,7 +374,7 @@ class BoltIPFSNode {
         
         return new Response('Not Found', { status: 404 });
       }
-    });
+      });
     logger.info(`Metrics server started on port ${this.config.metricsPort}`);
     
     // start mining if enabled
@@ -329,7 +383,7 @@ class BoltIPFSNode {
       logger.info('Mining service started');
       
       // broadcast mined blocks to peers
-      this.miner.on('blockMined', async (block, miningStats) => {
+      this.minedBlockHandler = async (block, miningStats) => {
         try {
           logger.info(`Broadcasting mined block ${block.index} to peers`);
           
@@ -350,11 +404,12 @@ class BoltIPFSNode {
             error: error.message
           });
         }
-      });
+      };
+      this.miner.on('blockMined', this.minedBlockHandler);
     }
-    
+
     // announce transactions when added to mempool
-    this.mempool.on('transactionAdded', async (tx) => {
+    this.mempoolHandler = () => {
       try {
         // record mempool addition metric
         this.metrics.recordMempoolTransactionAdded();
@@ -365,7 +420,8 @@ class BoltIPFSNode {
       } catch (error: any) {
         logger.error('Failed to record mempool transaction:', error.message);
       }
-    });
+    };
+    this.mempool.on('transactionAdded', this.mempoolHandler);
     
     this.running = true;
     logger.info('Bolt IPFS node started successfully');
@@ -374,10 +430,10 @@ class BoltIPFSNode {
     await this.logStatus();
     
     // periodic status logging
-    setInterval(async () => await this.logStatus(), 60000); // every minute
+    this.statusInterval = setInterval(() => void this.logStatus(), 60000);
     
     // periodic hash rate update (every 10 seconds)
-    setInterval(async () => {
+    this.miningMetricsInterval = setInterval(async () => {
       if (this.miner) {
         const stats = this.miner.getStats();
         const currentDifficulty = await this.blockchain.getDifficulty();
@@ -385,6 +441,10 @@ class BoltIPFSNode {
         this.metrics.updateMiningMetrics(stats.lastHashRate || 0, currentDifficulty);
       }
     }, 10000);
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
   }
   
   private async logStatus(): Promise<void> {
@@ -408,41 +468,75 @@ class BoltIPFSNode {
   }
   
   async stop(): Promise<void> {
-    if (!this.running) {
-      return;
+    if (this.stopping) return this.stopping;
+    if (this.stopped) return;
+    this.stopping = this.stopResources();
+    try {
+      await this.stopping;
+      this.stopped = true;
+    } finally {
+      this.stopping = undefined;
     }
-    
+  }
+
+  private async stopResources(): Promise<void> {
     logger.info('Stopping bolt IPFS node...');
+    const errors: unknown[] = [];
+    if (this.statusInterval) clearInterval(this.statusInterval);
+    if (this.miningMetricsInterval) clearInterval(this.miningMetricsInterval);
+    this.statusInterval = undefined;
+    this.miningMetricsInterval = undefined;
     
     // stop mining first
     if (this.miner) {
-      this.miner.stop();
+      if (this.minedBlockHandler) this.miner.off('blockMined', this.minedBlockHandler);
+      try { await this.miner.stop(); } catch (error) { errors.push(error); }
       logger.info('Mining service stopped');
     }
     
-    if (this.networkOrchestrator) {
-      await this.networkOrchestrator.stop();
-      logger.info('Network services stopped');
-    }
-    
-    // stop api
-    await this.api.stop();
-    logger.info('API server stopped');
-    
-    // stop metrics server
     if (this.metricsServer) {
-      this.metricsServer.stop();
+      try { this.metricsServer.stop(true); } catch (error) { errors.push(error); }
+      this.metricsServer = undefined;
       logger.info('Metrics server stopped');
+    }
+
+    if (this.api) try { await this.api.stop(); } catch (error) { errors.push(error); }
+    logger.info('API server stopped');
+
+    if (this.blockTemplates) try { await this.blockTemplates.shutdown(); } catch (error) { errors.push(error); }
+
+    if (this.networkOrchestrator) {
+      try { await this.networkOrchestrator.stop(); } catch (error) { errors.push(error); }
+      logger.info('Network services stopped');
     }
     
     // stop ipfs service
     
     // close storage
-    await this.storage.close();
+    if (this.mempoolHandler && this.mempool) this.mempool.off('transactionAdded', this.mempoolHandler);
+    if (this.blockHandler && this.blockchain) this.blockchain.off('block:added', this.blockHandler);
+    if (this.mempool) try { await this.mempool.shutdown(); } catch (error) { errors.push(error); }
+    if (this.storage) try { await this.storage.close(); } catch (error) { errors.push(error); }
     logger.info('Storage closed');
+    if (this.pidPath) {
+      try {
+        if (fs.readFileSync(this.pidPath, 'utf8') === JSON.stringify(this.processIdentity)) fs.rmSync(this.pidPath);
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT') errors.push(error);
+      }
+      this.pidPath = undefined;
+      this.processIdentity = undefined;
+    }
+    for (const [signal, handler] of this.signalHandlers) process.off(signal, handler);
+    this.signalHandlers.clear();
+    if (this.uncaughtExceptionHandler) process.off('uncaughtException', this.uncaughtExceptionHandler);
+    if (this.unhandledRejectionHandler) process.off('unhandledRejection', this.unhandledRejectionHandler);
+    this.uncaughtExceptionHandler = undefined;
+    this.unhandledRejectionHandler = undefined;
     
     this.running = false;
     logger.info('Bolt IPFS node stopped');
+    if (errors.length > 0) throw new AggregateError(errors, 'node shutdown failed');
   }
 }
 
@@ -466,6 +560,8 @@ function parseConfig(): NodeConfig {
     // mining
     minerAddress: process.env.MINER_ADDRESS,
     miningEnabled: process.env.MINING_ENABLED === 'true',
+    miningApiEnabled: process.env.MINING_API_ENABLED === 'true',
+    miningApiToken: process.env.MINING_API_TOKEN,
     
     // ipfs
     ipfsApi: process.env.IPFS_API || 'http://localhost:5001',

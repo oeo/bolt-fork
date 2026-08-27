@@ -39,7 +39,13 @@ services:
       - "127.0.0.1:${METRICS_PORT:-7336}:7336"
     volumes:
       - bolt-data:/data
+      - bolt-backups:/backups
       - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:7333/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     depends_on:
       ipfs:
         condition: service_healthy
@@ -49,6 +55,7 @@ services:
 
 volumes:
   bolt-data:
+  bolt-backups:
 
 networks:
   bolt-network:

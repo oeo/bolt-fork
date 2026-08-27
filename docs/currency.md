@@ -92,6 +92,7 @@ Economic parameters vary by network:
 - **Halving interval**: Every 210,000 blocks
 - **Maximum supply**: 21,000,000 BOLT (2.1 quadrillion watts)
 - **Block time target**: 5 minutes (300 seconds)
+- **startup**: disabled until launch difficulty is selected
 
 ### Testnet
 - **Initial block reward**: 50 BOLT
@@ -114,3 +115,5 @@ BOLT_NETWORK=mainnet  # Production network (default)
 BOLT_NETWORK=testnet  # Test network
 BOLT_NETWORK=devnet   # Local development
 ```
+
+genesis issues no currency. block reward accounting excludes genesis and the target height when calculating prior issuance. rewards stop at zero or maximum supply.

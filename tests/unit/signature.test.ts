@@ -131,6 +131,29 @@ describe('Signature Functions', () => {
       expect(calculateTransactionHash(otherChainTx)).not.toBe(calculateTransactionHash(txData));
       expect(await verifyTransaction(otherChainTx, signed.signature, signed.publicKey)).toBe(false);
     });
+
+    it('should preserve canonical signed transaction vectors', async () => {
+      const txData: TransactionData = {
+        chainId,
+        kind: 'transfer',
+        from: senderAddress,
+        to: recipientAddress,
+        amount: 1000000000n,
+        nonce: 1,
+        fee: 10000n,
+        timestamp: 1234567890
+      };
+      const signed = await signTransaction(txData, `${'00'.repeat(31)}01`);
+
+      expect(signed.publicKey).toBe('0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798');
+      expect(signed.signature).toBe(
+        '26ace33ed5e8c96a9749b0bc2f52292af7c3784ed44879629cdeac8b48bcf279' +
+        '194c1063bd5b869a8ac895e1d060cc6652266b315a72e71772b79cf155b09703'
+      );
+      expect(calculateTransactionHash(txData, signed.signature, signed.publicKey)).toBe(
+        'd377d781de48947526d4139cc31488499ad2657db8253baa14c4c88daf490c8f'
+      );
+    });
   });
   
   describe('serializeTransactionData', () => {
@@ -199,9 +222,27 @@ describe('Signature Functions', () => {
       };
       
       const hashWithoutSig = calculateTransactionHash(txData);
-      const hashWithSig = calculateTransactionHash(txData, 'ab'.repeat(64));
+      const hashWithSig = calculateTransactionHash(txData, 'ab'.repeat(64), `02${'11'.repeat(32)}`);
 
       expect(hashWithoutSig).not.toBe(hashWithSig);
+    });
+
+    it('should commit the canonical public key into signed hashes', () => {
+      const txData: TransactionData = {
+        chainId,
+        kind: 'transfer',
+        from: senderAddress,
+        to: recipientAddress,
+        amount: 1000000000n,
+        nonce: 1,
+        fee: 10000n,
+        timestamp: 1234567890
+      };
+      const signature = 'ab'.repeat(64);
+
+      expect(calculateTransactionHash(txData, signature, `02${'11'.repeat(32)}`)).not.toBe(
+        calculateTransactionHash(txData, signature, `03${'11'.repeat(32)}`)
+      );
     });
 
     it('should hash signature bytes independent of hex casing', () => {
@@ -217,8 +258,9 @@ describe('Signature Functions', () => {
       };
       const signature = 'ab'.repeat(64);
 
-      expect(calculateTransactionHash(txData, signature)).toBe(
-        calculateTransactionHash(txData, signature.toUpperCase())
+      const publicKey = `02${'11'.repeat(32)}`;
+      expect(calculateTransactionHash(txData, signature, publicKey)).toBe(
+        calculateTransactionHash(txData, signature.toUpperCase(), publicKey)
       );
     });
     

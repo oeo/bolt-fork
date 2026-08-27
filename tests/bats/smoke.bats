@@ -9,9 +9,24 @@ setup() {
 teardown() {
   if [ "${BATS_TEST_COMPLETED:-0}" -ne 1 ]; then
     docker compose --project-directory "$PROJECT_ROOT" ps >&2
-    docker compose --project-directory "$PROJECT_ROOT" logs bolt-a bolt-b ipfs-a ipfs-b >&2
+    docker compose --project-directory "$PROJECT_ROOT" logs bolt-a bolt-b ipfs-a ipfs-b router >&2
   fi
   docker compose --project-directory "$PROJECT_ROOT" down --volumes --remove-orphans >/dev/null 2>&1 || true
+}
+
+route_side() {
+  local service="$1"
+  local destination="$2"
+  local gateway="$3"
+  docker compose --project-directory "$PROJECT_ROOT" exec --no-TTY --user root "$service" \
+    ip route replace "$destination" via "$gateway"
+}
+
+configure_routes() {
+  route_side bolt-a 172.29.20.0/24 172.29.10.2
+  route_side ipfs-a 172.29.20.0/24 172.29.10.2
+  route_side bolt-b 172.29.10.0/24 172.29.20.2
+  route_side ipfs-b 172.29.10.0/24 172.29.20.2
 }
 
 wait_for_api() {
@@ -74,9 +89,22 @@ wait_for_peer() {
   return 1
 }
 
+wait_for_log() {
+  local service="$1"
+  local text="$2"
+  for _ in $(seq 1 60); do
+    docker compose --project-directory "$PROJECT_ROOT" logs "$service" 2>/dev/null | grep -F "$text" >/dev/null && return 0
+    sleep 1
+  done
+  return 1
+}
+
 @test "two nodes synchronize, relay a transaction, and preserve state" {
-  run docker compose --project-directory "$PROJECT_ROOT" up --detach --wait --wait-timeout 30 ipfs-a ipfs-b
+  run docker compose --project-directory "$PROJECT_ROOT" up --detach --wait --wait-timeout 30 router ipfs-a ipfs-b
   [ "$status" -eq 0 ]
+
+  route_side ipfs-a 172.29.20.0/24 172.29.10.2
+  route_side ipfs-b 172.29.10.0/24 172.29.20.2
 
   run docker compose --project-directory "$PROJECT_ROOT" exec --no-TTY ipfs-a ipfs bootstrap list
   [ "$status" -eq 0 ]
@@ -86,14 +114,24 @@ wait_for_peer() {
   [ -z "$output" ]
 
   ipfs_b_id="$(docker compose --project-directory "$PROJECT_ROOT" exec --no-TTY ipfs-b ipfs id -f='<id>')"
-  run docker compose --project-directory "$PROJECT_ROOT" exec --no-TTY ipfs-a ipfs swarm connect "/dns4/ipfs-b/tcp/4001/p2p/$ipfs_b_id"
+  run docker compose --project-directory "$PROJECT_ROOT" exec --no-TTY ipfs-a ipfs swarm connect "/ip4/172.29.20.11/tcp/4001/p2p/$ipfs_b_id"
   [ "$status" -eq 0 ]
 
   run docker compose --project-directory "$PROJECT_ROOT" up --detach --build bolt-a bolt-b
   [ "$status" -eq 0 ]
 
+  configure_routes
+
   wait_for_api bolt-a
   wait_for_api bolt-b
+
+  run node_eval bolt-a 'await Bun.dns.lookup("bolt-b").then(()=>process.exit(1),()=>process.exit(0))'
+  [ "$status" -eq 0 ]
+  run docker compose --project-directory "$PROJECT_ROOT" exec --no-TTY bolt-a ip route get 172.29.20.10
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"via 172.29.10.2"* ]]
+  wait_for_log bolt-a "announced tcp endpoint: 172.29.10.10:8333"
+  wait_for_log bolt-b "announced tcp endpoint: 172.29.20.10:8333"
 
   target="$(wait_for_mined_block)"
   target_height="${target%% *}"
@@ -103,6 +141,7 @@ wait_for_peer() {
 
   run env BOLT_A_MINING_ENABLED=false docker compose --project-directory "$PROJECT_ROOT" up --detach --force-recreate bolt-a
   [ "$status" -eq 0 ]
+  route_side bolt-a 172.29.20.0/24 172.29.10.2
   wait_for_api bolt-a
   wait_for_peer bolt-a
 
@@ -134,4 +173,47 @@ wait_for_peer() {
   run node_eval bolt-a "const r=await fetch('http://127.0.0.1:7333/transactions/$transaction_hash'); if(!r.ok) process.exit(1); console.log((await r.json()).hash)"
   [ "$status" -eq 0 ]
   [ "$output" = "$transaction_hash" ]
+
+  run docker compose --project-directory "$PROJECT_ROOT" kill --signal SIGKILL bolt-a
+  [ "$status" -eq 0 ]
+  run env BOLT_A_MINING_ENABLED=false docker compose --project-directory "$PROJECT_ROOT" up --detach bolt-a
+  [ "$status" -eq 0 ]
+  wait_for_api bolt-a
+  wait_for_block bolt-a "$target_height" "$target_hash"
+
+  run docker compose --project-directory "$PROJECT_ROOT" stop bolt-a
+  [ "$status" -eq 0 ]
+  run docker compose --project-directory "$PROJECT_ROOT" run --rm --no-deps bolt-a bun run storage backup /data /backups/snapshot
+  [ "$status" -eq 0 ]
+  run docker compose --project-directory "$PROJECT_ROOT" --profile tools run --rm --no-deps bolt-recovery bun run storage restore /backups/snapshot /restore/data
+  [ "$status" -eq 0 ]
+  run docker compose --project-directory "$PROJECT_ROOT" --profile tools run --rm --no-deps bolt-recovery bun run storage verify /restore/data
+  [ "$status" -eq 0 ]
+
+  run env BOLT_A_MINING_ENABLED=false docker compose --project-directory "$PROJECT_ROOT" start bolt-a
+  [ "$status" -eq 0 ]
+  route_side bolt-a 172.29.20.0/24 172.29.10.2
+  wait_for_api bolt-a
+  run docker compose --project-directory "$PROJECT_ROOT" stop bolt-b router
+  [ "$status" -eq 0 ]
+  run docker compose --project-directory "$PROJECT_ROOT" start bolt-b
+  [ "$status" -eq 0 ]
+  route_side bolt-b 172.29.10.0/24 172.29.20.2
+  wait_for_api bolt-b
+  run docker compose --project-directory "$PROJECT_ROOT" exec --no-TTY bolt-a sh -c \
+    "timeout 3 bun -e 'await Bun.connect({hostname:\"172.29.20.10\",port:8333,socket:{data(){}}})'"
+  [ "$status" -ne 0 ]
+
+  run docker compose --project-directory "$PROJECT_ROOT" start router
+  [ "$status" -eq 0 ]
+  run docker compose --project-directory "$PROJECT_ROOT" exec --no-TTY ipfs-a ipfs swarm connect "/ip4/172.29.20.11/tcp/4001/p2p/$ipfs_b_id"
+  [ "$status" -eq 0 ]
+  run docker compose --project-directory "$PROJECT_ROOT" restart bolt-a bolt-b
+  [ "$status" -eq 0 ]
+  route_side bolt-a 172.29.20.0/24 172.29.10.2
+  route_side bolt-b 172.29.10.0/24 172.29.20.2
+  wait_for_api bolt-a
+  wait_for_api bolt-b
+  wait_for_peer bolt-a
+  wait_for_peer bolt-b
 }

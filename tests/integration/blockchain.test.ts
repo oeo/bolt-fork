@@ -11,6 +11,7 @@ import { hexToBytes } from '@noble/hashes/utils';
 const testConfig: ChainConfig = {
   chainId: 9999,
   name: 'test',
+  startupEnabled: true,
   targetBlockTime: 1,
   difficultyAdjustmentInterval: 10,
   maxSupply: 21000000n * 100000000n,
@@ -27,8 +28,7 @@ const testConfig: ChainConfig = {
   addressPrefix: 0x00,
   genesisTimestamp: 1000000000000,
   genesisNonce: 0,
-  genesisMemo: 'test genesis',
-  features: {}
+  genesisMemo: 'test genesis'
 };
 
 // calculate chain version hash for test config
@@ -103,7 +103,7 @@ describe('Blockchain Integration', () => {
     });
 
     it('should reject obsolete storage versions', async () => {
-      expect(await storage.getChainMetadata('storageVersion')).toBe('6');
+      expect(await storage.getChainMetadata('storageVersion')).toBe('8');
       await storage.saveChainMetadata('storageVersion', '5');
       const reloaded = new Blockchain(storage, testConfig);
       await expect(reloaded.initialize()).rejects.toThrow('incompatible');
@@ -112,6 +112,33 @@ describe('Blockchain Integration', () => {
     it('should reject storage from another chain', async () => {
       const reloaded = new Blockchain(storage, { ...testConfig, chainId: testConfig.chainId + 1 });
       await expect(reloaded.initialize()).rejects.toThrow('incompatible');
+    });
+
+    it('should validate configured genesis before storage writes', async () => {
+      const freshStorage = new MemoryAdapter();
+      let writes = 0;
+      const saveMetadata = freshStorage.saveChainMetadata.bind(freshStorage);
+      const transition = freshStorage.transitionCanonicalChain.bind(freshStorage);
+      freshStorage.saveChainMetadata = async (...args) => {
+        writes++;
+        return saveMetadata(...args);
+      };
+      freshStorage.transitionCanonicalChain = async (...args) => {
+        writes++;
+        return transition(...args);
+      };
+      const invalid = new Blockchain(freshStorage, { ...testConfig, genesisNonce: -1 });
+
+      await expect(invalid.initialize()).rejects.toThrow('Invalid configured genesis nonce');
+      expect(writes).toBe(0);
+    });
+
+    it('should reject stored genesis that differs from configuration', async () => {
+      const genesis = (await storage.getBlock(0))!;
+      await storage.saveBlock({ ...genesis, nonce: genesis.nonce + 1 });
+      const reloaded = new Blockchain(storage, testConfig);
+
+      await expect(reloaded.initialize()).rejects.toThrow('Stored genesis');
     });
 
     it('should reject configurable consensus hashing', () => {
@@ -457,6 +484,34 @@ describe('Blockchain Integration', () => {
       // check very high block number
       const reward = blockchain.getBlockReward(10000000);
       expect(reward).toBeGreaterThanOrEqual(0n);
+    });
+
+    it('should exclude genesis and target height from issued supply', () => {
+      const issuance = new Blockchain(storage, {
+        ...testConfig,
+        initialReward: 8n,
+        halvingInterval: 3,
+        maxSupply: 100n,
+      });
+
+      expect(issuance.getBlockReward(0)).toBe(0n);
+      expect(issuance.getBlockReward(1)).toBe(8n);
+      expect(issuance.getBlockReward(2)).toBe(8n);
+      expect(issuance.getBlockReward(3)).toBe(4n);
+      expect(issuance.getBlockReward(6)).toBe(2n);
+    });
+
+    it('should clip exact issuance at maximum supply', () => {
+      const issuance = new Blockchain(storage, {
+        ...testConfig,
+        initialReward: 8n,
+        halvingInterval: 3,
+        maxSupply: 10n,
+      });
+
+      expect(issuance.getBlockReward(1)).toBe(8n);
+      expect(issuance.getBlockReward(2)).toBe(2n);
+      expect(issuance.getBlockReward(3)).toBe(0n);
     });
   });
   

@@ -8,6 +8,7 @@ import {
 } from '../../src/core/transaction';
 import { generatePrivateKey, derivePublicKey } from '../../src/crypto/signature';
 import { generateFromPrivateKey } from '../../src/crypto/address';
+import { Point } from '@noble/secp256k1';
 
 describe('Transaction Class', () => {
   const chainId = 1057;
@@ -86,7 +87,7 @@ describe('Transaction Class', () => {
       await tx.sign(otherPrivateKey);
 
       expect(await tx.verify()).toBe(false);
-      expect(tx.validate(chainId, addressPrefix).valid).toBe(false);
+      expect(tx.validate(chainId, addressPrefix, Date.now()).valid).toBe(false);
     });
     
     it('should validate correct transaction', async () => {
@@ -100,8 +101,26 @@ describe('Transaction Class', () => {
         privateKey
       );
       
-      const result = tx.validate(chainId, addressPrefix);
+      const result = tx.validate(chainId, addressPrefix, Date.now());
       expect(result.valid).toBe(true);
+      expect(tx.publicKey).toMatch(/^(02|03)[0-9a-f]{64}$/);
+    });
+
+    it('should reject alternate public key encodings', async () => {
+      const tx = await createSignedTransaction(
+        chainId,
+        senderAddress,
+        recipientAddress,
+        1000000n,
+        1,
+        1000n,
+        privateKey
+      );
+      tx.publicKey = Point.fromHex(tx.publicKey!).toHex(false);
+
+      expect(tx.validate(chainId, addressPrefix, Date.now()).error).toContain('compressed');
+      tx.publicKey = Point.fromHex(tx.publicKey).toHex(true).toUpperCase();
+      expect(tx.validate(chainId, addressPrefix, Date.now()).error).toContain('compressed');
     });
 
     it('should reject wrong chain ID', async () => {
@@ -115,7 +134,7 @@ describe('Transaction Class', () => {
         privateKey
       );
 
-      const result = tx.validate(chainId + 1, addressPrefix);
+      const result = tx.validate(chainId + 1, addressPrefix, Date.now());
       expect(result.valid).toBe(false);
       expect(result.error).toContain('chain ID');
     });
@@ -131,7 +150,7 @@ describe('Transaction Class', () => {
         privateKey
       );
 
-      const result = tx.validate(chainId, 0x6f);
+      const result = tx.validate(chainId, 0x6f, Date.now());
       expect(result.valid).toBe(false);
       expect(result.error).toContain('address');
     });
@@ -149,7 +168,7 @@ describe('Transaction Class', () => {
       
       tx.hash = tx.calculateHash(); // set hash but no signature
       
-      const result = tx.validate(chainId, addressPrefix);
+      const result = tx.validate(chainId, addressPrefix, Date.now());
       expect(result.valid).toBe(false);
       expect(result.error).toContain('signed');
     });
@@ -184,7 +203,7 @@ describe('Transaction Class', () => {
         Date.now()
       );
       
-      const result = coinbase.validate(chainId, addressPrefix);
+      const result = coinbase.validate(chainId, addressPrefix, Date.now());
       expect(result.valid).toBe(true);
     });
     
@@ -201,7 +220,7 @@ describe('Transaction Class', () => {
       
       coinbase.hash = coinbase.calculateHash();
       
-      const result = coinbase.validate(chainId, addressPrefix);
+      const result = coinbase.validate(chainId, addressPrefix, Date.now());
       expect(result.valid).toBe(false);
       expect(result.error).toContain('nonce');
     });
@@ -219,7 +238,7 @@ describe('Transaction Class', () => {
       
       coinbase.hash = coinbase.calculateHash();
       
-      const result = coinbase.validate(chainId, addressPrefix);
+      const result = coinbase.validate(chainId, addressPrefix, Date.now());
       expect(result.valid).toBe(false);
       expect(result.error).toContain('fee');
     });
@@ -257,7 +276,7 @@ describe('Transaction Class', () => {
         Date.now()
       );
       
-      const result = tx.validate(chainId, addressPrefix);
+      const result = tx.validate(chainId, addressPrefix, Date.now());
       expect(result.valid).toBe(false);
       expect(result.error).toContain('amount');
     });
@@ -273,7 +292,7 @@ describe('Transaction Class', () => {
         Date.now()
       );
       
-      const result = tx.validate(chainId, addressPrefix);
+      const result = tx.validate(chainId, addressPrefix, Date.now());
       expect(result.valid).toBe(false);
       expect(result.error).toContain('address');
     });
@@ -292,9 +311,25 @@ describe('Transaction Class', () => {
       // sign it first so we get past signature check
       await tx.sign(privateKey);
       
-      const result = tx.validate(chainId, addressPrefix);
+      const result = tx.validate(chainId, addressPrefix, Date.now() + (15 * 60 * 1000));
       expect(result.valid).toBe(false);
       expect(result.error).toContain('future');
+    });
+
+    it('should use the supplied maximum timestamp', async () => {
+      const tx = await createSignedTransaction(
+        chainId,
+        senderAddress,
+        recipientAddress,
+        1000000n,
+        1,
+        1000n,
+        privateKey,
+        2000
+      );
+
+      expect(tx.validate(chainId, addressPrefix, 1999).valid).toBe(false);
+      expect(tx.validate(chainId, addressPrefix, 2000).valid).toBe(true);
     });
   });
   

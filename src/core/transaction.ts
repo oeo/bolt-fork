@@ -3,8 +3,8 @@ import {
   calculateTransactionHash,
   signTransaction,
   verifyTransaction,
-  serializeTransactionData
 } from '../crypto/signature';
+import { isValidPublicKey } from '../crypto/signature';
 import { publicKeyMatchesAddress, validateAddress } from '../crypto/address';
 import { getLogger } from '../utils/logger';
 
@@ -121,7 +121,8 @@ export class TransactionClass {
         fee: this.fee,
         timestamp: this.timestamp
       },
-      this.signature
+      this.signature,
+      this.publicKey
     );
   }
 
@@ -190,7 +191,7 @@ export class TransactionClass {
   /**
    * validate transaction structure and data
    */
-  validate(expectedChainId: number, addressPrefix: number): ValidationResult {
+  validate(expectedChainId: number, addressPrefix: number, maximumTimestamp: number): ValidationResult {
     if (!Number.isSafeInteger(this.chainId) || this.chainId !== expectedChainId) {
       return { valid: false, error: `Invalid chain ID: expected ${expectedChainId}, got ${this.chainId}` };
     }
@@ -198,6 +199,13 @@ export class TransactionClass {
     const expectedKind = this.from === null ? 'coinbase' : 'transfer';
     if (this.kind !== expectedKind) {
       return { valid: false, error: 'Invalid transaction kind' };
+    }
+
+    if (this.from !== null && Boolean(this.signature) !== Boolean(this.publicKey)) {
+      return { valid: false, error: 'Regular transaction must be signed' };
+    }
+    if (this.from !== null && this.publicKey && (!/^(02|03)[0-9a-f]{64}$/.test(this.publicKey) || !isValidPublicKey(this.publicKey))) {
+      return { valid: false, error: 'Transfer public key must use canonical compressed encoding' };
     }
 
     // if hash not set yet (unsigned tx), calculate it
@@ -259,8 +267,10 @@ export class TransactionClass {
     }
 
     // check timestamp
-    const maxFutureTime = Date.now() + (15 * 60 * 1000); // 15 minutes
-    if (this.timestamp > maxFutureTime) {
+    if (!Number.isSafeInteger(maximumTimestamp)) {
+      return { valid: false, error: 'Invalid maximum transaction timestamp' };
+    }
+    if (this.timestamp > maximumTimestamp) {
       return { valid: false, error: 'Transaction timestamp too far in future' };
     }
 

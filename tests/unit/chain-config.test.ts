@@ -3,6 +3,8 @@ import { mainnet } from '../../src/config/chains/mainnet';
 import { testnet } from '../../src/config/chains/testnet';
 import { devnet } from '../../src/config/chains/devnet';
 import type { ChainConfig } from '../../src/config/chain';
+import { createGenesisBlock } from '../../src/core/block';
+import { calculateStateRoot } from '../../src/core/block-executor';
 
 describe('Chain Configuration', () => {
   describe('mainnet config', () => {
@@ -31,7 +33,7 @@ describe('Chain Configuration', () => {
 
     it('should have correct genesis block', () => {
       expect(mainnet.genesisTimestamp).toBe(1_757_000_000_000);
-      expect(mainnet.genesisNonce).toBe(0);
+      expect(mainnet.genesisNonce).toBe(61);
       expect(mainnet.genesisMemo).toBe('we will craft citadels in the clouds or bury vaults within the ashes.');
     });
 
@@ -39,10 +41,8 @@ describe('Chain Configuration', () => {
       expect(mainnet.hashAlgorithm).toBe('sha256');
     });
 
-    it('should have feature activation heights', () => {
-      expect(mainnet.features).toBeDefined();
-      expect(mainnet.features?.blockMemo).toBe(0);
-      expect(mainnet.features?.compressedKeys).toBe(100000);
+    it('should disable startup before launch difficulty is selected', () => {
+      expect(mainnet.startupEnabled).toBe(false);
     });
   });
 
@@ -65,8 +65,8 @@ describe('Chain Configuration', () => {
       expect(testnet.halvingInterval).toBe(10000);
     });
 
-    it('should activate features earlier', () => {
-      expect(testnet.features?.compressedKeys).toBe(1000);
+    it('should ship a mined genesis nonce', () => {
+      expect(testnet.genesisNonce).toBe(172272);
     });
   });
 
@@ -94,9 +94,8 @@ describe('Chain Configuration', () => {
       expect(devnet.minFeePerByte).toBeGreaterThan(0n);
     });
 
-    it('should have all features active from start', () => {
-      expect(devnet.features?.blockMemo).toBe(0);
-      expect(devnet.features?.compressedKeys).toBe(0);
+    it('should enable startup', () => {
+      expect(devnet.startupEnabled).toBe(true);
     });
 
     it('should have larger block size for testing', () => {
@@ -138,23 +137,17 @@ describe('Chain Configuration', () => {
         expect(validAlgorithms).toContain(config.hashAlgorithm);
       });
     });
-  });
 
-  describe('feature activation', () => {
-    const mockConfig: ChainConfig = {
-      ...mainnet,
-      features: {
-        feature1: 100,
-        feature2: 200,
-        feature3: 300,
+    it('should ship genesis nonces satisfying configured proof', () => {
+      for (const config of [mainnet, testnet, devnet]) {
+        const genesis = createGenesisBlock(
+          config.initialDifficulty,
+          config.genesisTimestamp,
+          calculateStateRoot(new Map()),
+          config.genesisNonce
+        );
+        expect(genesis.validate('sha256', Number.MAX_SAFE_INTEGER).valid).toBe(true);
       }
-    };
-
-    it('should correctly determine feature activation', () => {
-      // we can't test the actual functions without importing them
-      // but we can verify the feature configuration structure
-      expect(mockConfig.features).toBeDefined();
-      expect(Object.keys(mockConfig.features!).length).toBe(3);
     });
   });
 

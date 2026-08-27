@@ -23,7 +23,8 @@ import {
 } from './mempool';
 
 const logger = getLogger(__filename);
-const STORAGE_VERSION = '6';
+const STORAGE_VERSION = '8';
+const MEMPOOL_TRANSACTION_FUTURE_TIME_MS = 15 * 60 * 1000;
 
 /**
  * main blockchain orchestration class
@@ -76,46 +77,57 @@ export class Blockchain extends EventEmitter {
 
     logger.info(`Initializing blockchain for network: ${this.config.name}`);
 
+    const configuredGenesis = this.getConfiguredGenesis();
+
     await this.storage.connect();
 
     // check for existing blockchain
     const latestBlock = await this.storage.getLatestBlock();
     const storedVersion = (await this.storage.getChainMetadata('storageVersion'))?.toString();
     const storedChainId = (await this.storage.getChainMetadata('chainId'))?.toString();
+    const storedChainSpec = (await this.storage.getChainMetadata('chainSpec'))?.toString();
 
-    if (latestBlock && (storedVersion !== STORAGE_VERSION || storedChainId !== this.config.chainId.toString())) {
+    if (latestBlock) {
+      const storedGenesis = await this.storage.getBlock(0);
+      if (!storedGenesis || !this.matchesConfiguredGenesis(storedGenesis, configuredGenesis.toObject())) {
+        throw new Error('Stored genesis does not match configured genesis');
+      }
+    }
+
+    if (latestBlock && (storedVersion !== STORAGE_VERSION ||
+        storedChainId !== this.config.chainId.toString() || storedChainSpec !== this.chainSpec())) {
       throw new Error('Stored chain is incompatible with current storage version or chain ID');
     }
 
     if (!latestBlock) {
       await this.storage.saveChainMetadata('storageVersion', STORAGE_VERSION);
       await this.storage.saveChainMetadata('chainId', this.config.chainId.toString());
+      await this.storage.saveChainMetadata('chainSpec', this.chainSpec());
     }
 
     if (latestBlock) {
 
       this.currentHeight = latestBlock.index;
+      const integrity = await this.verifyChainIntegrity();
+      if (!integrity.valid) throw new Error(`Stored chain integrity check failed: ${integrity.error}`);
       logger.info(`Blockchain loaded at height ${this.currentHeight}`);
     } else {
       // create genesis block
-      await this.createGenesis();
+      await this.createGenesis(configuredGenesis);
     }
 
     this.isInitialized = true;
   }
 
+  private chainSpec(): string {
+    return JSON.stringify(this.config, (_, value) => typeof value === 'bigint' ? value.toString() : value);
+  }
+
   /**
    * create and save genesis block
    */
-  private async createGenesis(): Promise<void> {
+  private async createGenesis(genesis: BlockClass): Promise<void> {
     logger.info('Creating genesis block');
-
-    const genesis = createGenesisBlock(
-      this.config.initialDifficulty,
-      this.config.genesisTimestamp || Date.now(),
-      calculateStateRoot(new Map()),
-      this.config.genesisNonce
-    );
 
     await this.storage.withStateWrite(() => this.storage.transitionCanonicalChain({
       expectedTip: { height: -1, hash: null },
@@ -131,6 +143,38 @@ export class Blockchain extends EventEmitter {
     this.currentHeight = 0;
 
     logger.info(`Genesis block created: ${genesis.hash}`);
+  }
+
+  private getConfiguredGenesis(): BlockClass {
+    if (!Number.isSafeInteger(this.config.genesisTimestamp) || this.config.genesisTimestamp < 0) {
+      throw new Error('Invalid configured genesis timestamp');
+    }
+    if (!Number.isSafeInteger(this.config.genesisNonce) || this.config.genesisNonce < 0) {
+      throw new Error('Invalid configured genesis nonce');
+    }
+
+    const genesis = createGenesisBlock(
+      this.config.initialDifficulty,
+      this.config.genesisTimestamp,
+      calculateStateRoot(new Map()),
+      this.config.genesisNonce
+    );
+    const validation = genesis.validate(this.hashAlgorithm, Number.MAX_SAFE_INTEGER);
+    if (!validation.valid) throw new Error(`Invalid configured genesis: ${validation.error}`);
+    return genesis;
+  }
+
+  private matchesConfiguredGenesis(stored: Block, configured: Block): boolean {
+    return stored.index === configured.index &&
+      stored.timestamp === configured.timestamp &&
+      stored.previousHash === configured.previousHash &&
+      stored.hash === configured.hash &&
+      stored.merkleRoot === configured.merkleRoot &&
+      stored.stateRoot === configured.stateRoot &&
+      stored.difficulty === configured.difficulty &&
+      stored.nonce === configured.nonce &&
+      stored.transactions.length === 0 &&
+      stored.miner === undefined;
   }
 
   /**
@@ -293,62 +337,39 @@ export class Blockchain extends EventEmitter {
    * get block reward for a given height
    */
   getBlockReward(blockHeight: number): bigint {
-    // calculate halvings
+    if (!Number.isSafeInteger(blockHeight) || blockHeight < 0) {
+      throw new Error(`Invalid block height: ${blockHeight}`);
+    }
+    if (blockHeight === 0) return 0n;
+
     const halvings = Math.floor(blockHeight / this.config.halvingInterval);
-
-    // initial reward
-    let reward = this.config.initialReward;
-
-    // apply halvings
-    for (let i = 0; i < halvings; i++) {
-      reward = reward / 2n;
-
-      // stop at minimum reward (1 satoshi)
-      if (reward < 1n) {
-        reward = 1n;
-        break;
-      }
-    }
-
-    // check max supply
-    const totalSupply = this.calculateTotalSupply(blockHeight);
-    if (totalSupply + reward > this.config.maxSupply) {
-      // adjust reward to not exceed max supply
-      reward = this.config.maxSupply - totalSupply;
-      if (reward < 0n) {
-        reward = 0n;
-      }
-    }
-
-    return reward;
+    const reward = this.config.initialReward >> BigInt(halvings);
+    const remaining = this.config.maxSupply - this.calculateIssuedSupply(blockHeight);
+    if (remaining <= 0n) return 0n;
+    return reward < remaining ? reward : remaining;
   }
 
   /**
    * calculate total supply up to a given height
    */
-  private calculateTotalSupply(blockHeight: number): bigint {
-    let totalSupply = 0n;
-    let currentReward = this.config.initialReward;
-    let nextHalving = this.config.halvingInterval;
+  private calculateIssuedSupply(blockHeight: number): bigint {
+    let remainingBlocks = blockHeight - 1;
+    let era = 0;
+    let eraBlocks = this.config.halvingInterval - 1;
+    let issued = 0n;
 
-    for (let height = 0; height <= blockHeight; height++) {
-      if (height >= nextHalving) {
-        currentReward = currentReward / 2n;
-        if (currentReward < 1n) {
-          currentReward = 1n;
-        }
-        nextHalving += this.config.halvingInterval;
-      }
-
-      totalSupply += currentReward;
-
-      // stop if max supply reached
-      if (totalSupply >= this.config.maxSupply) {
-        return this.config.maxSupply;
-      }
+    while (remainingBlocks > 0) {
+      const reward = this.config.initialReward >> BigInt(era);
+      if (reward === 0n) break;
+      const blocks = Math.min(remainingBlocks, eraBlocks);
+      issued += BigInt(blocks) * reward;
+      if (issued >= this.config.maxSupply) return this.config.maxSupply;
+      remainingBlocks -= blocks;
+      era++;
+      eraBlocks = this.config.halvingInterval;
     }
 
-    return totalSupply;
+    return issued;
   }
 
   /**
@@ -529,8 +550,16 @@ export class Blockchain extends EventEmitter {
     let previousBlock: Block | null = null;
     let cumulativeDifficulty = 0n;
     let accountStates = new Map<string, AccountState>();
+    let expectedHeight = 0;
+    const configuredGenesis = this.getConfiguredGenesis().toObject();
 
     for await (const block of this.iterateChain()) {
+      if (block.index !== expectedHeight++) {
+        return { valid: false, error: `Missing canonical block ${expectedHeight - 1}` };
+      }
+      if (block.index === 0 && !this.matchesConfiguredGenesis(block, configuredGenesis)) {
+        return { valid: false, error: 'Stored genesis does not match configured genesis' };
+      }
       const blockClass = BlockClass.fromObject(block);
 
       // validate block structure
@@ -573,6 +602,19 @@ export class Blockchain extends EventEmitter {
       cumulativeDifficulty += calculateBlockWork(block.difficulty);
 
       previousBlock = block;
+
+      for (let transactionIndex = 0; transactionIndex < block.transactions.length; transactionIndex++) {
+        const transaction = block.transactions[transactionIndex];
+        const confirmed = await this.storage.getConfirmedTransaction(transaction.hash);
+        if (!confirmed || confirmed.blockHash !== block.hash || confirmed.blockHeight !== block.index ||
+            confirmed.transactionIndex !== transactionIndex || confirmed.canonicalHeight !== this.currentHeight) {
+          return { valid: false, error: `Invalid confirmed transaction index: ${transaction.hash}` };
+        }
+      }
+    }
+
+    if (expectedHeight !== this.currentHeight + 1) {
+      return { valid: false, error: `Canonical height mismatch: stored=${this.currentHeight}, verified=${expectedHeight - 1}` };
     }
 
     // verify cumulative difficulty matches
@@ -582,6 +624,17 @@ export class Blockchain extends EventEmitter {
         valid: false,
         error: `Cumulative difficulty mismatch: stored=${storedCumulative}, calculated=${cumulativeDifficulty}`
       };
+    }
+
+    const storedAddresses = await this.storage.getAllAccountAddresses();
+    if (storedAddresses.length !== accountStates.size) {
+      return { valid: false, error: 'Stored account index does not match canonical state' };
+    }
+    for (const [address, state] of accountStates) {
+      const stored = await this.storage.getAccountState(address);
+      if (!stored || stored.balance !== state.balance || stored.nonce !== state.nonce) {
+        return { valid: false, error: `Stored account state mismatch: ${address}` };
+      }
     }
 
     logger.info('Chain integrity verified successfully');
@@ -906,7 +959,11 @@ export class Blockchain extends EventEmitter {
       let { balance, nonce } = accountStates.get(sender) ?? { balance: 0n, nonce: 0 };
       for (const entry of queue) {
         const transaction = TransactionClass.fromObject(entry.transaction);
-        const structure = transaction.validate(this.config.chainId, this.config.addressPrefix);
+        const structure = transaction.validate(
+          this.config.chainId,
+          this.config.addressPrefix,
+          Date.now() + MEMPOOL_TRANSACTION_FUTURE_TIME_MS
+        );
         const account = transaction.validateAgainstAccount(balance, nonce);
         const size = transaction.getSize();
         const policyValid =

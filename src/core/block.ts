@@ -360,7 +360,8 @@ export class BlockClass {
    */
   getSize(): number {
     const { serialize } = require('../utils/bigint');
-    return new TextEncoder().encode(serialize(this.toObject())).byteLength;
+    const { miner: _miner, ...consensusBlock } = this.toObject();
+    return new TextEncoder().encode(serialize(consensusBlock)).byteLength;
   }
   
   /**

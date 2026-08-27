@@ -52,7 +52,8 @@ For HD key generation with mnemonic phrases, use the HD key functions in the sam
 ## Technical details
 
 - **Elliptic curve**: secp256k1 (same as Bitcoin/Ethereum)
-- **Public key format**: Uncompressed (65 bytes)
+- **wallet address key format**: uncompressed (65 bytes)
+- **transfer public key format**: canonical compressed secp256k1 encoding (33 bytes)
 - **Address encoding**: Base58check
 - **Checksum**: First 4 bytes of double SHA256
 
