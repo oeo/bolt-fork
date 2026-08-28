@@ -346,7 +346,7 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner1'
       );
-      await blockchain.prepareBlock(orphanBlock);
+      orphanBlock.stateRoot = '0'.repeat(64);
       orphanBlock.mine();
       
       const result = await blockchain.handleCompetingBlock(orphanBlock);
@@ -502,6 +502,7 @@ describe('consensus mechanism', () => {
       let forkStates = new Map([
         [miner1Address, { balance: testnet.initialReward * 3n, nonce: 0 }]
       ]);
+      let parentStateRoot = block3!.stateRoot;
       
       // create fork blocks with valid median time
       for (let i = 4; i <= 6; i++) {
@@ -515,7 +516,8 @@ describe('consensus mechanism', () => {
           testnet.initialDifficulty,
             'miner2'
         );
-        forkStates = await blockchain.prepareBlock(block, forkStates);
+        forkStates = await blockchain.prepareBlock(block, forkStates, parentStateRoot);
+        parentStateRoot = block.stateRoot;
         block.mine();
         forkBlocks.push(block);
         previousHash = block.hash;
@@ -595,6 +597,7 @@ describe('consensus mechanism', () => {
       const forkBlocks: BlockClass[] = [];
       let previousHash = block1.hash;
       let forkStates = new Map([[sender.address, { balance: reward, nonce: 0 }]]);
+      let parentStateRoot = block1.stateRoot;
       for (let height = 2; height <= 3; height++) {
         const timestamp = baseTimestamp + height * 1100;
         const block = new BlockClass(
@@ -605,7 +608,8 @@ describe('consensus mechanism', () => {
           1,
           miner2Address
         );
-        forkStates = await blockchain.prepareBlock(block, forkStates);
+        forkStates = await blockchain.prepareBlock(block, forkStates, parentStateRoot);
+        parentStateRoot = block.stateRoot;
         block.mine();
         forkBlocks.push(block);
         previousHash = block.hash;
@@ -742,6 +746,7 @@ describe('consensus mechanism', () => {
       let forkStates = new Map([
         [miner1Address, { balance: testnet.initialReward * 3n, nonce: 0 }]
       ]);
+      let parentStateRoot = block3!.stateRoot;
       
       // create first fork block with valid time
       const forkTimestamp1 = baseTimestamp + 4100;
@@ -754,7 +759,8 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner2'
       );
-      forkStates = await blockchain.prepareBlock(forkBlock1, forkStates);
+      forkStates = await blockchain.prepareBlock(forkBlock1, forkStates, parentStateRoot);
+      parentStateRoot = forkBlock1.stateRoot;
       forkBlock1.mine();
       forkBlocks.push(forkBlock1);
       
@@ -769,7 +775,7 @@ describe('consensus mechanism', () => {
         testnet.initialDifficulty,
         'miner2'
       );
-      await blockchain.prepareBlock(forkBlock2, forkStates);
+      await blockchain.prepareBlock(forkBlock2, forkStates, parentStateRoot);
       forkBlock2.mine();
       forkBlocks.push(forkBlock2);
       

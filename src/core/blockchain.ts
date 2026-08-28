@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { Block, Transaction, AccountState, BlockTemplate, ValidationResult } from '../types';
-import { PersistedMempoolEntry, StaleChainTipError, StorageAdapter } from '../storage/adapter';
+import { PersistedMempoolEntry, StaleChainTipError, StorageAdapter, type CanonicalTransition } from '../storage/adapter';
 import { ChainConfig } from '../config/chain';
 import {
   BlockClass,
@@ -15,7 +15,7 @@ import { getDifficultyAdjustment, shouldAdjustDifficulty, DifficultyConfig, calc
 import { HashAlgorithm, hash } from '../crypto/hash';
 import { ForkManager } from './fork-manager';
 import { getLogger } from '../utils/logger';
-import { calculateStateRoot, executeBlock, type BlockExecution } from './block-executor';
+import { EMPTY_STATE_ROOT_PARENT, calculateStateRoot, executeBlock, type BlockExecution } from './block-executor';
 import {
   DEFAULT_MEMPOOL_LIMITS,
   selectMempoolLimitRemovals,
@@ -23,7 +23,7 @@ import {
 } from './mempool';
 
 const logger = getLogger(__filename);
-const STORAGE_VERSION = '8';
+const STORAGE_VERSION = '9';
 const MEMPOOL_TRANSACTION_FUTURE_TIME_MS = 15 * 60 * 1000;
 
 /**
@@ -134,7 +134,7 @@ export class Blockchain extends EventEmitter {
       expectedCumulativeDifficulty: 0n,
       ancestor: { height: -1, hash: null },
       blocks: [genesis.toObject()],
-      accountStates: [],
+      accountChanges: [{ blockHash: genesis.hash, changes: [] }],
       cumulativeDifficulty: calculateBlockWork(genesis.difficulty),
       mempoolAdditions: [],
       mempoolRemovals: [],
@@ -156,7 +156,7 @@ export class Blockchain extends EventEmitter {
     const genesis = createGenesisBlock(
       this.config.initialDifficulty,
       this.config.genesisTimestamp,
-      calculateStateRoot(new Map()),
+      calculateStateRoot(EMPTY_STATE_ROOT_PARENT, []),
       this.config.genesisNonce
     );
     const validation = genesis.validate(this.hashAlgorithm, Number.MAX_SAFE_INTEGER);
@@ -272,7 +272,7 @@ export class Blockchain extends EventEmitter {
           expectedCumulativeDifficulty: currentCumulative,
           ancestor: { height: previousBlock.index, hash: previousBlock.hash },
           blocks: [block.toObject()],
-          accountStates: Array.from(execution.accountStates, ([address, state]) => ({ address, state })),
+          accountChanges: [{ blockHash: block.hash, changes: execution.updates }],
           cumulativeDifficulty: newCumulative,
           mempoolAdditions: [],
           mempoolRemovals,
@@ -299,22 +299,38 @@ export class Blockchain extends EventEmitter {
 
   async prepareBlock(
     block: BlockClass,
-    currentStates?: ReadonlyMap<string, AccountState>
+    currentStates?: ReadonlyMap<string, AccountState>,
+    parentStateRoot?: string
   ): Promise<Map<string, AccountState>> {
+    const parent = await this.storage.getBlock(block.index - 1);
+    const resolvedParentRoot = parent?.hash === block.previousHash ? parent.stateRoot : parentStateRoot;
+    if (!resolvedParentRoot) throw new Error('Previous block not found');
     const execution = currentStates
-      ? await executeBlock(block.toObject(), currentStates, this.config, this.getBlockReward(block.index))
-      : await this.executeBlock(block);
+      ? await executeBlock(block.toObject(), currentStates, resolvedParentRoot, this.config, this.getBlockReward(block.index))
+      : await this.executeBlock(block, parent!);
     block.stateRoot = execution.stateRoot;
-    return execution.accountStates;
+    const result = new Map(currentStates ?? execution.accountStates);
+    for (const { address, state } of execution.updates) {
+      if (state) result.set(address, { ...state });
+      else result.delete(address);
+    }
+    return result;
   }
 
-  private async executeBlock(block: BlockClass): Promise<BlockExecution> {
-    const accountStates = new Map<string, AccountState>();
-    for (const address of await this.storage.getAllAccountAddresses()) {
-      const state = await this.storage.getAccountState(address);
-      if (state) accountStates.set(address, state);
-    }
-    return executeBlock(block.toObject(), accountStates, this.config, this.getBlockReward(block.index));
+  private async executeBlock(block: BlockClass, parent?: Block): Promise<BlockExecution> {
+    const previous = parent ?? await this.storage.getBlock(block.index - 1);
+    if (!previous || previous.hash !== block.previousHash) throw new Error('Previous block not found');
+    const accountStates = await this.storage.getAccountStates(
+      this.touchedAddresses([block.toObject()]),
+      { height: previous.index, hash: previous.hash }
+    );
+    return executeBlock(
+      block.toObject(),
+      accountStates,
+      previous.stateRoot,
+      this.config,
+      this.getBlockReward(block.index)
+    );
   }
 
   /**
@@ -578,21 +594,31 @@ export class Blockchain extends EventEmitter {
       }
 
       if (block.index === 0) {
-        if (block.stateRoot !== calculateStateRoot(accountStates)) {
+        if (block.stateRoot !== calculateStateRoot(EMPTY_STATE_ROOT_PARENT, [])) {
           return { valid: false, error: 'Block 0: Invalid state root' };
+        }
+        if (!this.accountChangesEqual(await this.storage.getAccountChanges(block.hash), [])) {
+          return { valid: false, error: 'Block 0: Invalid account undo' };
         }
       } else {
         try {
           const execution = await executeBlock(
             block,
             accountStates,
+            previousBlock!.stateRoot,
             this.config,
             this.getBlockReward(block.index)
           );
           if (block.stateRoot !== execution.stateRoot) {
             return { valid: false, error: `Block ${block.index}: Invalid state root` };
           }
-          accountStates = execution.accountStates;
+          if (!this.accountChangesEqual(await this.storage.getAccountChanges(block.hash), execution.updates)) {
+            return { valid: false, error: `Block ${block.index}: Invalid account undo` };
+          }
+          for (const { address, state } of execution.updates) {
+            if (state) accountStates.set(address, { ...state });
+            else accountStates.delete(address);
+          }
         } catch (error) {
           return { valid: false, error: `Block ${block.index}: ${error instanceof Error ? error.message : String(error)}` };
         }
@@ -796,7 +822,18 @@ export class Blockchain extends EventEmitter {
       if (candidate) return candidate;
       return height <= commonAncestorHeight ? this.storage.getBlock(height) : null;
     };
-    let accountStates = await this.recalculateStateFromHeight(0, commonAncestorHeight);
+    const removedBlocks: Block[] = [];
+    for (let height = commonAncestorHeight + 1; height <= expectedTip.index; height++) {
+      const block = await this.storage.getBlock(height);
+      if (block) removedBlocks.push(block);
+    }
+    const mempoolEntries = await this.storage.getMempoolEntries();
+    const accountStates = await this.storage.getAccountStates(
+      this.touchedAddresses([...newBlocks, ...removedBlocks], mempoolEntries.map(entry => entry.transaction)),
+      { height: ancestor.index, hash: ancestor.hash }
+    );
+    let parentStateRoot = ancestor.stateRoot;
+    const accountChanges: CanonicalTransition['accountChanges'] = [];
 
     for (let i = 0; i < newBlocks.length; i++) {
       const block = newBlocks[i];
@@ -831,11 +868,17 @@ export class Blockchain extends EventEmitter {
         const execution = await executeBlock(
           block,
           accountStates,
+          parentStateRoot,
           this.config,
           this.getBlockReward(block.index)
         );
         if (block.stateRoot !== execution.stateRoot) return false;
-        accountStates = execution.accountStates;
+        for (const { address, state } of execution.updates) {
+          if (state) accountStates.set(address, { ...state });
+          else accountStates.delete(address);
+        }
+        accountChanges.push({ blockHash: block.hash, changes: execution.updates });
+        parentStateRoot = execution.stateRoot;
       } catch {
         return false;
       }
@@ -846,12 +889,6 @@ export class Blockchain extends EventEmitter {
 
     if (candidateCumulativeDifficulty <= expectedCumulativeDifficulty) return false;
 
-    const removedBlocks: Block[] = [];
-    for (let height = commonAncestorHeight + 1; height <= expectedTip.index; height++) {
-      const block = await this.storage.getBlock(height);
-      if (block) removedBlocks.push(block);
-    }
-
     try {
       await this.storage.withStateWrite(async () => {
         const mempoolUpdate = await this.prepareReorgMempoolUpdate(removedBlocks, newBlocks, accountStates);
@@ -860,7 +897,7 @@ export class Blockchain extends EventEmitter {
           expectedCumulativeDifficulty,
           ancestor: { height: ancestor.index, hash: ancestor.hash },
           blocks: newBlocks,
-          accountStates: Array.from(accountStates, ([address, state]) => ({ address, state })),
+          accountChanges,
           cumulativeDifficulty: candidateCumulativeDifficulty,
           mempoolAdditions: mempoolUpdate.additions,
           mempoolRemovals: mempoolUpdate.removals,
@@ -904,7 +941,7 @@ export class Blockchain extends EventEmitter {
         a.addedAt - b.addedAt ||
         a.transaction.hash.localeCompare(b.transaction.hash)
       );
-      let { balance, nonce } = accountStates.get(sender) ?? { balance: 0n, nonce: 0 };
+      let { balance, nonce } = accountStates.get(sender) ?? await this.storage.getAccountState(sender) ?? { balance: 0n, nonce: 0 };
       for (const entry of queue) {
         const transaction = TransactionClass.fromObject(entry.transaction);
         const validation = transaction.validateAgainstAccount(balance, nonce);
@@ -997,35 +1034,6 @@ export class Blockchain extends EventEmitter {
   }
   
   /**
-   * recalculate account states from a specific height
-   */
-  private async recalculateStateFromHeight(
-    startHeight: number,
-    endHeight: number
-  ): Promise<Map<string, AccountState>> {
-    logger.info(`Recalculating state from height ${startHeight} to ${endHeight}`);
-    
-    let accounts = new Map<string, AccountState>();
-    
-    // process all blocks up to end height
-    for (let height = startHeight; height <= endHeight; height++) {
-      const block = await this.storage.getBlock(height);
-      if (!block) continue;
-      
-      if (height === 0) {
-        if (block.stateRoot !== calculateStateRoot(accounts)) throw new Error('Invalid genesis state root');
-        continue;
-      }
-
-      const execution = await executeBlock(block, accounts, this.config, this.getBlockReward(height));
-      if (block.stateRoot !== execution.stateRoot) throw new Error(`Invalid state root at height ${height}`);
-      accounts = execution.accountStates;
-    }
-    
-    return accounts;
-  }
-
-  /**
    * get past blocks for median time validation
    */
   private async getPastBlocks(count: number): Promise<BlockClass[]> {
@@ -1040,6 +1048,32 @@ export class Blockchain extends EventEmitter {
     }
 
     return blocks;
+  }
+
+  private touchedAddresses(blocks: Block[], transactions: Transaction[] = []): Set<string> {
+    const addresses = new Set<string>();
+    for (const transaction of [...blocks.flatMap(block => block.transactions), ...transactions]) {
+      if (transaction.from) addresses.add(transaction.from);
+      addresses.add(transaction.to);
+    }
+    return addresses;
+  }
+
+  private accountChangesEqual(
+    stored: CanonicalTransition['accountChanges'][number]['changes'] | null,
+    expected: CanonicalTransition['accountChanges'][number]['changes']
+  ): boolean {
+    if (!stored || stored.length !== expected.length) return false;
+    const orderedStored = [...stored].sort((a, b) => a.address.localeCompare(b.address));
+    const orderedExpected = [...expected].sort((a, b) => a.address.localeCompare(b.address));
+    return orderedStored.every((change, index) => {
+      const other = orderedExpected[index];
+      return change.address === other.address &&
+        change.previous?.balance === other.previous?.balance &&
+        change.previous?.nonce === other.previous?.nonce &&
+        change.state?.balance === other.state?.balance &&
+        change.state?.nonce === other.state?.nonce;
+    });
   }
 
   /**

@@ -49,7 +49,7 @@ accounts contain:
 - balance
 - nonce
 
-transactions are chain-bound and identify transfer or coinbase kind. block execution derives account updates and commits a state root with each accepted block.
+transactions are chain-bound and identify transfer or coinbase kind. block execution reads touched accounts, derives updates and undo values, and commits a recursive transition root with each accepted block. zero-balance zero-nonce accounts are deleted canonically.
 
 ## storage
 
@@ -58,7 +58,7 @@ transactions are chain-bound and identify transfer or coinbase kind. block execu
 - `LMDBAdapter` for persistent storage
 - `MemoryAdapter` for in-memory use
 
-canonical transitions carry expected tip and cumulative-work values. storage implementations reject stale writes instead of silently replacing a changed tip. startup verifies chain specification, configured genesis, every canonical block and state root, final account state, cumulative work, and confirmed transaction locations before serving traffic.
+canonical transitions carry expected tip, cumulative-work values, and per-block account updates with undo values. storage implementations reject stale writes instead of silently replacing a changed tip. memory and LMDB apply changed accounts only. LMDB commits blocks, indexes, account changes, undo records, mempool changes, tip metadata, and cumulative work in one transaction. startup verifies chain specification, configured genesis, every canonical block and state root, final account state, cumulative work, and confirmed transaction locations before serving traffic.
 
 the cold storage command snapshots LMDB through its supported backup operation. backups include node identity and a chain manifest. restore requires a stopped node and empty destination, verifies a staged copy, then renames it into place. online restore is not supported.
 

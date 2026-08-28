@@ -109,68 +109,6 @@ describe('Storage Adapter', () => {
     });
   });
   
-  describe('Transaction operations', () => {
-    const tx: Transaction = {
-      chainId: 1057,
-      kind: 'transfer',
-      hash: 'tx123',
-      from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
-      to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
-      amount: 100000000n, // 1 BOLT
-      nonce: 1,
-      fee: 10000n,
-      signature: 'sig123',
-      publicKey: 'pub123',
-      timestamp: Date.now()
-    };
-    
-    it('should save and retrieve transaction', async () => {
-      await storage.saveTransaction(tx);
-      const retrieved = await storage.getTransaction('tx123');
-      
-      expect(retrieved).toEqual(tx);
-    });
-    
-    it('should get transactions by address', async () => {
-      const tx2: Transaction = {
-        ...tx,
-        chainId: 1057,
-        kind: 'transfer',
-        hash: 'tx456',
-        from: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
-        to: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'
-      };
-      
-      await storage.saveTransaction(tx2);
-      
-      // should get both transactions for first address
-      const txs = await storage.getTransactionsByAddress('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa');
-      expect(txs.length).toBe(2);
-      expect(txs.map(t => t.hash)).toContain('tx123');
-      expect(txs.map(t => t.hash)).toContain('tx456');
-    });
-    
-    it('should handle coinbase transactions', async () => {
-      const coinbase: Transaction = {
-        chainId: 1057,
-        kind: 'coinbase',
-        hash: 'coinbase123',
-        from: null, // coinbase has no sender
-        to: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
-        amount: 5000000000n, // 50 BOLT reward
-        nonce: 0,
-        fee: 0n,
-        timestamp: Date.now()
-      };
-      
-      await storage.saveTransaction(coinbase);
-      const retrieved = await storage.getTransaction('coinbase123');
-      
-      expect(retrieved).toEqual(coinbase);
-      expect(retrieved!.from).toBeNull();
-    });
-  });
-  
   describe('Mempool operations', () => {
     const tx: Transaction = {
       chainId: 1057,
@@ -224,14 +162,6 @@ describe('Storage Adapter', () => {
       
       const retrieved = await storage.getChainMetadata('config');
       expect(retrieved).toEqual(config);
-    });
-  });
-  
-  describe('Cumulative difficulty', () => {
-    it('should update and retrieve cumulative difficulty', async () => {
-      await storage.updateCumulativeDifficulty(1000n);
-      const diff = await storage.getCumulativeDifficulty();
-      expect(diff).toBe(1000n);
     });
   });
   

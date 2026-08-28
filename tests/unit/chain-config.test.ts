@@ -4,7 +4,7 @@ import { testnet } from '../../src/config/chains/testnet';
 import { devnet } from '../../src/config/chains/devnet';
 import type { ChainConfig } from '../../src/config/chain';
 import { createGenesisBlock } from '../../src/core/block';
-import { calculateStateRoot } from '../../src/core/block-executor';
+import { EMPTY_STATE_ROOT_PARENT, calculateStateRoot } from '../../src/core/block-executor';
 
 describe('Chain Configuration', () => {
   describe('mainnet config', () => {
@@ -33,7 +33,7 @@ describe('Chain Configuration', () => {
 
     it('should have correct genesis block', () => {
       expect(mainnet.genesisTimestamp).toBe(1_757_000_000_000);
-      expect(mainnet.genesisNonce).toBe(61);
+      expect(mainnet.genesisNonce).toBe(1943);
       expect(mainnet.genesisMemo).toBe('we will craft citadels in the clouds or bury vaults within the ashes.');
     });
 
@@ -66,7 +66,7 @@ describe('Chain Configuration', () => {
     });
 
     it('should ship a mined genesis nonce', () => {
-      expect(testnet.genesisNonce).toBe(172272);
+      expect(testnet.genesisNonce).toBe(302282);
     });
   });
 
@@ -143,7 +143,7 @@ describe('Chain Configuration', () => {
         const genesis = createGenesisBlock(
           config.initialDifficulty,
           config.genesisTimestamp,
-          calculateStateRoot(new Map()),
+          calculateStateRoot(EMPTY_STATE_ROOT_PARENT, []),
           config.genesisNonce
         );
         expect(genesis.validate('sha256', Number.MAX_SAFE_INTEGER).valid).toBe(true);

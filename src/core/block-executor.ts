@@ -3,16 +3,25 @@ import type { ChainConfig } from '../config/chain';
 import { hash } from '../crypto/hash';
 import { encodeCanonicalFields } from '../utils/serialization';
 import { TransactionClass, validateTransactionPool } from './transaction';
+import type { AccountChange } from '../storage/adapter';
 
 export interface BlockExecution {
   accountStates: Map<string, AccountState>;
+  updates: AccountChange[];
   stateRoot: string;
 }
 
-export function calculateStateRoot(accountStates: ReadonlyMap<string, AccountState>): string {
-  const fields: string[] = ['bolt:state:v1'];
-  for (const [address, state] of [...accountStates].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
-    fields.push(address, state.balance.toString(), state.nonce.toString());
+export const EMPTY_STATE_ROOT_PARENT = '0'.repeat(64);
+
+export function calculateStateRoot(parentStateRoot: string, updates: readonly AccountChange[]): string {
+  const fields: string[] = ['bolt:state-transition:v1', parentStateRoot];
+  for (const { address, state } of [...updates].sort((a, b) => a.address.localeCompare(b.address))) {
+    fields.push(
+      address,
+      (state?.balance ?? 0n).toString(),
+      (state?.nonce ?? 0).toString(),
+      state ? '0' : '1'
+    );
   }
   return hash(encodeCanonicalFields(fields), 'sha256');
 }
@@ -20,6 +29,7 @@ export function calculateStateRoot(accountStates: ReadonlyMap<string, AccountSta
 export async function executeBlock(
   block: Block,
   currentStates: ReadonlyMap<string, AccountState>,
+  parentStateRoot: string,
   config: ChainConfig,
   blockReward: bigint
 ): Promise<BlockExecution> {
@@ -45,12 +55,14 @@ export async function executeBlock(
     throw new Error('Invalid coinbase transaction');
   }
 
-  const initialAddresses = new Set(currentStates.keys());
-  const accountStates = new Map(
-    [...currentStates].map(([address, state]) => [address, { ...state }])
-  );
+  const accountStates = new Map<string, AccountState>();
+  const previousStates = new Map<string, AccountState | null>();
   const getState = (address: string): AccountState => {
-    const state = accountStates.get(address) ?? { balance: 0n, nonce: 0 };
+    const existing = accountStates.get(address);
+    if (existing) return existing;
+    const previous = currentStates.get(address);
+    previousStates.set(address, previous ? { ...previous } : null);
+    const state = previous ? { ...previous } : { balance: 0n, nonce: 0 };
     accountStates.set(address, state);
     return state;
   };
@@ -66,7 +78,7 @@ export async function executeBlock(
       getState(transaction.to).balance += transaction.amount;
       continue;
     }
-    if (!initialAddresses.has(transaction.from!)) {
+    if (!currentStates.has(transaction.from!)) {
       throw new Error(`Transaction ${transaction.hash}: Sender account not found`);
     }
 
@@ -81,5 +93,10 @@ export async function executeBlock(
     getState(transaction.to).balance += transaction.amount;
   }
 
-  return { accountStates, stateRoot: calculateStateRoot(accountStates) };
+  const updates = [...accountStates].map(([address, state]): AccountChange => ({
+    address,
+    previous: previousStates.get(address) ?? null,
+    state: state.balance === 0n && state.nonce === 0 ? null : { ...state },
+  }));
+  return { accountStates, updates, stateRoot: calculateStateRoot(parentStateRoot, updates) };
 }

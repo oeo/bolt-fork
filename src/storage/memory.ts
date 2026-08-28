@@ -19,6 +19,7 @@ export class MemoryAdapter extends StorageAdapter {
   private blocks: Map<number, Block> = new Map();
   private blockHashes: Map<string, number> = new Map();
   private accounts: Map<string, AccountState> = new Map();
+  private accountChanges: Map<string, CanonicalTransition['accountChanges'][number]> = new Map();
   private transactions: Map<string, Transaction> = new Map();
   private transactionLocations: Map<string, Omit<ConfirmedTransactionSnapshot, 'canonicalHeight'>> = new Map();
   private txByAddress: Map<string, Set<string>> = new Map();
@@ -43,6 +44,7 @@ export class MemoryAdapter extends StorageAdapter {
     this.blocks.clear();
     this.blockHashes.clear();
     this.accounts.clear();
+    this.accountChanges.clear();
     this.transactions.clear();
     this.transactionLocations.clear();
     this.txByAddress.clear();
@@ -101,7 +103,7 @@ export class MemoryAdapter extends StorageAdapter {
     expectedCumulativeDifficulty,
     ancestor,
     blocks,
-    accountStates,
+    accountChanges,
     cumulativeDifficulty,
     mempoolAdditions = [],
     mempoolRemovals = [],
@@ -133,6 +135,11 @@ export class MemoryAdapter extends StorageAdapter {
       }
       previousHash = block.hash;
     }
+
+    if (accountChanges.length !== blocks.length || accountChanges.some((entry, index) =>
+      entry.blockHash !== blocks[index].hash ||
+      new Set(entry.changes.map(change => change.address)).size !== entry.changes.length
+    )) throw new Error('Invalid canonical account changes');
 
     const nextBlocks = new Map(this.blocks);
     const nextBlockHashes = new Map(this.blockHashes);
@@ -169,10 +176,28 @@ export class MemoryAdapter extends StorageAdapter {
       });
     }
 
-    const nextAccounts = new Map<string, AccountState>();
-    for (const { address, state } of accountStates) {
-      if (nextAccounts.has(address)) throw new Error(`Duplicate account state: ${address}`);
-      nextAccounts.set(address, { ...state });
+    const nextAccounts = new Map(this.accounts);
+    const nextAccountChanges = new Map(this.accountChanges);
+    const detached = [...this.blocks.values()]
+      .filter(block => block.index > ancestor.height)
+      .sort((a, b) => b.index - a.index);
+    for (const block of detached) {
+      const undo = nextAccountChanges.get(block.hash);
+      if (!undo) throw new Error(`Missing account undo for block ${block.hash}`);
+      for (const { address, previous } of undo.changes) {
+        if (previous) nextAccounts.set(address, { ...previous });
+        else nextAccounts.delete(address);
+      }
+      nextAccountChanges.delete(block.hash);
+    }
+    for (const entry of accountChanges) {
+      for (const { address, previous, state } of entry.changes) {
+        const current = nextAccounts.get(address) ?? null;
+        if (!this.statesEqual(current, previous)) throw new Error(`Account undo mismatch: ${address}`);
+        if (state) nextAccounts.set(address, { ...state });
+        else nextAccounts.delete(address);
+      }
+      nextAccountChanges.set(entry.blockHash, structuredClone(entry));
     }
 
     const finalHeight = blocks.at(-1)?.index ?? ancestor.height;
@@ -187,6 +212,7 @@ export class MemoryAdapter extends StorageAdapter {
     this.transactionLocations = nextTransactionLocations;
     this.txByAddress = nextTxByAddress;
     this.accounts = nextAccounts;
+    this.accountChanges = nextAccountChanges;
     this.mempool = nextMempool;
     this.chainHeight = finalHeight;
     this.latestBlock = nextBlocks.get(finalHeight) ?? null;
@@ -239,6 +265,36 @@ export class MemoryAdapter extends StorageAdapter {
     const state = this.accounts.get(address);
     return state ? { ...state } : null;
   }
+
+  async getAccountStates(addresses: Iterable<string>, ancestor: { height: number; hash: string | null }): Promise<Map<string, AccountState>> {
+    this.checkConnection();
+    const ancestorBlock = ancestor.height >= 0 ? this.blocks.get(ancestor.height) : null;
+    if (ancestor.height < -1 || (ancestor.height === -1 ? ancestor.hash !== null : ancestorBlock?.hash !== ancestor.hash)) {
+      throw new Error('Invalid canonical ancestor');
+    }
+    const requested = new Set(addresses);
+    const states = new Map<string, AccountState>();
+    for (const address of requested) {
+      const state = this.accounts.get(address);
+      if (state) states.set(address, { ...state });
+    }
+    for (let height = this.chainHeight; height > ancestor.height; height--) {
+      const block = this.blocks.get(height);
+      const undo = block && this.accountChanges.get(block.hash);
+      if (!undo) throw new Error(`Missing account undo at height ${height}`);
+      for (const { address, previous } of undo.changes) {
+        if (!requested.has(address)) continue;
+        if (previous) states.set(address, { ...previous });
+        else states.delete(address);
+      }
+    }
+    return states;
+  }
+
+  async getAccountChanges(blockHash: string) {
+    const entry = this.accountChanges.get(blockHash);
+    return entry ? structuredClone(entry.changes) : null;
+  }
   
   async updateAccountState(address: string, state: AccountState): Promise<void> {
     this.checkConnection();
@@ -258,12 +314,6 @@ export class MemoryAdapter extends StorageAdapter {
     return this.cumulativeDifficulty;
   }
   
-  async updateCumulativeDifficulty(difficulty: bigint): Promise<void> {
-    this.checkConnection();
-    this.cumulativeDifficulty = difficulty;
-    logger.debug(`Updated cumulative difficulty to ${difficulty}`);
-  }
-  
   // transaction operations
   
   async getTransaction(hash: string): Promise<Transaction | null> {
@@ -275,26 +325,6 @@ export class MemoryAdapter extends StorageAdapter {
     this.checkConnection();
     const record = this.transactionLocations.get(hash);
     return record ? structuredClone({ ...record, canonicalHeight: this.chainHeight }) : null;
-  }
-  
-  async saveTransaction(tx: Transaction): Promise<void> {
-    this.checkConnection();
-    this.transactions.set(tx.hash, tx);
-    
-    // index by address
-    if (tx.from) {
-      if (!this.txByAddress.has(tx.from)) {
-        this.txByAddress.set(tx.from, new Set());
-      }
-      this.txByAddress.get(tx.from)!.add(tx.hash);
-    }
-    
-    if (!this.txByAddress.has(tx.to)) {
-      this.txByAddress.set(tx.to, new Set());
-    }
-    this.txByAddress.get(tx.to)!.add(tx.hash);
-    
-    logger.debug(`Saved transaction ${tx.hash}`);
   }
   
   async getTransactionsByAddress(address: string): Promise<Transaction[]> {
@@ -438,5 +468,9 @@ export class MemoryAdapter extends StorageAdapter {
     this.checkConnection();
     const set = this.customSets.get(key);
     return set ? Array.from(set) : [];
+  }
+
+  private statesEqual(first: AccountState | null, second: AccountState | null): boolean {
+    return first?.balance === second?.balance && first?.nonce === second?.nonce;
   }
 }

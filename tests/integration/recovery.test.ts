@@ -75,4 +75,22 @@ describe('cold storage recovery', () => {
     expect(result.exitCode).not.toBe(0);
     expect(result.output).toContain('Cumulative difficulty mismatch');
   });
+
+  it('fails startup verification after account undo corruption', async () => {
+    const data = await temporary('data');
+    expect((await storage('verify', data)).exitCode).toBe(0);
+    const manager = new LMDBManager({ path: join(data, 'lmdb') });
+    const genesisHeight = Buffer.alloc(4);
+    const genesisData = manager.blocks.get(genesisHeight)!;
+    const genesis = JSON.parse(genesisData.toString());
+    manager.accountChanges.putSync(genesis.hash, Buffer.from(JSON.stringify([{
+      address: 'corrupt', previous: null, state: { balance: '1', nonce: 0 },
+    }])));
+    await manager.close();
+
+    const result = await storage('verify', data);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output).toContain('Invalid account undo');
+  });
 });

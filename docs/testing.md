@@ -12,6 +12,7 @@ bolt uses bun test suites for unit, integration, and end-to-end behavior. bats c
 - bats places two deployed nodes and their Kubo daemons on separate Docker networks joined only by a pinned router fixture. it verifies routed endpoint announcements, non-genesis block synchronization, pending transaction relay, router interruption and restoration, SIGKILL recovery, persistence, and cold backup restore.
 - cross-host connectivity remains a release gate. local Docker routing does not test outbound NAT or prove public routing, firewall behavior, or inbound NAT traversal.
 - docker coverage belongs in bats, not bun suites.
+- bun integration coverage sends `SIGKILL` at an LMDB canonical-transition boundary and accepts only complete pre-transition or post-transition state after restart.
 
 ## local checks
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'bun:test';
 import { BlockClass, createGenesisBlock } from '../../src/core/block';
 import { Transaction } from '../../src/types';
-import { calculateStateRoot } from '../../src/core/block-executor';
+import { EMPTY_STATE_ROOT_PARENT, calculateStateRoot } from '../../src/core/block-executor';
 import { calculateTransactionHash } from '../../src/crypto/signature';
 import { config as chainConfig } from '../../src/config/chain';
 import { serialize } from '../../src/utils/bigint';
@@ -10,7 +10,7 @@ describe('Block Class', () => {
   let genesis: BlockClass;
   
   beforeAll(() => {
-    genesis = createGenesisBlock(1, 1234567890, calculateStateRoot(new Map()), 0);
+    genesis = createGenesisBlock(1, 1234567890, calculateStateRoot(EMPTY_STATE_ROOT_PARENT, []), 0);
   });
   
   describe('Genesis block', () => {
@@ -18,8 +18,8 @@ describe('Block Class', () => {
       expect(genesis.index).toBe(0);
       expect(genesis.previousHash).toBe('0'.repeat(64));
       expect(genesis.transactions.length).toBe(0);
-      expect(genesis.stateRoot).toBe(calculateStateRoot(new Map()));
-      expect(genesis.hash).toBe('de6b4d90545b16d726760849fe263df4ad7bbe44bc975ae63b3d813f61c732f5');
+      expect(genesis.stateRoot).toBe(calculateStateRoot(EMPTY_STATE_ROOT_PARENT, []));
+      expect(genesis.hash).toBe('2361dc62e0564d17d7aafe810d9ad3fe4b13acf51821648f54416de74bbd9f13');
       expect(genesis.difficulty).toBe(1);
       expect(genesis.hash).toBeTruthy();
     });

@@ -103,7 +103,7 @@ describe('Blockchain Integration', () => {
     });
 
     it('should reject obsolete storage versions', async () => {
-      expect(await storage.getChainMetadata('storageVersion')).toBe('8');
+      expect(await storage.getChainMetadata('storageVersion')).toBe('9');
       await storage.saveChainMetadata('storageVersion', '5');
       const reloaded = new Blockchain(storage, testConfig);
       await expect(reloaded.initialize()).rejects.toThrow('incompatible');
@@ -194,6 +194,35 @@ describe('Blockchain Integration', () => {
       const savedBlock = await blockchain.getBlock(1);
       expect(savedBlock).toBeTruthy();
       expect(savedBlock!.hash).toBe(block.hash);
+    });
+
+    it('should load account state in proportion to touched addresses', async () => {
+      for (let index = 0; index < 1000; index++) {
+        await storage.updateAccountState(`unrelated-${index}`, { balance: 1n, nonce: 0 });
+      }
+      const requested: string[][] = [];
+      const getAccountStates = storage.getAccountStates.bind(storage);
+      storage.getAccountStates = async (addresses, ancestor) => {
+        const values = [...addresses];
+        requested.push(values);
+        return getAccountStates(values, ancestor);
+      };
+      const previous = await blockchain.getLatestBlock();
+      const miner = generateAddress(testConfig.addressPrefix);
+      const timestamp = Date.now();
+      const block = new BlockClass(
+        1,
+        timestamp,
+        previous!.hash,
+        [new TransactionClass(
+          testConfig.chainId, null, miner.address, blockchain.getBlockReward(1), 0, 0n, timestamp
+        )],
+        1
+      );
+
+      await blockchain.prepareBlock(block);
+
+      expect(requested).toEqual([[miner.address]]);
     });
     
     it('should reject block with invalid previous hash', async () => {

@@ -28,7 +28,7 @@ export class LMDBManager {
   
   // state databases
   public accounts!: Database;
-  public accountIndex!: Database;
+  public accountChanges!: Database;
   
   // mempool databases
   public mempool!: Database;
@@ -42,7 +42,7 @@ export class LMDBManager {
   private isOpen: boolean = false;
 
   constructor(config: LMDBConfig) {
-    const { path, mapSize = 100 * 1024 * 1024 * 1024, maxDbs = 15, maxReaders = 126, compression = true } = config;
+    const { path, mapSize = 100 * 1024 * 1024 * 1024, maxDbs = 16, maxReaders = 126, compression = true } = config;
     
     logger.info(`initializing lmdb at ${path} with mapSize=${mapSize}`);
     
@@ -81,10 +81,7 @@ export class LMDBManager {
     // account state
     this.accounts = this.env.openDB({ name: 'accounts' });
     
-    // account index for fast queries
-    this.accountIndex = this.env.openDB({ name: 'account_index',
-      dupSort: true,                // multiple values per key
-    });
+    this.accountChanges = this.env.openDB({ name: 'account_changes' });
     
     // mempool storage
     this.mempool = this.env.openDB({ name: 'mempool' });
@@ -188,7 +185,7 @@ export class LMDBManager {
       this.confirmedTransactions.clearSync();
       this.confirmedByAddress.clearSync();
       this.accounts.clearSync();
-      this.accountIndex.clearSync();
+      this.accountChanges.clearSync();
       this.mempool.clearSync();
       this.mempoolByFee.clearSync();
       this.mempoolByTime.clearSync();

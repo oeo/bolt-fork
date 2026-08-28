@@ -9,7 +9,7 @@
   previousHash: string,       // hash of previous block (64 hex chars)
   hash: string,              // this block's hash (64 hex chars)
   merkleRoot: string,        // root of transaction merkle tree (64 hex chars)
-  stateRoot: string,         // root of complete resulting account state
+  stateRoot: string,         // recursive root of ordered account-state evolution
   difficulty: number,        // mining difficulty target
   nonce: number,             // proof-of-work nonce
   miner?: string            // optional metadata excluded from block hash
@@ -62,8 +62,8 @@ transactions from another chain are invalid. transfer `from` and `to` addresses 
 1. miner creates coinbase transaction with their address
 2. coinbase is placed at `transactions[0]`
 3. all transactions are hashed into merkle tree
-4. transactions execute against parent account state
-5. resulting complete account state is committed by state root
+4. transactions load and execute against touched parent accounts
+5. changed accounts and parent state root produce the next state root
 6. block header is hashed repeatedly with incrementing nonce
 7. block is valid when hash meets difficulty target
 
@@ -81,7 +81,7 @@ transactions from another chain are invalid. transfer `from` and `to` addresses 
 - all transactions must match configured chain id
 - transfer senders and recipients, and coinbase recipients, must match configured address prefix
 - transaction nonces must be sequential per sender
-- state root must match deterministic execution against parent state
+- state root must match deterministic execution against parent state root and touched accounts
 
 ## size limits
 

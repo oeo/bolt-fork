@@ -51,7 +51,9 @@ function canonicalTransitionContract(
         expectedCumulativeDifficulty: 0n,
         ancestor: { height: -1, hash: null },
         blocks: [genesis],
-        accountStates: [{ address: 'canonical', state: { balance: 1n, nonce: 0 } }],
+        accountChanges: [{ blockHash: genesis.hash, changes: [{
+          address: 'canonical', previous: null, state: { balance: 1n, nonce: 0 },
+        }] }],
         cumulativeDifficulty: 1n,
       });
     });
@@ -64,7 +66,9 @@ function canonicalTransitionContract(
         expectedCumulativeDifficulty: 1n,
         ancestor: { height: 0, hash: genesis.hash },
         blocks: [firstBranch],
-        accountStates: [{ address: 'changed', state: { balance: 2n, nonce: 0 } }],
+        accountChanges: [{ blockHash: firstBranch.hash, changes: [{
+          address: 'changed', previous: null, state: { balance: 2n, nonce: 0 },
+        }] }],
         cumulativeDifficulty: 2n,
       })).rejects.toBeInstanceOf(StaleChainTipError);
 
@@ -80,7 +84,9 @@ function canonicalTransitionContract(
         expectedCumulativeDifficulty: 1n,
         ancestor: { height: 0, hash: genesis.hash },
         blocks: [firstBranch],
-        accountStates: [{ address: 'detached', state: { balance: 2n, nonce: 0 } }],
+        accountChanges: [{ blockHash: firstBranch.hash, changes: [{
+          address: 'detached', previous: null, state: { balance: 2n, nonce: 0 },
+        }] }],
         cumulativeDifficulty: 2n,
       });
       await storage.getBlock(1);
@@ -91,7 +97,9 @@ function canonicalTransitionContract(
         expectedCumulativeDifficulty: 2n,
         ancestor: { height: 0, hash: genesis.hash },
         blocks: [replacementBranch],
-        accountStates: [{ address: 'replacement', state: { balance: 3n, nonce: 1 } }],
+        accountChanges: [{ blockHash: replacementBranch.hash, changes: [{
+          address: 'replacement', previous: null, state: { balance: 3n, nonce: 1 },
+        }] }],
         cumulativeDifficulty: 3n,
       });
 
@@ -101,6 +109,30 @@ function canonicalTransitionContract(
       expect(await storage.getAccountState('detached')).toBeNull();
       expect(await storage.getAccountState('replacement')).toEqual({ balance: 3n, nonce: 1 });
       expect(await storage.getCumulativeDifficulty()).toBe(3n);
+    });
+
+    test('deletes canonical empty accounts and retains ancestor undo', async () => {
+      await storage.transitionCanonicalChain({
+        expectedTip: { height: 0, hash: genesis.hash },
+        expectedCumulativeDifficulty: 1n,
+        ancestor: { height: 0, hash: genesis.hash },
+        blocks: [firstBranch],
+        accountChanges: [{ blockHash: firstBranch.hash, changes: [{
+          address: 'canonical',
+          previous: { balance: 1n, nonce: 0 },
+          state: null,
+        }] }],
+        cumulativeDifficulty: 2n,
+        mempoolAdditions: [],
+        mempoolRemovals: [],
+      });
+
+      expect(await storage.getAccountState('canonical')).toBeNull();
+      expect(await storage.getAllAccountAddresses()).not.toContain('canonical');
+      expect(await storage.getAccountStates(
+        ['canonical'],
+        { height: 0, hash: genesis.hash }
+      )).toEqual(new Map([['canonical', { balance: 1n, nonce: 0 }]]));
     });
 
     test('atomically updates confirmed indexes and mempool lifecycle', async () => {
@@ -114,7 +146,7 @@ function canonicalTransitionContract(
         expectedCumulativeDifficulty: 1n,
         ancestor: { height: 0, hash: genesis.hash },
         blocks: [firstBranchWithTransaction],
-        accountStates: [],
+        accountChanges: [{ blockHash: firstBranch.hash, changes: [] }],
         cumulativeDifficulty: 2n,
         mempoolAdditions: [],
         mempoolRemovals: [transaction.hash],
@@ -137,7 +169,7 @@ function canonicalTransitionContract(
         expectedCumulativeDifficulty: 2n,
         ancestor: { height: 0, hash: genesis.hash },
         blocks: [replacementBranch],
-        accountStates: [],
+        accountChanges: [{ blockHash: replacementBranch.hash, changes: [] }],
         cumulativeDifficulty: 3n,
         mempoolAdditions: [{ transaction, addedAt: 456 }],
         mempoolRemovals: [],
@@ -160,7 +192,7 @@ function canonicalTransitionContract(
         expectedCumulativeDifficulty: 1n,
         ancestor: { height: 0, hash: genesis.hash },
         blocks: [firstBranch],
-        accountStates: [],
+        accountChanges: [{ blockHash: firstBranch.hash, changes: [] }],
         cumulativeDifficulty: 2n,
         mempoolAdditions: [],
         mempoolRemovals: [],
@@ -223,7 +255,9 @@ describe('lmdb canonical transition rollback', () => {
         expectedCumulativeDifficulty: 0n,
         ancestor: { height: -1, hash: null },
         blocks: [genesis],
-        accountStates: [{ address: 'canonical', state: { balance: 1n, nonce: 0 } }],
+        accountChanges: [{ blockHash: genesis.hash, changes: [{
+          address: 'canonical', previous: null, state: { balance: 1n, nonce: 0 },
+        }] }],
         cumulativeDifficulty: 1n,
       });
       await storage.getBlock(0);
@@ -248,7 +282,9 @@ describe('lmdb canonical transition rollback', () => {
         expectedCumulativeDifficulty: 1n,
         ancestor: { height: 0, hash: genesis.hash },
         blocks: [firstBranchWithTransaction],
-        accountStates: [{ address: 'changed', state: { balance: 2n, nonce: 1 } }],
+        accountChanges: [{ blockHash: firstBranch.hash, changes: [{
+          address: 'canonical', previous: { balance: 1n, nonce: 0 }, state: { balance: 2n, nonce: 1 },
+        }] }],
         cumulativeDifficulty: 2n,
         mempoolRemovals: [transaction.hash],
       })).rejects.toBeDefined();
@@ -270,6 +306,62 @@ describe('lmdb canonical transition rollback', () => {
       expect(await reopened.getTransaction(transaction.hash)).toBeNull();
       expect(await reopened.isInMempool(transaction.hash)).toBe(true);
       await reopened.close();
+    } finally {
+      await storage.close();
+      await rm(path, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('lmdb canonical account undo restart', () => {
+  test('reorganizes from persisted undo after restart', async () => {
+    const path = join(tmpdir(), `bolt-transition-restart-${randomUUID()}`);
+    let storage = new LMDBAdapter({ path, mapSize: 10 * 1024 * 1024 });
+    await storage.connect();
+    try {
+      await storage.transitionCanonicalChain({
+        expectedTip: { height: -1, hash: null },
+        expectedCumulativeDifficulty: 0n,
+        ancestor: { height: -1, hash: null },
+        blocks: [genesis],
+        accountChanges: [{ blockHash: genesis.hash, changes: [{
+          address: 'account', previous: null, state: { balance: 1n, nonce: 0 },
+        }] }],
+        cumulativeDifficulty: 1n,
+        mempoolAdditions: [],
+        mempoolRemovals: [],
+      });
+      await storage.transitionCanonicalChain({
+        expectedTip: { height: 0, hash: genesis.hash },
+        expectedCumulativeDifficulty: 1n,
+        ancestor: { height: 0, hash: genesis.hash },
+        blocks: [firstBranch],
+        accountChanges: [{ blockHash: firstBranch.hash, changes: [{
+          address: 'account', previous: { balance: 1n, nonce: 0 }, state: null,
+        }] }],
+        cumulativeDifficulty: 2n,
+        mempoolAdditions: [],
+        mempoolRemovals: [],
+      });
+      await storage.close();
+
+      storage = new LMDBAdapter({ path, mapSize: 10 * 1024 * 1024 });
+      await storage.connect();
+      await storage.transitionCanonicalChain({
+        expectedTip: { height: 1, hash: firstBranch.hash },
+        expectedCumulativeDifficulty: 2n,
+        ancestor: { height: 0, hash: genesis.hash },
+        blocks: [replacementBranch],
+        accountChanges: [{ blockHash: replacementBranch.hash, changes: [{
+          address: 'account', previous: { balance: 1n, nonce: 0 }, state: { balance: 3n, nonce: 1 },
+        }] }],
+        cumulativeDifficulty: 3n,
+        mempoolAdditions: [],
+        mempoolRemovals: [],
+      });
+
+      expect(await storage.getAccountState('account')).toEqual({ balance: 3n, nonce: 1 });
+      expect((await storage.getLatestBlock())?.hash).toBe(replacementBranch.hash);
     } finally {
       await storage.close();
       await rm(path, { recursive: true, force: true });

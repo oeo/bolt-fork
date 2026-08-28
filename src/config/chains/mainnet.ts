@@ -34,6 +34,6 @@ export const mainnet: ChainConfig = {
   
   // genesis
   genesisTimestamp: 1_757_000_000_000,
-  genesisNonce: 61,
+  genesisNonce: 1943,
   genesisMemo: 'we will craft citadels in the clouds or bury vaults within the ashes.',
 };

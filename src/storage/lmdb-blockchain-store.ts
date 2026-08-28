@@ -23,10 +23,6 @@ interface BlockHeader {
 export class LMDBBlockchainStore {
   private lmdb: LMDBManager;
   
-  // in-memory cache for recent blocks
-  private recentBlocks: Map<number, Block> = new Map();
-  private readonly cacheSize = 100;
-
   constructor(lmdb: LMDBManager) {
     this.lmdb = lmdb;
   }
@@ -41,9 +37,6 @@ export class LMDBBlockchainStore {
     this.lmdb.transactionSync(() => {
       this.writeBlock(block, serialized, header);
     });
-    
-    // update cache
-    this.updateCache(block);
     
     logger.debug(`block ${block.index} stored with hash ${block.hash}`);
   }
@@ -81,11 +74,6 @@ export class LMDBBlockchainStore {
    * get a block by height
    */
   async getBlock(height: number): Promise<Block | null> {
-    // check cache first
-    if (this.recentBlocks.has(height)) {
-      return this.recentBlocks.get(height)!;
-    }
-    
     // convert height to buffer for key
     const indexBuffer = Buffer.allocUnsafe(4);
     indexBuffer.writeUInt32BE(height, 0);
@@ -93,15 +81,7 @@ export class LMDBBlockchainStore {
     const data = await this.lmdb.blocks.get(indexBuffer);
     if (!data) return null;
     
-    const block = this.deserializeBlock(data);
-    
-    // add to cache if recent
-    const currentHeight = await this.getHeight();
-    if (currentHeight - height < this.cacheSize) {
-      this.updateCache(block);
-    }
-    
-    return block;
+    return this.deserializeBlock(data);
   }
 
   /**
@@ -189,8 +169,6 @@ export class LMDBBlockchainStore {
     this.lmdb.transactionSync(() => {
       this.writeRemoveBlocksAbove(height);
     });
-    this.clearCache();
-    
     logger.info(`removed ${await this.getHeight() - height} blocks above height ${height}`);
   }
 
@@ -238,7 +216,6 @@ export class LMDBBlockchainStore {
       height,
       blockCount,
       indexCount,
-      cacheSize: this.recentBlocks.size,
       tip: await this.lmdb.metadata.get('chainTip'),
     };
   }
@@ -290,17 +267,6 @@ export class LMDBBlockchainStore {
     return JSON.parse(data.toString());
   }
 
-  private updateCache(block: Block): void {
-    // add to cache
-    this.recentBlocks.set(block.index, block);
-    
-    // remove oldest if cache is full
-    if (this.recentBlocks.size > this.cacheSize) {
-      const oldestHeight = Math.min(...this.recentBlocks.keys());
-      this.recentBlocks.delete(oldestHeight);
-    }
-  }
-
   readBlock(height: number): Block | null {
     const key = Buffer.allocUnsafe(4);
     key.writeUInt32BE(height, 0);
@@ -308,7 +274,4 @@ export class LMDBBlockchainStore {
     return data ? this.deserializeBlock(data) : null;
   }
 
-  clearCache(): void {
-    this.recentBlocks.clear();
-  }
 }

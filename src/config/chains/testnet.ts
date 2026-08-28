@@ -34,6 +34,6 @@ export const testnet: ChainConfig = {
   
   // genesis
   genesisTimestamp: 1_700_000_000_000,
-  genesisNonce: 172272,
+  genesisNonce: 302282,
   genesisMemo: 'bolt testnet genesis',
 };

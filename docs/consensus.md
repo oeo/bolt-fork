@@ -22,13 +22,15 @@ block timestamps must be strictly greater than their parent block timestamp and 
 
 ## state transition
 
-`executeBlock()` is the state transition function. it receives a block, complete parent account state, chain configuration, and block reward. it performs no storage writes.
+`executeBlock()` is the state transition function. it receives a block, touched parent accounts, parent state root, chain configuration, and block reward. it performs no storage writes.
 
-execution validates transaction structure, chain id, transfer sender and recipient address prefixes, coinbase recipient address prefix, canonical compressed transfer public keys, signatures, nonce order, balances, coinbase position, coinbase value, timestamps, and transaction hash uniqueness. coinbase timestamp must equal block timestamp. transfer timestamps must not exceed block timestamp. output contains complete resulting account state and its root. storage commits output only after block validation succeeds.
+execution validates transaction structure, chain id, transfer sender and recipient address prefixes, coinbase recipient address prefix, canonical compressed transfer public keys, signatures, nonce order, balances, coinbase position, coinbase value, timestamps, and transaction hash uniqueness. coinbase timestamp must equal block timestamp. transfer timestamps must not exceed block timestamp. output contains changed accounts, their previous values, and the next state root. storage commits output only after block validation succeeds.
 
 transfer hashes commit to canonical signed fields, signature, and canonical compressed 33-byte public key. coinbase hashes commit to canonical unsigned fields.
 
-state roots sort addresses by ascii value. each address, balance, and nonce uses length-prefixed utf-8 encoding under the `bolt:state:v1` domain before sha-256 hashing.
+state roots use sha-256 over length-prefixed fields under the `bolt:state-transition:v1` domain. input contains the parent state root followed by changed-account records sorted by address. every record contains address, resulting balance, resulting nonce, and a deletion marker. zero-balance zero-nonce results use the deletion marker and are not stored as accounts.
+
+the root recursively authenticates ordered state evolution. it does not provide standalone account proofs.
 
 ## chainwork
 
@@ -50,7 +52,7 @@ genesis issues no currency. reward at a target height is calculated after exact 
 
 ## reorganization
 
-reorganization rebuilds account state at the common ancestor and executes the full replacement branch before persistence. median time and difficulty use the candidate branch history. one canonical storage transition then replaces detached blocks, block and transaction indexes, complete account state, mempool entries, tip metadata, and cumulative work.
+storage persists each canonical block's changed accounts and previous values. reorganization reads only accounts touched by detached blocks, replacement blocks, or affected mempool transactions. persisted undo restores ancestor values before replacement blocks apply. median time and difficulty use candidate branch history. one canonical storage transition replaces detached blocks, indexes, changed accounts, mempool entries, tip metadata, and cumulative work.
 
 the storage transition compares expected tip hash, height, and cumulative work inside the same transaction as all writes. stale writers cannot overwrite a newer chain. block admission uses one process-local write queue, while storage compare-and-swap protects shared persistence.
 

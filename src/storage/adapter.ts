@@ -10,10 +10,21 @@ export interface CanonicalTransition {
   expectedCumulativeDifficulty: bigint;
   ancestor: ChainPoint;
   blocks: Block[];
-  accountStates: Array<{ address: string; state: AccountState }>;
+  accountChanges: CanonicalBlockChanges[];
   cumulativeDifficulty: bigint;
   mempoolAdditions: PersistedMempoolEntry[];
   mempoolRemovals: string[];
+}
+
+export interface AccountChange {
+  address: string;
+  previous: AccountState | null;
+  state: AccountState | null;
+}
+
+export interface CanonicalBlockChanges {
+  blockHash: string;
+  changes: AccountChange[];
 }
 
 export interface PersistedMempoolEntry {
@@ -174,6 +185,13 @@ export abstract class StorageAdapter {
    * get account state (balance and nonce)
    */
   abstract getAccountState(address: string): Promise<AccountState | null>;
+
+  abstract getAccountStates(
+    addresses: Iterable<string>,
+    ancestor: ChainPoint
+  ): Promise<Map<string, AccountState>>;
+
+  abstract getAccountChanges(blockHash: string): Promise<AccountChange[] | null>;
   
   /**
    * update account state
@@ -192,11 +210,6 @@ export abstract class StorageAdapter {
    */
   abstract getCumulativeDifficulty(): Promise<bigint>;
   
-  /**
-   * update cumulative difficulty
-   */
-  abstract updateCumulativeDifficulty(difficulty: bigint): Promise<void>;
-  
   // transaction operations
   
   /**
@@ -205,11 +218,6 @@ export abstract class StorageAdapter {
   abstract getTransaction(hash: string): Promise<Transaction | null>;
 
   abstract getConfirmedTransaction(hash: string): Promise<ConfirmedTransactionSnapshot | null>;
-  
-  /**
-   * save a transaction
-   */
-  abstract saveTransaction(tx: Transaction): Promise<void>;
   
   /**
    * get transactions for a specific address

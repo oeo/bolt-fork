@@ -1,5 +1,6 @@
 import {
   CanonicalTransition,
+  type AccountChange,
   ConfirmedTransactionSnapshot,
   MempoolUpdate,
   PersistedMempoolEntry,
@@ -78,15 +79,16 @@ export class LMDBAdapter extends StorageAdapter {
     expectedCumulativeDifficulty,
     ancestor,
     blocks,
-    accountStates,
+    accountChanges,
     cumulativeDifficulty,
     mempoolAdditions = [],
     mempoolRemovals = [],
   }: CanonicalTransition): Promise<void> {
     if (cumulativeDifficulty < 0n) throw new Error('Invalid cumulative difficulty');
-    if (new Set(accountStates.map(({ address }) => address)).size !== accountStates.length) {
-      throw new Error('Duplicate account state');
-    }
+    if (accountChanges.length !== blocks.length || accountChanges.some((entry, index) =>
+      entry.blockHash !== blocks[index].hash ||
+      new Set(entry.changes.map(change => change.address)).size !== entry.changes.length
+    )) throw new Error('Invalid canonical account changes');
     this.manager.transactionSync(() => {
       const storedHeight = this.manager.metadata.get('chainHeight');
       const storedHash = this.manager.metadata.get('chainTip');
@@ -126,22 +128,34 @@ export class LMDBAdapter extends StorageAdapter {
         const detached = this.blockchainStore.readBlock(height);
         if (detached) detachedBlocks.push(detached);
       }
+      for (const block of detachedBlocks.reverse()) {
+        const undo = this.readAccountChanges(block.hash);
+        if (!undo) throw new Error(`Missing account undo for block ${block.hash}`);
+        this.stateStore.writeChanges(undo.map(({ address, previous }) => ({
+          address,
+          previous: null,
+          state: previous,
+        })));
+        this.manager.accountChanges.removeSync(block.hash);
+      }
       for (const block of detachedBlocks) this.writeRemoveConfirmedTransactions(block);
       this.blockchainStore.writeRemoveBlocksAbove(ancestor.height);
-      for (const block of blocks) {
+      for (let index = 0; index < blocks.length; index++) {
+        const block = blocks[index];
+        const entry = accountChanges[index];
+        for (const { address, previous } of entry.changes) {
+          if (!this.statesEqual(this.stateStore.readAccount(address), previous)) {
+            throw new Error(`Account undo mismatch: ${address}`);
+          }
+        }
+        this.stateStore.writeChanges(entry.changes);
+        this.manager.accountChanges.putSync(block.hash, this.serializeAccountChanges(entry.changes));
         this.blockchainStore.writeBlock(block);
         this.writeConfirmedTransactions(block);
       }
-      this.stateStore.clearAccounts();
-      this.stateStore.writeAccounts(accountStates.map(({ address, state }) => ({
-        address,
-        ...state,
-      })));
       this.mempoolStore.writeUpdate(mempoolAdditions, mempoolRemovals);
       this.manager.metadata.putSync('cumulativeDifficulty', cumulativeDifficulty.toString());
     });
-    this.blockchainStore.clearCache();
-    this.stateStore.clearCache();
     for (const error of this.publishCanonicalMempoolUpdate(mempoolAdditions, mempoolRemovals)) {
       logger.error('Canonical mempool listener failed', error);
     }
@@ -180,46 +194,50 @@ export class LMDBAdapter extends StorageAdapter {
     return metadata ? BigInt(metadata) : 0n;
   }
 
-  async updateCumulativeDifficulty(difficulty: bigint): Promise<void> {
-    await this.manager.metadata.put('cumulativeDifficulty', difficulty.toString());
-  }
-
   async getChainTip(): Promise<string | null> {
     const latest = await this.getLatestBlock();
     return latest ? latest.hash : null;
   }
 
   // state operations
-  async getBalance(address: string): Promise<bigint> {
-    return this.stateStore.getBalance(address);
-  }
-
-  async setBalance(address: string, balance: bigint): Promise<void> {
-    return this.stateStore.setBalance(address, balance);
-  }
-
-  async getNonce(address: string): Promise<number> {
-    return this.stateStore.getNonce(address);
-  }
-
-  async setNonce(address: string, nonce: number): Promise<void> {
-    return this.stateStore.setNonce(address, nonce);
-  }
-
   async getAccountState(address: string): Promise<AccountState | null> {
     return this.stateStore.getAccountState(address);
   }
 
-  async setAccountState(address: string, state: AccountState): Promise<void> {
-    return this.stateStore.setAccountState(address, state);
+  async getAccountStates(addresses: Iterable<string>, ancestor: { height: number; hash: string | null }): Promise<Map<string, AccountState>> {
+    return this.manager.transactionSync(() => {
+      const ancestorBlock = ancestor.height >= 0 ? this.blockchainStore.readBlock(ancestor.height) : null;
+      if (ancestor.height < -1 || (ancestor.height === -1 ? ancestor.hash !== null : ancestorBlock?.hash !== ancestor.hash)) {
+        throw new Error('Invalid canonical ancestor');
+      }
+      const heightValue = this.manager.metadata.get('chainHeight');
+      const height = heightValue === undefined ? -1 : Number(heightValue.toString());
+      const requested = new Set(addresses);
+      const states = new Map<string, AccountState>();
+      for (const address of requested) {
+        const account = this.stateStore.readAccount(address);
+        if (account) states.set(address, { balance: account.balance, nonce: account.nonce });
+      }
+      for (let index = height; index > ancestor.height; index--) {
+        const block = this.blockchainStore.readBlock(index);
+        const undo = block && this.readAccountChanges(block.hash);
+        if (!undo) throw new Error(`Missing account undo at height ${index}`);
+        for (const { address, previous } of undo) {
+          if (!requested.has(address)) continue;
+          if (previous) states.set(address, { ...previous });
+          else states.delete(address);
+        }
+      }
+      return states;
+    });
+  }
+
+  async getAccountChanges(blockHash: string): Promise<AccountChange[] | null> {
+    return this.readAccountChanges(blockHash);
   }
 
   async updateAccountState(address: string, state: AccountState): Promise<void> {
     return this.stateStore.updateAccountState(address, state);
-  }
-
-  async getAllBalances(): Promise<Map<string, bigint>> {
-    return this.stateStore.getAllBalances();
   }
 
   // mempool operations
@@ -335,10 +353,6 @@ export class LMDBAdapter extends StorageAdapter {
     return this.mempoolStore.hasTransaction(txHash);
   }
 
-  async saveTransaction(_tx: Transaction): Promise<void> {
-    // transactions are persisted with their containing block
-  }
-
   async saveChainMetadata(key: string, value: any): Promise<void> {
     await this.manager.metadata.put(`chain:${key}`, value);
   }
@@ -438,6 +452,20 @@ export class LMDBAdapter extends StorageAdapter {
         fee: deserializeBigInt(record.transaction.fee),
       },
     };
+  }
+
+  private serializeAccountChanges(changes: readonly AccountChange[]): Buffer {
+    return Buffer.from(JSON.stringify(changes, (_, value) => typeof value === 'bigint' ? value.toString() : value));
+  }
+
+  private readAccountChanges(blockHash: string): AccountChange[] | null {
+    const data = this.manager.accountChanges.get(blockHash);
+    if (!data) return null;
+    return JSON.parse(data.toString(), (key, value) => key === 'balance' ? BigInt(value) : value);
+  }
+
+  private statesEqual(account: { balance: bigint; nonce: number } | null, state: AccountState | null): boolean {
+    return account?.balance === state?.balance && account?.nonce === state?.nonce;
   }
 
   // utility operations
