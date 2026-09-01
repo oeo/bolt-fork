@@ -25,7 +25,7 @@ canonical storage tracks cumulative work. competing branches can trigger a reorg
 
 ## networking
 
-active networking uses protocol version `6`.
+active networking uses protocol version `7`.
 
 ```text
 ipfs pubsub discovery -> tcp connection -> version/verack -> getheaders -> headers -> getdata -> block
@@ -90,4 +90,4 @@ bun runs typescript directly. tcp uses `Bun.listen` and `Bun.connect`. hashing u
 
 tcp framing checks chain-specific network magic, payload checksum, sequence, and authentication tag. signed handshakes authenticate peer identity. transport does not provide confidentiality.
 
-main compose networking publishes tcp port `8333` on the host for peer traffic. api and metrics ports bind to host loopback by default.
+main compose runs a non-advertising edge node and publishes no p2p host ports. api and metrics ports bind to host loopback. `compose/seed.yml` enables signed endpoint advertisement and publishes bolt tcp plus Kubo tcp/udp swarm ports.

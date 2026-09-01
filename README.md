@@ -25,7 +25,7 @@ mainnet parameters:
 
 ## quick start
 
-the compose stack works without `.env`. mining and mining api default to disabled. api, metrics, Prometheus, and Grafana host ports bind to loopback. tcp p2p and ipfs swarm ports bind to all host interfaces. public api routes remain unauthenticated, and Grafana uses default `admin` credentials unless configured otherwise.
+the compose stack works without `.env`. mining, mining api, and peer advertisement default to disabled. ordinary nodes publish no p2p host ports. api, metrics, Prometheus, and Grafana host ports bind to loopback. public api routes remain unauthenticated, and Grafana uses default `admin` credentials unless configured otherwise.
 
 ```bash
 bun install
@@ -36,7 +36,7 @@ docker compose down
 
 ## multi-node deployment test
 
-the bats suite places two bolt nodes and their Kubo daemons on separate Docker networks joined only by a pinned router fixture. it mines through the external getblocktemplate api, verifies routed discovery, block synchronization, pending transaction relay, competing partition branches, higher-work convergence, router interruption and recovery, and state persistence across restart.
+the bats suite places an advertising seed and non-advertising edge node with their Kubo daemons on separate Docker networks joined only by a pinned router fixture. it verifies peer direction, explicit mempool catch-up, external getblocktemplate mining, competing partition branches, higher-work convergence, router interruption and recovery, and state persistence across restart.
 
 ```bash
 bun run test:bats
@@ -47,9 +47,9 @@ bun run test:bats
 | service | port |
 | --- | ---: |
 | rest api | `7333` |
-| tcp p2p | `8333` |
+| tcp p2p, seed override only | `8333` |
 | metrics | `7336` |
-| ipfs swarm | `4001` |
+| ipfs swarm, seed override only | `4001` |
 | Grafana | `3000` |
 | Prometheus | `9090` |
 
@@ -86,11 +86,18 @@ BOLT_NETWORK=devnet
 IPFS_API=http://localhost:5001
 IPFS_BOOTSTRAP_ENABLED=true
 STATIC_PEERS=
+P2P_ADVERTISE=false
 ```
 
 `BOLT_NETWORK` accepts `mainnet`, `testnet`, or `devnet` and is required for direct node startup. mainnet startup is disabled until launch difficulty is selected. Compose supplies testnet by default.
 
 `STATIC_PEERS` accepts comma-separated `nodeId@host:port` entries. static peers are identity-bound during the signed handshake and supplement ipfs discovery.
+
+ordinary nodes subscribe and dial without publishing an endpoint. public seed operators use the seed override:
+
+```bash
+NODE_HOST=seed.example.org docker compose -f docker-compose.yml -f compose/seed.yml up -d --wait
+```
 
 ## testing
 

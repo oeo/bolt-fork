@@ -24,6 +24,11 @@ implemented:
 - [x] direct node startup requires explicit network selection and candidate genesis hash is pinned by test
 - [x] Kubo pubsub uses supported configuration instead of deprecated daemon flag
 - [x] consensus status includes state root; metrics distinguish accepted, locally mined, and reorganized blocks
+- [x] protocol v7 requests mempool inventory explicitly after authenticated chain convergence
+- [x] ordinary Compose nodes publish no p2p ports and emit no endpoint announcement
+- [x] seed override explicitly publishes bolt and Kubo TCP/UDP ports
+- [x] static peers retry through existing connection admission and cooldown behavior
+- [x] deployed Bats proves advertising-seed to non-advertising-edge sync and peer direction
 
 ## open findings
 

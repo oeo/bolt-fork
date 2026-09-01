@@ -28,6 +28,7 @@ API_HOST=127.0.0.1
 API_PORT=7333
 TCP_PORT=8333
 STATIC_PEERS=
+P2P_ADVERTISE=false
 METRICS_HOST=127.0.0.1
 METRICS_PORT=7336
 BOLT_NETWORK=devnet
@@ -41,11 +42,11 @@ fallback mining requires `MINER_ADDRESS` with active network prefix. mining API 
 
 `STATIC_PEERS` accepts comma-separated identity-bound `nodeId@host:port` entries. Kubo remains the normal discovery dependency; static peers provide deterministic seed dialing.
 
-## single node
+## ordinary edge node
 
-The compose stack starts bolt, Kubo, and monitoring services.
+The compose stack starts bolt, Kubo, and monitoring services without publishing p2p ports or endpoint announcements. authenticated outbound connections remain bidirectional.
 
-compose publishes api, metrics, Prometheus, and Grafana to host loopback. tcp p2p and ipfs swarm ports publish on all host interfaces for peer connectivity. public api routes remain unauthenticated, and Grafana uses default `admin` credentials unless configured otherwise. Kubo rpc remains inside the docker network. set `NODE_HOST` to a routable address before connecting nodes across hosts.
+compose publishes api, metrics, Prometheus, and Grafana to host loopback. public api routes remain unauthenticated, and Grafana uses default `admin` credentials unless configured otherwise. Kubo rpc remains inside the docker network.
 
 ```bash
 docker compose up -d --wait
@@ -61,6 +62,18 @@ bun run src/index.ts
 
 `BOLT_NETWORK` is required for direct startup. missing or unknown values fail before storage or networking opens.
 
+## public seed node
+
+seed nodes publish bolt TCP `8333` and Kubo swarm `4001` TCP/UDP. `NODE_HOST` is required by the override.
+
+```bash
+NODE_HOST=seed-a.example.org \
+STATIC_PEERS='<seed-b-id>@seed-b.example.org:8333' \
+docker compose -f docker-compose.yml -f compose/seed.yml up -d --wait
+```
+
+`P2P_ADVERTISE=false` suppresses signed endpoint announcements; it does not disable the process-internal listener. host exposure is controlled by Compose and firewall configuration.
+
 ## two-host testnet canary
 
 use the same root Compose stack on each host. initialize both nodes once, record their bolt node IDs and Kubo peer IDs, then configure reciprocal peers.
@@ -71,6 +84,7 @@ host A:
 BOLT_NETWORK=testnet
 NODE_HOST=seed-a.example.org
 STATIC_PEERS=<bolt-b-node-id>@seed-b.example.org:8333
+P2P_ADVERTISE=true
 ```
 
 host B:
@@ -79,6 +93,7 @@ host B:
 BOLT_NETWORK=testnet
 NODE_HOST=seed-b.example.org
 STATIC_PEERS=<bolt-a-node-id>@seed-a.example.org:8333
+P2P_ADVERTISE=true
 ```
 
 publish TCP `8333` and Kubo swarm `4001` TCP/UDP. keep API, metrics, faucet backend, and Kubo RPC private. configure each Kubo node's `Peering.Peers` with the other seed's Kubo peer ID and swarm address. public libp2p bootstrap remains fallback connectivity.
@@ -93,7 +108,7 @@ height, latest block hash, latest state root, cumulative difficulty, genesis has
 
 ## multi-node deployment test
 
-`docker-compose.bats.yml` starts two bolt nodes with separate Kubo daemons on isolated Docker networks. a pinned router fixture is the only member of both networks. the test installs explicit routes, connects Kubo by routed IP address, disables public bootstrap, mines through authenticated getblocktemplate routes, creates competing partition branches, and verifies higher-work convergence.
+`docker-compose.bats.yml` starts one advertising seed and one non-advertising edge with separate Kubo daemons on isolated Docker networks. a pinned router fixture is the only member of both networks. the test verifies inbound/outbound peer direction, explicit mempool catch-up, authenticated getblocktemplate mining, competing partition branches, and higher-work convergence.
 
 ```bash
 bun run test:bats

@@ -94,6 +94,9 @@ bolt_gbt_mempool_refreshes_total
 ```text
 bolt_network_peers_connected
 bolt_network_peers_total
+bolt_network_peers_inbound
+bolt_network_peers_outbound
+bolt_network_ready
 bolt_network_messages_received_total
 bolt_network_messages_sent_total
 bolt_network_bandwidth_in_bytes

@@ -35,7 +35,7 @@ configured static peers use `nodeId@host:port` and dial directly after the tcp l
 
 ## tcp protocol
 
-current protocol version is `6`.
+current protocol version is `7`.
 
 ```text
 [magic:4][type:4][length:4][checksum:4][sequence:8][authentication-tag:32][payload:length]
@@ -53,7 +53,7 @@ the protocol serializes handshake, keepalive, inventory, block request, header r
 
 ## handshake
 
-each connection sends a signed `version`, then expects protocol version `6`. `version` binds protocol version, chain id, genesis hash, node id, public key, nonce, timestamp, user agent, and starting height. mismatched versions, stale timestamps, invalid signatures, and discovery identity mismatches are disconnected.
+each connection sends a signed `version`, then expects protocol version `7`. `version` binds protocol version, chain id, genesis hash, node id, public key, nonce, timestamp, user agent, and starting height. mismatched versions, stale timestamps, invalid signatures, and discovery identity mismatches are disconnected.
 
 peers answer with a signed `verack` that binds both identities, both nonces, and connection roles. secp256k1 ecdh derives directional frame authentication keys. application messages are rejected until reciprocal authentication completes. duplicate identities resolve to one deterministic connection.
 
@@ -68,7 +68,7 @@ peers answer with a signed `verack` that binds both identities, both nonces, and
 5. receiver requests each full block only after candidate work exceeds current canonical work.
 6. each response must match expected peer session, request deadline, and block hash.
 7. canonical extensions pass through `Blockchain.addBlock()`. forks remain buffered until the complete validated branch passes `Blockchain.reorganize()`.
-8. mempool synchronization starts after chain convergence.
+8. after chain convergence, peers exchange an explicit `mempool` request and bounded transaction inventory.
 
 network policy accepts at most 4,000 candidate headers across active peer requests and candidate body bytes totaling 16 configured maximum blocks. transaction body requests allow 500 globally and 50 per peer session. body download is sequential. reorganization has no fixed block-count limit, but the complete candidate must fit the byte bound. unsolicited blocks are ignored.
 
@@ -94,7 +94,9 @@ authenticated dispatch charges one per-session token bucket before storage or va
 
 ## compose connectivity
 
-main `docker-compose.yml` joins bolt and ipfs services to `bolt-network`. tcp port `8333` is published for peer traffic. api and metrics ports bind to host loopback. the default `NODE_HOST` is the docker hostname; cross-host deployments must set it to a routable address.
+main `docker-compose.yml` joins bolt and ipfs services to `bolt-network` without publishing p2p host ports. the node subscribes to discovery and creates outbound sessions but does not announce a TCP endpoint. api and metrics ports bind to host loopback.
+
+`compose/seed.yml` requires routable `NODE_HOST`, enables endpoint advertisement, and publishes bolt `8333/tcp` plus Kubo `4001/tcp` and `4001/udp`.
 
 `docker-compose.bats.yml` gives each bolt node a separate Kubo daemon and Docker network. only a pinned router fixture joins both networks. tests install routes through that fixture, peer Kubo by routed IP address, mine through authenticated getblocktemplate routes, create competing partition branches, verify higher-work convergence, and disable public bootstrap. tcp port `8333` remains unpublished.
 
@@ -106,6 +108,7 @@ network startup reads these environment variables:
 
 - `TCP_PORT`, tcp listen and announcement port.
 - `STATIC_PEERS`, comma-separated `nodeId@host:port` identity-bound seed endpoints.
+- `P2P_ADVERTISE`, defaults to `false`; enables signed TCP endpoint announcements when `true`.
 - `IPFS_API`, ipfs rpc endpoint.
 - `IPFS_BOOTSTRAP_ENABLED`, defaults to `true`. this controls bolt's explicit fallback connections and does not modify Kubo's bootstrap list. isolated deployments must disable both.
 - `NODE_HOST`, host placed in tcp peer announcements.
