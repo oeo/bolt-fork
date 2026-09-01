@@ -15,6 +15,7 @@ export interface BlockHeader {
   stateRoot: string;
   difficulty: number;
   nonce: number;
+  memo?: string;
 }
 
 export function calculateBlockHeaderHash(
@@ -28,7 +29,8 @@ export function calculateBlockHeaderHash(
     header.merkleRoot,
     header.stateRoot,
     header.difficulty.toString(),
-    header.nonce.toString()
+    header.nonce.toString(),
+    header.memo ?? ''
   ].join(':'), algorithm);
 }
 
@@ -111,6 +113,7 @@ export class BlockClass {
   public stateRoot: string;
   public difficulty: number;
   public nonce: number;
+  public memo: string;
   public transactions: Transaction[];
   public miner?: string;
   
@@ -121,7 +124,8 @@ export class BlockClass {
     transactions: Transaction[],
     difficulty: number,
     miner?: string,
-    stateRoot: string = ''
+    stateRoot: string = '',
+    memo: string = ''
   ) {
     this.index = index;
     this.timestamp = timestamp;
@@ -130,6 +134,7 @@ export class BlockClass {
     this.difficulty = difficulty;
     this.miner = miner;
     this.stateRoot = stateRoot;
+    this.memo = memo;
     this.nonce = 0;
     
     // calculate merkle root from transactions
@@ -157,7 +162,8 @@ export class BlockClass {
       transactions,
       obj.difficulty,
       obj.miner,
-      obj.stateRoot
+      obj.stateRoot,
+      obj.memo ?? ''
     );
     
     block.hash = obj.hash;
@@ -180,6 +186,7 @@ export class BlockClass {
       stateRoot: this.stateRoot,
       difficulty: this.difficulty,
       nonce: this.nonce,
+      memo: this.memo,
       transactions: this.transactions,
       miner: this.miner
     };
@@ -240,6 +247,9 @@ export class BlockClass {
    * validate block structure and hash
    */
   validate(algorithm: HashAlgorithm = 'sha256', maxFutureTime = 2 * 60 * 60 * 1000): ValidationResult {
+    if (new TextEncoder().encode(this.memo).length > 256 || (this.index > 0 && this.memo !== '')) {
+      return { valid: false, error: 'Invalid block memo' };
+    }
     // check merkle root
     const calculatedMerkleRoot = this.calculateMerkleRoot(algorithm);
     if (this.merkleRoot !== calculatedMerkleRoot) {
@@ -379,7 +389,8 @@ export function createGenesisBlock(
   difficulty: number,
   timestamp: number,
   stateRoot: string,
-  nonce: number
+  nonce: number,
+  memo: string = ''
 ): BlockClass {
   const genesis = new BlockClass(
     0,
@@ -388,7 +399,8 @@ export function createGenesisBlock(
     [],
     difficulty,
     undefined,
-    stateRoot
+    stateRoot,
+    memo
   );
   
   genesis.nonce = nonce;

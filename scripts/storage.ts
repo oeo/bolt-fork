@@ -4,8 +4,8 @@ import { Blockchain } from '../src/core/blockchain';
 import { config } from '../src/config/chain';
 import { createStorage } from '../src/storage';
 import { LMDBManager } from '../src/storage/lmdb-manager';
-import { IdentityManager } from '../src/utils/identity';
 import { processIdentityIsRunning, type ProcessIdentity } from '../src/utils/pid';
+import { IdentityManager } from '../src/utils/identity';
 
 interface BackupManifest {
   format: 1;
@@ -35,13 +35,16 @@ async function assertEmpty(path: string): Promise<void> {
 
 async function verify(dataDir: string): Promise<void> {
   await assertStopped(dataDir);
-  await new IdentityManager(dataDir, config.addressPrefix).loadOrCreate();
-  const storage = createStorage({ type: 'lmdb', path: join(dataDir, 'lmdb') });
+  new IdentityManager(dataDir, config.addressPrefix).loadExisting();
+  const lmdbPath = join(dataDir, 'lmdb');
+  await stat(lmdbPath);
+  if ((await Array.fromAsync(new Bun.Glob('*').scan({ cwd: lmdbPath, dot: true }))).length === 0) {
+    throw new Error(`lmdb store is empty: ${lmdbPath}`);
+  }
+  const storage = createStorage({ type: 'lmdb', path: lmdbPath, readOnly: true });
   try {
     const blockchain = new Blockchain(storage, config);
     await blockchain.initialize();
-    const result = await blockchain.verifyChainIntegrity();
-    if (!result.valid) throw new Error(result.error);
   } finally {
     await storage.close();
   }

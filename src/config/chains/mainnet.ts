@@ -1,4 +1,5 @@
 import type { ChainConfig } from '../chain';
+import { GENESIS_SLOGAN } from '../../constants';
 
 export const mainnet: ChainConfig = {
   // identity
@@ -34,6 +35,6 @@ export const mainnet: ChainConfig = {
   
   // genesis
   genesisTimestamp: 1_757_000_000_000,
-  genesisNonce: 1943,
-  genesisMemo: 'we will craft citadels in the clouds or bury vaults within the ashes.',
+  genesisNonce: 54,
+  genesisMemo: GENESIS_SLOGAN,
 };

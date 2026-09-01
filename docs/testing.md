@@ -38,6 +38,15 @@ run deployment smoke tests:
 bun run test:bats
 ```
 
+run deterministic chain scaling checks separately from correctness gates:
+
+```bash
+bun run benchmark:chain --blocks 10000 --storage memory
+bun run benchmark:chain --blocks 10000 --storage lmdb
+```
+
+the benchmark exercises ordinary block preparation, validation, canonical transition, and storage. it is not a network synchronization benchmark.
+
 audit dependencies:
 
 ```bash

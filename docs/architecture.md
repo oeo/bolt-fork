@@ -25,7 +25,7 @@ canonical storage tracks cumulative work. competing branches can trigger a reorg
 
 ## networking
 
-active networking uses protocol version `7`.
+active networking uses protocol version `8`.
 
 ```text
 ipfs pubsub discovery -> tcp connection -> version/verack -> getheaders -> headers -> getdata -> block
@@ -58,7 +58,7 @@ transactions are chain-bound and identify transfer or coinbase kind. block execu
 - `LMDBAdapter` for persistent storage
 - `MemoryAdapter` for in-memory use
 
-canonical transitions carry expected tip, cumulative-work values, and per-block account updates with undo values. storage implementations reject stale writes instead of silently replacing a changed tip. memory and LMDB apply changed accounts only. LMDB commits blocks, indexes, account changes, undo records, mempool changes, tip metadata, and cumulative work in one transaction. startup verifies chain specification, configured genesis, every canonical block and state root, final account state, cumulative work, and confirmed transaction locations before serving traffic.
+canonical transitions carry expected tip, cumulative-work values, and per-block account updates with undo values. storage implementations reject stale writes instead of silently replacing a changed tip. memory and LMDB apply changed accounts only. LMDB commits blocks, indexes, account changes, undo records, mempool changes, tip metadata, and cumulative work in one transaction. startup verifies chain specification, configured genesis, every canonical block and state root, block hash indexes, expected difficulty, median time, final tip metadata, final account state, cumulative work, and confirmed transaction locations before serving traffic.
 
 the cold storage command snapshots LMDB through its supported backup operation. backups include node identity and a chain manifest. restore requires a stopped node and empty destination, verifies a staged copy, then renames it into place. online restore is not supported.
 

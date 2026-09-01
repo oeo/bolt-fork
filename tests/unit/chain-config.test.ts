@@ -36,7 +36,7 @@ describe('Chain Configuration', () => {
 
     it('should have correct genesis block', () => {
       expect(mainnet.genesisTimestamp).toBe(1_757_000_000_000);
-      expect(mainnet.genesisNonce).toBe(1943);
+      expect(mainnet.genesisNonce).toBe(54);
       expect(mainnet.genesisMemo).toBe('we will craft citadels in the clouds or bury vaults within the ashes.');
     });
 
@@ -69,14 +69,14 @@ describe('Chain Configuration', () => {
     });
 
     it('should ship a mined genesis nonce', () => {
-      expect(testnet.genesisNonce).toBe(93448977);
+      expect(testnet.genesisNonce).toBe(138081769);
     });
 
     it('pins the candidate testnet genesis hash', async () => {
       const blockchain = new Blockchain(new MemoryAdapter(), testnet);
       await blockchain.initialize();
       expect((await blockchain.getBlock(0))?.hash).toBe(
-        '00000006aaca1551a4cde02df90be7610ea3c446ed715a542a2b554226957c25'
+        '000000133f6c0e77d5627ce8bf4a25d04bbfdc9dfbd6147cbe7874bf1c536923'
       );
       await blockchain.close();
     });
@@ -171,7 +171,8 @@ describe('Chain Configuration', () => {
           config.initialDifficulty,
           config.genesisTimestamp,
           calculateStateRoot(EMPTY_STATE_ROOT_PARENT, []),
-          config.genesisNonce
+          config.genesisNonce,
+          config.genesisMemo
         );
         expect(genesis.validate('sha256', Number.MAX_SAFE_INTEGER).valid).toBe(true);
       }

@@ -143,6 +143,9 @@ export abstract class StorageAdapter {
     used: number;
     keys: number;
     type: string;
+    initialMapSize?: number;
+    mappedSize?: number;
+    headroom?: number;
   }>;
   
   // block operations

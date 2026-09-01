@@ -9,6 +9,7 @@ export interface Block {
   stateRoot: string;
   difficulty: number;
   nonce: number;
+  memo?: string;
   transactions: Transaction[];
   miner?: string;
 }
@@ -76,6 +77,7 @@ export interface BlockTemplate {
   
   // block construction data
   version: number;
+  memo: string;
   height: number;
   previousHash: string;
   merkleRootPlaceholder: string;

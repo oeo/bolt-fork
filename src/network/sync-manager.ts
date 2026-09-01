@@ -621,7 +621,8 @@ export class SyncManager extends EventEmitter {
       merkleRoot: header.merkleRoot,
       stateRoot: header.stateRoot,
       difficulty: header.difficulty,
-      nonce: header.nonce
+      nonce: header.nonce,
+      memo: ''
     }));
     if (headers.length === 0) {
       this.headerRequests.delete(sessionId);

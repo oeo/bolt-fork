@@ -20,6 +20,7 @@ the compose stack does not require `.env`. create one only to override defaults.
 
 ```bash
 DATA_DIR=./data
+LMDB_MAP_SIZE=107374182400
 MINING_ENABLED=false
 MINER_ADDRESS=
 MINING_API_ENABLED=false
@@ -53,6 +54,8 @@ docker compose up -d --wait
 docker compose logs -f bolt
 docker compose down
 ```
+
+bolt writes logs to stdout and stderr. compose retains three 10 mb json log files per bolt container. no host log directory is mounted.
 
 To run bolt directly, start Kubo first and set `IPFS_API` to its api address:
 
@@ -139,6 +142,19 @@ bun run storage restore ./backup ./restored-data
 ```
 
 restore rejects non-empty destinations and backups from another configured chain. failed staged verification leaves destination unchanged.
+verification requires an existing identity and non-empty LMDB store. it does not create missing node state. `LMDB_MAP_SIZE` controls initial mapping size; LMDB grows the map when required. storage metrics report used pages, current mapped size, and mapped headroom.
+
+## chain benchmark
+
+the deterministic benchmark builds and validates a coinbase-only chain through normal consensus and storage paths. omitted LMDB paths use a temporary directory that is removed after output.
+
+```bash
+bun run benchmark:chain --blocks 10000 --storage memory
+bun run benchmark:chain --blocks 100000 --storage lmdb --path ./benchmark-data
+bun run benchmark:chain --blocks 500000 --storage lmdb --path ./benchmark-data
+```
+
+output is one json object with elapsed time, blocks per second, process memory, key count, and storage capacity fields. use a new persistent benchmark path for each run.
 
 ## testing
 

@@ -8,7 +8,7 @@ import { encodeCanonicalFields } from '../utils/serialization';
 const logger = getLogger(__filename);
 
 // protocol version
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 export const PROTOCOL_HEADER_SIZE = 56;
 export const PROTOCOL_AUTH_TAG_OFFSET = 24;
 export const PROTOCOL_AUTH_TAG_SIZE = 32;
@@ -742,7 +742,8 @@ export class Protocol {
       transactions,           // correct: transactions as 4th parameter
       blockData.difficulty,
       blockData.miner,
-      blockData.stateRoot
+      blockData.stateRoot,
+      blockData.memo ?? ''
     );
     
     // set the calculated fields

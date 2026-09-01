@@ -12,19 +12,20 @@
   stateRoot: string,         // recursive root of ordered account-state evolution
   difficulty: number,        // mining difficulty target
   nonce: number,             // proof-of-work nonce
-  miner?: string            // optional metadata excluded from block hash
+  memo?: string,             // consensus text, non-empty only in genesis
+  miner?: string             // optional metadata excluded from block hash
 }
 ```
 
 `miner` is non-consensus metadata. it is excluded from block hashing and consensus block-size measurement.
 
-header version 1 hashes the utf-8 encoding of colon-separated decimal integers and lowercase hashes:
+header version 2 hashes the utf-8 encoding of colon-separated decimal integers, lowercase hashes, and memo:
 
 ```text
-height:timestamp:previousHash:merkleRoot:stateRoot:difficulty:nonce
+height:timestamp:previousHash:merkleRoot:stateRoot:difficulty:nonce:memo
 ```
 
-there is no prefix, padding, or trailing newline. external mining vectors live in [getblocktemplate](getblocktemplate.md).
+there is no prefix, padding, or trailing newline. memo is at most 256 utf-8 bytes. only genesis may use a non-empty memo. ordinary block preimages end with a colon. external mining vectors live in [getblocktemplate](getblocktemplate.md).
 
 ## transactions array
 

@@ -34,19 +34,22 @@ export class IdentityManager {
     // check if identity file exists
     if (fs.existsSync(this.identityPath)) {
       fs.chmodSync(this.identityPath, 0o600);
-      const data = fs.readFileSync(this.identityPath, 'utf8');
-      const identity = JSON.parse(data) as NodeIdentity;
-      const derived = generateFromPrivateKey(identity.privateKey, this.addressPrefix);
-      if (identity.address !== derived.address || identity.publicKey !== derived.publicKey) {
-        throw new Error('stored node identity does not match its private key or active network');
-      }
-      this.identity = identity;
-      logger.info(`loaded node identity: ${identity.address}`);
-      return identity;
+      return this.loadExisting();
     }
 
     // generate new identity
     return this.createNew();
+  }
+
+  loadExisting(): NodeIdentity {
+    const identity = JSON.parse(fs.readFileSync(this.identityPath, 'utf8')) as NodeIdentity;
+    const derived = generateFromPrivateKey(identity.privateKey, this.addressPrefix);
+    if (identity.address !== derived.address || identity.publicKey !== derived.publicKey) {
+      throw new Error('stored node identity does not match its private key or active network');
+    }
+    this.identity = identity;
+    logger.info(`loaded node identity: ${identity.address}`);
+    return identity;
   }
 
   /**

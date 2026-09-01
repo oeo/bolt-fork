@@ -19,6 +19,7 @@
     "test:metrics": "bun test tests/unit/metrics.test.ts",
     "test:gbt": "bun test tests/unit/getblocktemplate.test.ts",
     "storage": "bun run scripts/storage.ts",
+    "benchmark:chain": "bun run scripts/benchmark-chain.ts",
     "reset:testnet": "bun run scripts/reset-testnet.ts",
     "wallet": "bun run examples/testnet-wallet/index.ts",
     "faucet": "bun run apps/testnet-faucet/server.ts"

@@ -35,7 +35,7 @@ configured static peers use `nodeId@host:port` and dial directly after the tcp l
 
 ## tcp protocol
 
-current protocol version is `7`.
+current protocol version is `8`.
 
 ```text
 [magic:4][type:4][length:4][checksum:4][sequence:8][authentication-tag:32][payload:length]
@@ -53,7 +53,7 @@ the protocol serializes handshake, keepalive, inventory, block request, header r
 
 ## handshake
 
-each connection sends a signed `version`, then expects protocol version `7`. `version` binds protocol version, chain id, genesis hash, node id, public key, nonce, timestamp, user agent, and starting height. mismatched versions, stale timestamps, invalid signatures, and discovery identity mismatches are disconnected.
+each connection sends a signed `version`, then expects protocol version `8`. `version` binds protocol version, chain id, genesis hash, node id, public key, nonce, timestamp, user agent, and starting height. mismatched versions, stale timestamps, invalid signatures, and discovery identity mismatches are disconnected.
 
 peers answer with a signed `verack` that binds both identities, both nonces, and connection roles. secp256k1 ecdh derives directional frame authentication keys. application messages are rejected until reciprocal authentication completes. duplicate identities resolve to one deterministic connection.
 

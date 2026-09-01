@@ -61,7 +61,7 @@ mine_blocks() {
       let nonce = 0;
       for (;; nonce++) {
         const preimage = [template.height, template.timestamp, template.previousHash,
-          template.merkleRootPlaceholder, template.stateRoot, template.difficulty, nonce].join(':');
+          template.merkleRootPlaceholder, template.stateRoot, template.difficulty, nonce, template.memo].join(':');
         const hash = new Bun.CryptoHasher('sha256').update(preimage).digest('hex');
         if (BigInt('0x' + hash) <= BigInt('0x' + template.target)) break;
       }

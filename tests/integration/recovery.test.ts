@@ -3,6 +3,10 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LMDBManager } from '../../src/storage/lmdb-manager';
+import { LMDBAdapter } from '../../src/storage/lmdb-adapter';
+import { Blockchain } from '../../src/core/blockchain';
+import { devnet } from '../../src/config/chains/devnet';
+import { IdentityManager } from '../../src/utils/identity';
 
 const directories: string[] = [];
 
@@ -29,6 +33,14 @@ async function storage(command: string, source: string, destination?: string, ne
   return { exitCode, output: stdout + stderr };
 }
 
+async function initializeData(data: string): Promise<void> {
+  await new IdentityManager(data, devnet.addressPrefix).loadOrCreate();
+  const adapter = new LMDBAdapter({ path: join(data, 'lmdb') });
+  const chain = new Blockchain(adapter, devnet);
+  await chain.initialize();
+  await chain.close();
+}
+
 afterEach(async () => {
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
 });
@@ -41,6 +53,7 @@ describe('cold storage recovery', () => {
     const restoreParent = await temporary('restore-parent');
     const restored = join(restoreParent, 'data');
 
+    await initializeData(data);
     expect((await storage('verify', data)).exitCode).toBe(0);
     const identity = await readFile(join(data, '.identity'), 'utf8');
     expect((await storage('backup', data, backup)).exitCode).toBe(0);
@@ -55,6 +68,7 @@ describe('cold storage recovery', () => {
     const backup = join(parent, 'snapshot');
     const restored = await temporary('restore');
 
+    await initializeData(data);
     expect((await storage('verify', data)).exitCode).toBe(0);
     expect((await storage('backup', data, backup)).exitCode).toBe(0);
     const result = await storage('restore', backup, restored, 'testnet');
@@ -65,6 +79,7 @@ describe('cold storage recovery', () => {
 
   it('fails startup verification after cumulative work corruption', async () => {
     const data = await temporary('data');
+    await initializeData(data);
     expect((await storage('verify', data)).exitCode).toBe(0);
     const manager = new LMDBManager({ path: join(data, 'lmdb') });
     manager.metadata.putSync('cumulativeDifficulty', '0');
@@ -78,6 +93,7 @@ describe('cold storage recovery', () => {
 
   it('fails startup verification after account undo corruption', async () => {
     const data = await temporary('data');
+    await initializeData(data);
     expect((await storage('verify', data)).exitCode).toBe(0);
     const manager = new LMDBManager({ path: join(data, 'lmdb') });
     const genesisHeight = Buffer.alloc(4);
@@ -92,5 +108,22 @@ describe('cold storage recovery', () => {
 
     expect(result.exitCode).not.toBe(0);
     expect(result.output).toContain('Invalid account undo');
+  });
+
+  it('does not create missing state during verification', async () => {
+    const data = await temporary('empty-data');
+
+    const result = await storage('verify', data);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output).toContain('.identity');
+  });
+
+  it('rejects a corrupt stored identity', async () => {
+    const data = await temporary('corrupt-identity');
+    await initializeData(data);
+    await writeFile(join(data, '.identity'), '{}');
+
+    expect((await storage('verify', data)).exitCode).not.toBe(0);
   });
 });

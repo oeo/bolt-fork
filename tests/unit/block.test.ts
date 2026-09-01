@@ -19,7 +19,7 @@ describe('Block Class', () => {
       expect(genesis.previousHash).toBe('0'.repeat(64));
       expect(genesis.transactions.length).toBe(0);
       expect(genesis.stateRoot).toBe(calculateStateRoot(EMPTY_STATE_ROOT_PARENT, []));
-      expect(genesis.hash).toBe('2361dc62e0564d17d7aafe810d9ad3fe4b13acf51821648f54416de74bbd9f13');
+      expect(genesis.hash).toBe('cf97824e52bd9a5dcdaa7598081db02ef26aba7033663b063e5cefa6b6fca0ec');
       expect(genesis.difficulty).toBe(1);
       expect(genesis.hash).toBeTruthy();
     });
@@ -30,7 +30,7 @@ describe('Block Class', () => {
     });
   });
 
-  it('matches the external mining header v1 vector', () => {
+  it('matches the external mining header v2 vector', () => {
     expect(calculateBlockHeaderHash({
       index: 1,
       timestamp: 1_700_000_001_001,
@@ -39,7 +39,8 @@ describe('Block Class', () => {
       stateRoot: '22'.repeat(32),
       difficulty: 100_000,
       nonce: 42,
-    })).toBe('648b51f2920ff55c2b45c15c503958b03cf27baaebed6e45c5b2747cade6349d');
+      memo: '',
+    })).toBe('79dabafe3fe728aae1faa7fc595feb979ac2db1c670aa59561c1c8ca1e50578a');
   });
   
   describe('Block creation', () => {

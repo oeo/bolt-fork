@@ -29,19 +29,19 @@ submission accepts bounded UUID template ID, safe non-negative nonce, and option
 
 ## external hashing
 
-template `version: 1` uses sha-256 over this utf-8 string with no prefix or newline:
+template `version: 2` uses sha-256 over this utf-8 string with no prefix or newline:
 
 ```text
-height:timestamp:previousHash:merkleRoot:stateRoot:difficulty:nonce
+height:timestamp:previousHash:merkleRoot:stateRoot:difficulty:nonce:memo
 ```
 
-decimal integers contain no padding. hashes are 64-character lowercase hexadecimal strings. nonce range is `0` through `9007199254740991`. a solution is valid when the unsigned 256-bit block hash is less than or equal to template `target`.
+decimal integers contain no padding. hashes are 64-character lowercase hexadecimal strings. `memo` is empty for mining candidates, so the preimage ends with a colon. nonce range is `0` through `9007199254740991`. a solution is valid when the unsigned 256-bit block hash is less than or equal to template `target`.
 
 fixed vector:
 
 ```text
-preimage = 1:1700000001001:0000000000000000000000000000000000000000000000000000000000000000:1111111111111111111111111111111111111111111111111111111111111111:2222222222222222222222222222222222222222222222222222222222222222:100000:42
-sha256   = 648b51f2920ff55c2b45c15c503958b03cf27baaebed6e45c5b2747cade6349d
+preimage = 1:1700000001001:0000000000000000000000000000000000000000000000000000000000000000:1111111111111111111111111111111111111111111111111111111111111111:2222222222222222222222222222222222222222222222222222222222222222:100000:42:
+sha256   = 79dabafe3fe728aae1faa7fc595feb979ac2db1c670aa59561c1c8ca1e50578a
 ```
 
 sha-256 is the only supported consensus algorithm. another algorithm requires an explicit network or hard-fork rule and a new template version.

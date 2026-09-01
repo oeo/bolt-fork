@@ -1,4 +1,5 @@
 import type { ChainConfig } from '../chain';
+import { GENESIS_SLOGAN } from '../../constants';
 
 export const testnet: ChainConfig = {
   // identity
@@ -34,6 +35,6 @@ export const testnet: ChainConfig = {
   
   // genesis
   genesisTimestamp: 1_700_000_000_000,
-  genesisNonce: 93448977,
-  genesisMemo: 'bolt testnet genesis',
+  genesisNonce: 138081769,
+  genesisMemo: `bolt testnet genesis\n${GENESIS_SLOGAN}`,
 };

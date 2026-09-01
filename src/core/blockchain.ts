@@ -154,7 +154,8 @@ export class Blockchain extends EventEmitter {
       this.config.initialDifficulty,
       this.config.genesisTimestamp,
       calculateStateRoot(EMPTY_STATE_ROOT_PARENT, []),
-      this.config.genesisNonce
+      this.config.genesisNonce,
+      this.config.genesisMemo ?? ''
     );
     const validation = genesis.validate(this.hashAlgorithm, Number.MAX_SAFE_INTEGER);
     if (!validation.valid) throw new Error(`Invalid configured genesis: ${validation.error}`);
@@ -170,6 +171,7 @@ export class Blockchain extends EventEmitter {
       stored.stateRoot === configured.stateRoot &&
       stored.difficulty === configured.difficulty &&
       stored.nonce === configured.nonce &&
+      stored.memo === configured.memo &&
       stored.transactions.length === 0 &&
       stored.miner === undefined;
   }
@@ -559,6 +561,7 @@ export class Blockchain extends EventEmitter {
     let cumulativeDifficulty = 0n;
     let accountStates = new Map<string, AccountState>();
     let expectedHeight = 0;
+    const verifiedBlocks: BlockClass[] = [];
     const configuredGenesis = this.getConfiguredGenesis().toObject();
 
     for await (const block of this.iterateChain()) {
@@ -575,6 +578,8 @@ export class Blockchain extends EventEmitter {
       if (!validation.valid) {
         return { valid: false, error: `Block ${block.index}: ${validation.error}` };
       }
+      const size = blockClass.validateSize(this.config.maxBlockSize);
+      if (!size.valid) return { valid: false, error: `Block ${block.index}: ${size.error}` };
 
       // validate against previous block (skip genesis)
       if (previousBlock && block.index > 0) {
@@ -582,6 +587,12 @@ export class Blockchain extends EventEmitter {
         const prevValidation = blockClass.validatePreviousBlock(prevBlockClass);
         if (!prevValidation.valid) {
           return { valid: false, error: `Block ${block.index}: ${prevValidation.error}` };
+        }
+        const median = blockClass.validateMedianTime(verifiedBlocks.slice(-this.config.medianTimeBlocks));
+        if (!median.valid) return { valid: false, error: `Block ${block.index}: ${median.error}` };
+        const expectedDifficulty = await this.getDifficulty(block.index);
+        if (block.difficulty !== expectedDifficulty) {
+          return { valid: false, error: `Block ${block.index}: Invalid difficulty` };
         }
       }
 
@@ -620,6 +631,11 @@ export class Blockchain extends EventEmitter {
       cumulativeDifficulty += calculateBlockWork(block.difficulty);
 
       previousBlock = block;
+      verifiedBlocks.push(blockClass);
+
+      if ((await this.storage.getBlockByHash(block.hash))?.index !== block.index) {
+        return { valid: false, error: `Invalid block hash index: ${block.hash}` };
+      }
 
       for (let transactionIndex = 0; transactionIndex < block.transactions.length; transactionIndex++) {
         const transaction = block.transactions[transactionIndex];
@@ -633,6 +649,10 @@ export class Blockchain extends EventEmitter {
 
     if (expectedHeight !== this.currentHeight + 1) {
       return { valid: false, error: `Canonical height mismatch: stored=${this.currentHeight}, verified=${expectedHeight - 1}` };
+    }
+    const storedTip = (await this.storage.getMempoolAdmissionState('')).tip;
+    if (storedTip.height !== this.currentHeight || storedTip.hash !== previousBlock?.hash) {
+      return { valid: false, error: 'Stored chain tip metadata mismatch' };
     }
 
     // verify cumulative difficulty matches
@@ -672,6 +692,16 @@ export class Blockchain extends EventEmitter {
     if (newBlocks.length === 0) return false;
 
     const expectedTip = await this.storage.getLatestBlock();
+    const requestedTip = newBlocks.at(-1);
+    if (expectedTip && requestedTip && expectedTip.index === requestedTip.index && expectedTip.hash === requestedTip.hash) {
+      if (newBlocks.length !== expectedTip.index - commonAncestorHeight) return false;
+      for (let index = 0; index < newBlocks.length; index++) {
+        const block = newBlocks[index];
+        if (block.index !== commonAncestorHeight + index + 1) return false;
+        if ((await this.storage.getBlock(block.index))?.hash !== block.hash) return false;
+      }
+      return true;
+    }
     const ancestor = await this.storage.getBlock(commonAncestorHeight);
     if (!expectedTip || !ancestor || commonAncestorHeight >= expectedTip.index) return false;
 

@@ -9,6 +9,7 @@ export type StorageType = 'memory' | 'lmdb';
 
 interface StorageConfig {
   type: StorageType;
+  readOnly?: boolean;
   lmdb?: {
     path?: string;
     mapSize?: number;
@@ -40,12 +41,13 @@ export function createStorage(
       
     case 'lmdb':
       const lmdbConfig = config.lmdb || {};
-      const legacyConfig: { path?: string; mapSize?: number } =
+      const legacyConfig: { path?: string; mapSize?: number; readOnly?: boolean } =
         typeof typeOrConfig === 'string' ? {} : typeOrConfig;
       const lmdbPath = lmdbConfig.path || legacyConfig.path || './data/lmdb';
       adapter = new LMDBAdapter({
         path: lmdbPath,
-        mapSize: lmdbConfig.mapSize || legacyConfig.mapSize || 100 * 1024 * 1024 * 1024 // 100GB default
+        mapSize: lmdbConfig.mapSize || legacyConfig.mapSize || 100 * 1024 * 1024 * 1024,
+        readOnly: config.readOnly || legacyConfig.readOnly,
       });
       break;
       

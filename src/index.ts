@@ -146,10 +146,12 @@ class BoltIPFSNode {
     } else {
       // default to lmdb
       const lmdbPath = path.join(this.config.dataDir, 'lmdb');
+      const mapSize = parseInt(process.env.LMDB_MAP_SIZE || String(100 * 1024 * 1024 * 1024));
+      if (!Number.isSafeInteger(mapSize) || mapSize < 64 * 1024 * 1024) throw new Error('Invalid LMDB_MAP_SIZE');
       this.storage = createStorage({
         type: 'lmdb',
         path: lmdbPath,
-        mapSize: 100 * 1024 * 1024 * 1024 // 100GB
+        mapSize
       });
     }
     

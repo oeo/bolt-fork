@@ -10,6 +10,7 @@ export interface LMDBConfig {
   maxDbs?: number;  // max number of named databases
   maxReaders?: number;
   compression?: boolean;
+  readOnly?: boolean;
 }
 
 /**
@@ -40,9 +41,15 @@ export class LMDBManager {
   public metadata!: Database;
   
   private isOpen: boolean = false;
+  readonly path: string;
+  readonly mapSize: number;
+  readonly readOnly: boolean;
 
   constructor(config: LMDBConfig) {
-    const { path, mapSize = 100 * 1024 * 1024 * 1024, maxDbs = 16, maxReaders = 126, compression = true } = config;
+    const { path, mapSize = 100 * 1024 * 1024 * 1024, maxDbs = 16, maxReaders = 126, compression = true, readOnly = false } = config;
+    this.path = path;
+    this.mapSize = mapSize;
+    this.readOnly = readOnly;
     
     logger.info(`initializing lmdb at ${path} with mapSize=${mapSize}`);
     
@@ -53,7 +60,8 @@ export class LMDBManager {
       maxDbs,
       maxReaders,
       
-      overlappingSync: true,
+      overlappingSync: !readOnly,
+      readOnly,
       encoding: 'binary',     // use binary encoding by default
       compression,
     });
@@ -103,6 +111,7 @@ export class LMDBManager {
    * execute a transaction across multiple databases atomically
    */
   transactionSync<T>(fn: () => T): T {
+    if (this.readOnly) return fn();
     return this.env.transactionSync(fn);
   }
 
@@ -130,7 +139,17 @@ export class LMDBManager {
    * get database statistics
    */
   async getStats(): Promise<any> {
+    const environment = this.env.getStats() as {
+      pageSize: number;
+      lastPageNumber: number;
+      mapSize: number;
+    };
+    const used = (environment.lastPageNumber + 1) * environment.pageSize;
     const stats = {
+      used,
+      initialMapSize: this.mapSize,
+      mappedSize: environment.mapSize,
+      headroom: environment.mapSize - used,
       databases: {
         blocks: await this.blocks.getCount(),
         accounts: await this.accounts.getCount(),

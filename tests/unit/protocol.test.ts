@@ -12,6 +12,7 @@ import { SyncManager } from '../../src/network/sync-manager';
 import { EventEmitter } from 'events';
 import { mainnet } from '../../src/config/chains/mainnet';
 import { generateAddress } from '../../src/crypto/address';
+import { BlockClass } from '../../src/core/block';
 
 const genesisHash = 'a'.repeat(64);
 
@@ -28,13 +29,23 @@ describe('network protocol', () => {
 
   describe('message serialization', () => {
     it('should use the chain-bound protocol version', () => {
-      expect(PROTOCOL_VERSION).toBe(7);
+      expect(PROTOCOL_VERSION).toBe(8);
     });
 
     it('round-trips an empty mempool request', () => {
       const encoded = protocol.encodeMessage('mempool', {});
 
       expect(protocol.decodeMessage(encoded)).toEqual({ command: 'mempool', payload: {} });
+    });
+
+    it('round-trips consensus block memo', () => {
+      const block = new BlockClass(0, 1, '0'.repeat(64), [], 1, undefined, '1'.repeat(64), 'genesis memo');
+      block.hash = block.calculateHash();
+
+      const decoded = protocol.deserializeBlock(protocol.serializeBlock(block.toObject()));
+
+      expect(decoded.memo).toBe('genesis memo');
+      expect(decoded.calculateHash()).toBe(block.hash);
     });
 
     it('should serialize and deserialize messages with correct header', () => {

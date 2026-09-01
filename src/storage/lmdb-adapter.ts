@@ -33,7 +33,7 @@ export class LMDBAdapter extends StorageAdapter {
   private blockchainStore: LMDBBlockchainStore;
   private stateStore: LMDBStateStore;
   private mempoolStore: LMDBMempoolStore;
-  constructor(config: { path: string; mapSize?: number }) {
+  constructor(config: { path: string; mapSize?: number; readOnly?: boolean }) {
     super();
     this.manager = new LMDBManager(config);
     this.blockchainStore = new LMDBBlockchainStore(this.manager);
@@ -56,11 +56,14 @@ export class LMDBAdapter extends StorageAdapter {
     await this.manager.clearAll();
   }
 
-  async getStorageStats(): Promise<{ used: number; keys: number; type: string }> {
+  async getStorageStats() {
     const stats = await this.manager.getStats();
     return {
       type: 'lmdb',
-      used: 0,
+      used: stats.used,
+      initialMapSize: stats.initialMapSize,
+      mappedSize: stats.mappedSize,
+      headroom: stats.headroom,
       keys: Object.values(stats.databases as Record<string, number>).reduce((sum, count) => sum + count, 0),
     };
   }

@@ -9,6 +9,7 @@ export const NETWORK_MAGIC = 0x12699C94; // network protocol magic bytes
 // currency definition
 // ===========================
 export const WATTS_PER_BOLT = 100_000_000n;
+export const GENESIS_SLOGAN = 'we will craft citadels in the clouds or bury vaults within the ashes.';
 export const CURRENCY_DECIMALS = 8;
 
 // ===========================
