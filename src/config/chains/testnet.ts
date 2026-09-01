@@ -8,16 +8,16 @@ export const testnet: ChainConfig = {
   
   // timing
   targetBlockTime: 60,                     // 1 minute blocks for faster testing
-  difficultyAdjustmentInterval: 100,       // adjust every 100 blocks
+  difficultyAdjustmentInterval: 60,
   
   // economics
   maxSupply: 21_000_000n * 100_000_000n,  // same as mainnet
   initialReward: 50n * 100_000_000n,       // same as mainnet
-  halvingInterval: 10000,                  // faster halving for testing
+  halvingInterval: 210000,
   minFeePerByte: 1n,
   
   // difficulty
-  initialDifficulty: 100000,               // increased difficulty for more realistic mining
+  initialDifficulty: 60_000_000,
   minDifficulty: 1,
   maxDifficultyAdjustment: 4,
   
@@ -34,6 +34,6 @@ export const testnet: ChainConfig = {
   
   // genesis
   genesisTimestamp: 1_700_000_000_000,
-  genesisNonce: 302282,
+  genesisNonce: 93448977,
   genesisMemo: 'bolt testnet genesis',
 };

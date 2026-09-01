@@ -69,6 +69,12 @@ describe('API Server Integration', () => {
     const info = await response.json();
     
     expect(info.network).toBe(chainConfig.name);
+    expect(info.chainId).toBe(chainConfig.chainId);
+    expect(info.genesisHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(info.addressPrefix).toBe(chainConfig.addressPrefix);
+    expect(info.minFeePerByte).toBe(`${chainConfig.minFeePerByte}n`);
+    expect(info.maxTransactionSize).toBeGreaterThan(0);
+    expect(info.protocolVersion).toBeGreaterThan(0);
     expect(info.height).toBe(0); // genesis only
     expect(info.difficulty).toBeDefined();
     expect(info.targetBlockTime).toBe(chainConfig.targetBlockTime);
@@ -156,6 +162,12 @@ describe('API Server Integration', () => {
     const mempoolTx = mempool.getTransaction(tx.hash);
     expect(mempoolTx).toBeDefined();
     expect(mempoolTx?.hash).toBe(tx.hash);
+
+    const state = await fetch(`http://localhost:17333/accounts/${alice.address}/state`).then(r => r.json());
+    expect(state.confirmedBalance).toBe('10000000000n');
+    expect(state.confirmedNonce).toBe(0);
+    expect(state.availableBalance).toBe('8999000000n');
+    expect(state.nextNonce).toBe(1);
   });
 
   test('should reject invalid transaction', async () => {
@@ -179,6 +191,8 @@ describe('API Server Integration', () => {
       headers: { 'Content-Type': 'application/json' },
       body: serialize(tx.toObject())
     });
+
+    expect((await response.clone().json()).code).toBe('insufficient_balance');
 
     expect(response.status).toBe(400);
     const error = await response.json();

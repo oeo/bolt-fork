@@ -174,7 +174,7 @@ describe('validated network synchronization', () => {
   });
 
   it('reorganizes to a shorter chain with more validated work', async () => {
-    const config = { ...devnet, difficultyAdjustmentInterval: 2 };
+    const config = { ...devnet, difficultyAdjustmentInterval: 3 };
     const source = await createChain(config);
     const target = await createChain(config);
     const commonMiner = generateAddress(config.addressPrefix).address;

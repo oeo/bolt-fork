@@ -54,19 +54,19 @@ describe('Chain Configuration', () => {
 
     it('should have faster block time', () => {
       expect(testnet.targetBlockTime).toBe(60); // 1 minute
-      expect(testnet.difficultyAdjustmentInterval).toBe(100);
+      expect(testnet.difficultyAdjustmentInterval).toBe(60);
     });
 
-    it('should have reasonable initial difficulty for testing', () => {
-      expect(testnet.initialDifficulty).toBe(100000);
+    it('should use the calibrated bootstrap difficulty', () => {
+      expect(testnet.initialDifficulty).toBe(60_000_000);
     });
 
-    it('should have faster halving for testing', () => {
-      expect(testnet.halvingInterval).toBe(10000);
+    it('should preserve the production issuance schedule', () => {
+      expect(testnet.halvingInterval).toBe(210000);
     });
 
     it('should ship a mined genesis nonce', () => {
-      expect(testnet.genesisNonce).toBe(302282);
+      expect(testnet.genesisNonce).toBe(93448977);
     });
   });
 

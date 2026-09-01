@@ -34,38 +34,25 @@ export function calculateNewDifficulty(
   expectedTime: number,
   config: DifficultyConfig = DEFAULT_DIFFICULTY_CONFIG
 ): number {
-  // calculate adjustment ratio
-  let adjustmentRatio = expectedTime / actualTime;
-  
-  // apply max adjustment limits (4x increase or 1/4 decrease)
-  if (adjustmentRatio > config.maxAdjustmentFactor) {
-    adjustmentRatio = config.maxAdjustmentFactor;
-    logger.debug(`Difficulty adjustment capped at ${config.maxAdjustmentFactor}x increase`);
-  } else if (adjustmentRatio < 1 / config.maxAdjustmentFactor) {
-    adjustmentRatio = 1 / config.maxAdjustmentFactor;
-    logger.debug(`Difficulty adjustment capped at ${config.maxAdjustmentFactor}x decrease`);
+  if (![currentDifficulty, actualTime, expectedTime, config.maxAdjustmentFactor, config.minDifficulty]
+    .every(Number.isSafeInteger) || currentDifficulty < 1 || actualTime < 0 || expectedTime < 1 ||
+      config.maxAdjustmentFactor < 1 || config.minDifficulty < 1) {
+    throw new Error('Invalid difficulty adjustment input');
   }
-  
-  // calculate new difficulty
-  let newDifficulty = currentDifficulty * adjustmentRatio;
-  
-  // apply minimum difficulty
-  if (newDifficulty < config.minDifficulty) {
-    newDifficulty = config.minDifficulty;
-    logger.debug(`Difficulty floored at minimum: ${config.minDifficulty}`);
+  const factor = BigInt(config.maxAdjustmentFactor);
+  const expected = BigInt(expectedTime);
+  const minimumSpan = (expected + factor - 1n) / factor;
+  const maximumSpan = expected * factor;
+  const actual = BigInt(actualTime);
+  const clamped = actual < minimumSpan ? minimumSpan : actual > maximumSpan ? maximumSpan : actual;
+  let next = BigInt(currentDifficulty) * expected / clamped;
+  if (next < BigInt(config.minDifficulty)) next = BigInt(config.minDifficulty);
+  if (config.maxDifficulty !== undefined && next > BigInt(config.maxDifficulty)) {
+    next = BigInt(config.maxDifficulty);
   }
-  
-  // apply maximum difficulty if set
-  if (config.maxDifficulty && newDifficulty > config.maxDifficulty) {
-    newDifficulty = config.maxDifficulty;
-    logger.debug(`Difficulty capped at maximum: ${config.maxDifficulty}`);
-  }
-  
-  // round to integer
-  newDifficulty = Math.floor(newDifficulty);
-  
-  logger.info(`Difficulty adjusted: ${currentDifficulty} -> ${newDifficulty} (${adjustmentRatio.toFixed(2)}x)`);
-  
+  if (next > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Difficulty exceeds safe integer range');
+  const newDifficulty = Number(next);
+  logger.info(`Difficulty adjusted: ${currentDifficulty} -> ${newDifficulty}`);
   return newDifficulty;
 }
 
@@ -77,8 +64,7 @@ export function shouldAdjustDifficulty(
   config: DifficultyConfig = DEFAULT_DIFFICULTY_CONFIG
 ): boolean {
   // adjustment happens at interval boundaries (except genesis)
-  if (blockHeight === 0) return false;
-  return blockHeight % config.adjustmentInterval === 0;
+  return blockHeight > 1 && (blockHeight - 1) % config.adjustmentInterval === 0;
 }
 
 /**
@@ -163,12 +149,12 @@ export async function getDifficultyAdjustment(
   }
   
   // calculate actual vs expected time
-  const actualTime = getActualTime(firstBlock, lastBlock);
-  const expectedTime = getExpectedTime(config.adjustmentInterval - 1, config);
+  const actualTime = lastBlock.timestamp - firstBlock.timestamp;
+  const expectedTime = getExpectedTime(config.adjustmentInterval - 1, config) * 1000;
   
   // calculate new difficulty
   const newDifficulty = calculateNewDifficulty(
-    lastBlock.difficulty,
+    firstBlock.difficulty,
     actualTime,
     expectedTime,
     config
@@ -195,7 +181,8 @@ export function estimateTimeToAdjustment(
   averageBlockTime: number,
   config: DifficultyConfig = DEFAULT_DIFFICULTY_CONFIG
 ): number {
-  const nextAdjustmentHeight = Math.ceil((currentHeight + 1) / config.adjustmentInterval) * config.adjustmentInterval;
+  const completedEpochs = Math.floor(Math.max(0, currentHeight - 1) / config.adjustmentInterval);
+  const nextAdjustmentHeight = (completedEpochs + 1) * config.adjustmentInterval + 1;
   const blocksRemaining = nextAdjustmentHeight - currentHeight;
   
   return blocksRemaining * averageBlockTime;
@@ -255,7 +242,8 @@ export async function getDifficultyStats(
   config: DifficultyConfig = DEFAULT_DIFFICULTY_CONFIG
 ): Promise<DifficultyStats> {
   const averageBlockTime = getAverageBlockTime(recentBlocks);
-  const nextAdjustmentHeight = Math.ceil((currentHeight + 1) / config.adjustmentInterval) * config.adjustmentInterval;
+  const completedEpochs = Math.floor(Math.max(0, currentHeight - 1) / config.adjustmentInterval);
+  const nextAdjustmentHeight = (completedEpochs + 1) * config.adjustmentInterval + 1;
   const blocksUntilAdjustment = nextAdjustmentHeight - currentHeight;
   const estimatedTimeToAdjustment = estimateTimeToAdjustment(currentHeight, averageBlockTime, config);
   

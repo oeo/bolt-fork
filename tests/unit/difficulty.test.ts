@@ -123,9 +123,9 @@ describe('Difficulty Adjustment', () => {
   
   describe('shouldAdjustDifficulty', () => {
     it('should return true at adjustment interval', () => {
-      expect(shouldAdjustDifficulty(10, testConfig)).toBe(true);
-      expect(shouldAdjustDifficulty(20, testConfig)).toBe(true);
-      expect(shouldAdjustDifficulty(30, testConfig)).toBe(true);
+      expect(shouldAdjustDifficulty(11, testConfig)).toBe(true);
+      expect(shouldAdjustDifficulty(21, testConfig)).toBe(true);
+      expect(shouldAdjustDifficulty(31, testConfig)).toBe(true);
     });
     
     it('should return false between intervals', () => {
@@ -139,8 +139,8 @@ describe('Difficulty Adjustment', () => {
     });
     
     it('should use default config', () => {
-      expect(shouldAdjustDifficulty(2016)).toBe(true);
-      expect(shouldAdjustDifficulty(2015)).toBe(false);
+      expect(shouldAdjustDifficulty(2017)).toBe(true);
+      expect(shouldAdjustDifficulty(2016)).toBe(false);
     });
   });
   
@@ -241,26 +241,26 @@ describe('Difficulty Adjustment', () => {
     
     it('should calculate new difficulty at interval', async () => {
       const blocks: Record<number, BlockClass> = {
-        0: new BlockClass(0, 0, '', [], 50, 'test'),
-        9: new BlockClass(9, 540000, '', [], 100, 'test') // 540000ms = 540 seconds
+        1: new BlockClass(1, 0, '', [], 100, 'test'),
+        10: new BlockClass(10, 540000, '', [], 100, 'test')
       };
       
       const getBlock = async (height: number) => blocks[height] || null;
       
-      const difficulty = await getDifficultyAdjustment(10, getBlock, testConfig);
-      expect(difficulty).toBe(100); // no change needed (actual 540s = expected 540s)
+      const difficulty = await getDifficultyAdjustment(11, getBlock, testConfig);
+      expect(difficulty).toBe(100);
     });
     
     it('should increase difficulty for fast blocks', async () => {
       const blocks: Record<number, BlockClass> = {
-        0: new BlockClass(0, 0, '', [], 50, 'test'),
-        9: new BlockClass(9, 300000, '', [], 100, 'test') // 300000ms = 300 seconds = too fast
+        1: new BlockClass(1, 0, '', [], 100, 'test'),
+        10: new BlockClass(10, 300000, '', [], 100, 'test')
       };
       
       const getBlock = async (height: number) => blocks[height] || null;
       
-      const difficulty = await getDifficultyAdjustment(10, getBlock, testConfig);
-      expect(difficulty).toBe(180); // increased (540/300 = 1.8x)
+      const difficulty = await getDifficultyAdjustment(11, getBlock, testConfig);
+      expect(difficulty).toBe(180);
     });
   });
   
@@ -282,7 +282,7 @@ describe('Difficulty Adjustment', () => {
       const averageBlockTime = 60; // seconds
       
       const estimate = estimateTimeToAdjustment(currentHeight, averageBlockTime, testConfig);
-      expect(estimate).toBe(300); // 5 blocks * 60 seconds
+      expect(estimate).toBe(360);
     });
     
     it('should handle being at adjustment boundary', () => {
@@ -290,7 +290,7 @@ describe('Difficulty Adjustment', () => {
       const averageBlockTime = 60;
       
       const estimate = estimateTimeToAdjustment(currentHeight, averageBlockTime, testConfig);
-      expect(estimate).toBe(600); // 10 blocks to next adjustment
+      expect(estimate).toBe(60);
     });
   });
   

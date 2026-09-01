@@ -10,6 +10,8 @@ import { getMetricsService } from '../services/metrics';
 import { validateAddress } from '../crypto/address';
 import type { GetBlockTemplateService } from '../services/getblocktemplate';
 import { timingSafeEqual } from 'node:crypto';
+import { DEFAULT_MEMPOOL_LIMITS } from '../core/mempool';
+import { PROTOCOL_VERSION } from '../network/protocol';
 
 const logger = getLogger(__filename);
 const MAX_REQUEST_BODY_SIZE = 128 * 1024;
@@ -21,7 +23,8 @@ class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
-    readonly metricType: 'bad_request' | 'not_found' | 'method_not_allowed' | 'internal'
+    readonly metricType: 'bad_request' | 'not_found' | 'method_not_allowed' | 'internal',
+    readonly code: string = metricType
   ) {
     super(message);
   }
@@ -106,6 +109,7 @@ export class ApiServer {
       else if (endpoint === '/transactions/:hash') result = await this.getTransaction(path.slice('/transactions/'.length));
       else if (endpoint === '/accounts/:address/balance') result = await this.getBalance(path.split('/')[2]);
       else if (endpoint === '/accounts/:address/nonce') result = await this.getNonce(path.split('/')[2]);
+      else if (endpoint === '/accounts/:address/state') result = await this.getAccountState(path.split('/')[2]);
       else if (endpoint === '/mempool') result = await this.getMempoolInfo();
       else if (endpoint === '/mempool/transactions') result = this.getMempoolTransactions(url);
       else if (endpoint === '/mining/template') result = await this.handleMiningRequest(req, false);
@@ -119,7 +123,7 @@ export class ApiServer {
         : new ApiError(500, 'Internal server error', 'internal');
       if (apiError.status === 500) logger.error('API request failed', error);
       response = new Response(
-        JSON.stringify({ error: apiError.message }),
+        JSON.stringify({ error: apiError.message, code: apiError.code }),
         { status: apiError.status, headers: JSON_HEADERS }
       );
       getMetricsService().recordApiError(method, endpoint, apiError.metricType);
@@ -148,6 +152,7 @@ export class ApiServer {
     if (/^\/transactions\/[^/]+$/.test(path)) return '/transactions/:hash';
     if (/^\/accounts\/[^/]+\/balance$/.test(path)) return '/accounts/:address/balance';
     if (/^\/accounts\/[^/]+\/nonce$/.test(path)) return '/accounts/:address/nonce';
+    if (/^\/accounts\/[^/]+\/state$/.test(path)) return '/accounts/:address/state';
     return 'unmatched';
   }
 
@@ -325,9 +330,16 @@ export class ApiServer {
     const difficulty = await this.config.blockchain.getDifficulty();
     const cumulativeDifficulty = await this.config.blockchain.getCumulativeDifficulty();
     const chainConfig = this.config.blockchain.getChainConfig();
+    const genesis = await this.config.blockchain.getBlock(0);
 
     return {
       network: chainConfig.name,
+      chainId: chainConfig.chainId,
+      genesisHash: genesis?.hash,
+      addressPrefix: chainConfig.addressPrefix,
+      minFeePerByte: chainConfig.minFeePerByte,
+      maxTransactionSize: DEFAULT_MEMPOOL_LIMITS.maxTransactionSize,
+      protocolVersion: PROTOCOL_VERSION,
       height,
       latestBlockHash: latestBlock?.hash,
       difficulty,
@@ -347,7 +359,13 @@ export class ApiServer {
       await this.config.mempool.addTransaction(txData);
     } catch (error) {
       logger.debug('Transaction rejected by mempool', error);
-      throw new ApiError(400, 'Transaction rejected', 'bad_request');
+      const message = error instanceof Error ? error.message : String(error);
+      const code = message.includes('Invalid nonce') || message.includes('pending nonce') ? 'invalid_nonce'
+        : message.includes('Insufficient balance') ? 'insufficient_balance'
+        : message.includes('Fee too low') ? 'fee_too_low'
+        : message.includes('chain ID') ? 'wrong_chain'
+        : 'invalid_transaction';
+      throw new ApiError(400, 'Transaction rejected', 'bad_request', code);
     }
 
     return {
@@ -409,6 +427,11 @@ export class ApiServer {
       address,
       nonce
     };
+  }
+
+  private async getAccountState(address: string): Promise<any> {
+    this.assertAddress(address);
+    return { address, ...await this.config.mempool.getAccountState(address) };
   }
 
   /**

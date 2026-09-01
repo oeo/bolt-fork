@@ -35,6 +35,13 @@ export interface MempoolStats {
   avgFeePerByte: bigint;
 }
 
+export interface MempoolAccountState {
+  confirmedBalance: bigint;
+  confirmedNonce: number;
+  availableBalance: bigint;
+  nextNonce: number;
+}
+
 export const DEFAULT_MEMPOOL_LIMITS = {
   maxSize: 10000,
   maxSizeBytes: 100_000_000,
@@ -461,6 +468,27 @@ export class Mempool extends EventEmitter {
       }
     }
     return transactions;
+  }
+
+  async getAccountState(sender: string): Promise<MempoolAccountState> {
+    return this.withWriteLock(() => this.storage.withStateWrite(async () => {
+      const admission = await this.storage.getMempoolAdmissionState(sender);
+      const confirmedBalance = admission.accountState?.balance ?? 0n;
+      const confirmedNonce = admission.accountState?.nonce ?? 0;
+      let availableBalance = confirmedBalance;
+      let nextNonce = confirmedNonce;
+      const pending = [...this.entries.values()]
+        .filter(entry => entry.transaction.from === sender)
+        .sort((a, b) => a.transaction.nonce - b.transaction.nonce);
+      for (const { transaction } of pending) {
+        if (transaction.nonce !== nextNonce) break;
+        const cost = transaction.amount + transaction.fee;
+        if (availableBalance < cost) break;
+        availableBalance -= cost;
+        nextNonce++;
+      }
+      return { confirmedBalance, confirmedNonce, availableBalance, nextNonce };
+    }));
   }
   
   /**
