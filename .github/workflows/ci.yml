@@ -14,6 +14,9 @@ jobs:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - run: bun run typecheck:scripts
+      - run: bun run test:dormant
+      - run: bun audit --no-update
       - run: timeout 120 bun test --bail
 
   deployment:

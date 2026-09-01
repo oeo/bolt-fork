@@ -17,7 +17,6 @@ services:
       NODE_ROLE: ${NODE_ROLE:-full}
       NODE_HOST: ${NODE_HOST:-bolt-node}
       BOLT_NETWORK: ${BOLT_NETWORK:-testnet}
-      NETWORK_MODE: ${NETWORK_MODE:-tcp}
       TCP_PORT: ${TCP_PORT:-8333}
       API_PORT: 7333
       API_HOST: 0.0.0.0

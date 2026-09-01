@@ -47,14 +47,34 @@ node_eval() {
   docker compose --project-directory "$PROJECT_ROOT" exec --no-TTY "$service" bun -e "$script"
 }
 
-wait_for_mined_block() {
-  for _ in $(seq 1 60); do
-    local info
-    info="$(node_eval bolt-a 'const i=await fetch("http://127.0.0.1:7333/blockchain/info").then(r=>r.json()); console.log(`${i.height} ${i.latestBlockHash}`)' 2>/dev/null)" || true
-    [ "${info%% *}" -ge 1 ] 2>/dev/null && printf '%s' "$info" && return 0
-    sleep 1
-  done
-  return 1
+mine_blocks() {
+  local service="$1"
+  local payout="$2"
+  local count="$3"
+  node_eval "$service" "
+    for (let block = 0; block < $count; block++) {
+      const template = await fetch('http://127.0.0.1:7333/mining/template', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer bolt-bats-mining-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payoutAddress: '$payout' }),
+      }).then(r => r.json());
+      let nonce = 0;
+      for (;; nonce++) {
+        const preimage = [template.height, template.timestamp, template.previousHash,
+          template.merkleRootPlaceholder, template.stateRoot, template.difficulty, nonce].join(':');
+        const hash = new Bun.CryptoHasher('sha256').update(preimage).digest('hex');
+        if (BigInt('0x' + hash) <= BigInt('0x' + template.target)) break;
+      }
+      const result = await fetch('http://127.0.0.1:7333/mining/submit', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer bolt-bats-mining-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ templateId: template.templateId, nonce }),
+      }).then(r => r.json());
+      if (!result.valid) throw new Error(result.error);
+    }
+    const info = await fetch('http://127.0.0.1:7333/blockchain/info').then(r => r.json());
+    console.log(info.height + ' ' + info.latestBlockHash);
+  "
 }
 
 wait_for_block() {
@@ -133,7 +153,7 @@ wait_for_log() {
   wait_for_log bolt-a "announced tcp endpoint: 172.29.10.10:8333"
   wait_for_log bolt-b "announced tcp endpoint: 172.29.20.10:8333"
 
-  target="$(wait_for_mined_block)"
+  target="$(mine_blocks bolt-a 2fQ4Xu3dv16nKNxZfBKkHfC759K79xRpsYC 1)"
   target_height="${target%% *}"
   target_hash="${target#* }"
   [ "$target_height" -ge 1 ]
@@ -183,7 +203,7 @@ wait_for_log() {
 
   run docker compose --project-directory "$PROJECT_ROOT" stop bolt-a
   [ "$status" -eq 0 ]
-  run docker compose --project-directory "$PROJECT_ROOT" run --rm --no-deps bolt-a bun run storage backup /data /backups/snapshot
+  run docker compose --project-directory "$PROJECT_ROOT" run --rm --no-deps --user root bolt-a bun run storage backup /data /backups/snapshot
   [ "$status" -eq 0 ]
   run docker compose --project-directory "$PROJECT_ROOT" --profile tools run --rm --no-deps bolt-recovery bun run storage restore /backups/snapshot /restore/data
   [ "$status" -eq 0 ]
@@ -194,15 +214,17 @@ wait_for_log() {
   [ "$status" -eq 0 ]
   route_side bolt-a 172.29.20.0/24 172.29.10.2
   wait_for_api bolt-a
-  run docker compose --project-directory "$PROJECT_ROOT" stop bolt-b router
+  run docker compose --project-directory "$PROJECT_ROOT" stop router
   [ "$status" -eq 0 ]
-  run docker compose --project-directory "$PROJECT_ROOT" start bolt-b
-  [ "$status" -eq 0 ]
-  route_side bolt-b 172.29.10.0/24 172.29.20.2
-  wait_for_api bolt-b
   run docker compose --project-directory "$PROJECT_ROOT" exec --no-TTY bolt-a sh -c \
     "timeout 3 bun -e 'await Bun.connect({hostname:\"172.29.20.10\",port:8333,socket:{data(){}}})'"
   [ "$status" -ne 0 ]
+
+  branch_a="$(mine_blocks bolt-a 2fQ4Xu3dv16nKNxZfBKkHfC759K79xRpsYC 2)"
+  branch_b="$(mine_blocks bolt-b 2fWMqcFysx5wtV6KZDZ71a1jZgd2tRd3CcX 3)"
+  branch_b_height="${branch_b%% *}"
+  branch_b_hash="${branch_b#* }"
+  [ "${branch_a%% *}" -lt "$branch_b_height" ]
 
   run docker compose --project-directory "$PROJECT_ROOT" start router
   [ "$status" -eq 0 ]
@@ -216,4 +238,6 @@ wait_for_log() {
   wait_for_api bolt-b
   wait_for_peer bolt-a
   wait_for_peer bolt-b
+  wait_for_block bolt-a "$branch_b_height" "$branch_b_hash"
+  wait_for_block bolt-b "$branch_b_height" "$branch_b_hash"
 }

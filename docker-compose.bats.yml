@@ -4,9 +4,10 @@ x-bolt-environment: &bolt-environment
   BOLT_NETWORK: devnet
   DATA_DIR: /data
   IPFS_BOOTSTRAP_ENABLED: "false"
+  MINING_API_ENABLED: "true"
+  MINING_API_TOKEN: bolt-bats-mining-token
   METRICS_HOST: 0.0.0.0
   METRICS_PORT: 7336
-  NETWORK_MODE: tcp
   STORAGE_TYPE: lmdb
   TCP_PORT: 8333
 
@@ -33,7 +34,7 @@ services:
     environment:
       <<: *bolt-environment
       MINER_ADDRESS: 2fQ4Xu3dv16nKNxZfBKkHfC759K79xRpsYC
-      MINING_ENABLED: "${BOLT_A_MINING_ENABLED:-true}"
+      MINING_ENABLED: "${BOLT_A_MINING_ENABLED:-false}"
       MINING_INTERVAL: 20000
       NODE_HOST: 172.29.10.10
       NODE_ROLE: miner
@@ -68,6 +69,7 @@ services:
       context: .
       dockerfile: Dockerfile
     profiles: ["tools"]
+    user: root
     environment:
       BOLT_NETWORK: devnet
     volumes:

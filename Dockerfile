@@ -11,9 +11,11 @@ RUN bun install --frozen-lockfile --production
 COPY src ./src
 COPY scripts/storage.ts ./scripts/storage.ts
 
-RUN mkdir -p /data/lmdb
+RUN mkdir -p /data/lmdb && chown -R bun:bun /app /data
 
 # expose ports
 EXPOSE 7333 7336 8333
+
+USER bun
 
 CMD ["bun", "run", "src/index.ts"]
