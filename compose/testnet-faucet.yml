@@ -1,0 +1,28 @@
+services:
+  testnet-faucet:
+    profiles: ["testnet-tools"]
+    build:
+      context: .
+      dockerfile: apps/testnet-faucet/Dockerfile
+    environment:
+      BOLT_API: http://bolt:7333
+      TESTNET_GENESIS_HASH: ${TESTNET_GENESIS_HASH}
+      FAUCET_KEY_FILE: /run/secrets/testnet-faucet.key
+      FAUCET_IP_SECRET: ${FAUCET_IP_SECRET}
+      FAUCET_DATABASE: /data/faucet.sqlite
+      FAUCET_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:${FAUCET_PORT:-7340}:7340"
+    volumes:
+      - faucet-data:/data
+      - ${FAUCET_KEY_FILE_HOST:-./secrets/testnet-faucet.key}:/run/secrets/testnet-faucet.key:ro
+    networks:
+      - bolt-network
+    restart: unless-stopped
+
+volumes:
+  faucet-data:
+
+networks:
+  bolt-network:
+    name: bolt-network

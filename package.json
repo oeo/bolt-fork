@@ -10,6 +10,7 @@
     "metrics": "bun run scripts/metrics-server.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:scripts": "tsc --noEmit --target ES2022 --module ES2022 --moduleResolution node --types bun-types --skipLibCheck --esModuleInterop scripts/*.ts",
+    "typecheck:tools": "tsc -p tsconfig.tools.json",
     "test:dormant": "bun -e 'for (const p of [\"tests/**/*.disabled\",\"tests/**/*.skip\"]) for await (const f of new Bun.Glob(p).scan(\".\")) { console.error(f); process.exitCode = 1; }'",
     "test": "bun test",
     "test:unit": "bun test tests/unit",
@@ -17,7 +18,10 @@
     "test:bats": "bats tests/bats/*.bats",
     "test:metrics": "bun test tests/unit/metrics.test.ts",
     "test:gbt": "bun test tests/unit/getblocktemplate.test.ts",
-    "storage": "bun run scripts/storage.ts"
+    "storage": "bun run scripts/storage.ts",
+    "reset:testnet": "bun run scripts/reset-testnet.ts",
+    "wallet": "bun run examples/testnet-wallet/index.ts",
+    "faucet": "bun run apps/testnet-faucet/server.ts"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",

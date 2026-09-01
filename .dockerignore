@@ -5,3 +5,6 @@
 !src/**
 !scripts/
 !scripts/storage.ts
+!apps/
+!apps/testnet-faucet/
+!apps/testnet-faucet/**
