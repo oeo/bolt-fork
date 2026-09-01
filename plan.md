@@ -16,12 +16,17 @@ implemented:
 - [x] obsolete scripts and dormant test files removed; ci checks scripts, dormant files, and dependencies
 - [x] node container runs unprivileged with an allowlist build context
 - [x] unsupported ipfs/hybrid network modes removed
+- [x] testnet uses non-genesis 60-block bigint difficulty epochs and a newly mined 60M-difficulty genesis
+- [x] public API exposes chain identity, fee policy, stable rejection codes, and mempool-aware account state
+- [x] reference testnet wallet creates encrypted keystores, signs locally, and rejects wrong-chain endpoints
+- [x] single-worker SQLite faucet persists prepared transactions and bounds cooldowns, queue, and daily payouts
+- [x] explicit testnet reset clears chain state while preserving node identity
 
 ## open findings
 
 critical:
 
-- [ ] establish launch package: checkpoint mechanism + policy, genesis/difficulty coupling, launch-seq go/no-go (08-27 c3). do NOT bake difficulty numbers before a live network exists to measure.
+- [ ] benchmark the selected external miner on launch hardware; reset and re-mine genesis if the 60M candidate difficulty misses the 30-second bootstrap target materially
 
 high:
 

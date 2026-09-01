@@ -96,7 +96,7 @@ Economic parameters vary by network:
 
 ### testnet
 - **Initial block reward**: 50 BOLT
-- **Halving interval**: Every 10,000 blocks (faster for testing)
+- **Halving interval**: Every 210,000 blocks
 - **Maximum supply**: 21,000,000 BOLT
 - **Block time target**: 1 minute (60 seconds)
 
@@ -117,3 +117,5 @@ BOLT_NETWORK=devnet   # Local development
 ```
 
 genesis issues no currency. block reward accounting excludes genesis and the target height when calculating prior issuance. rewards stop at zero or maximum supply.
+
+pre-alpha testnet coins have no redemption, allocation, or mainnet claim. a testnet reset does not migrate balances or transaction history.

@@ -28,6 +28,7 @@ run type checking:
 ```bash
 bun run typecheck
 bun run typecheck:scripts
+bun run typecheck:tools
 bun run test:dormant
 ```
 
@@ -48,7 +49,7 @@ bun audit
 ci performs these gates:
 
 1. install dependencies from the frozen lockfile.
-2. typecheck source and maintained scripts.
+2. typecheck source, maintained scripts, wallet, and faucet.
 3. reject dormant `.disabled` and `.skip` files.
 4. audit dependencies.
 5. run bun tests with a timeout and bail on first failure.

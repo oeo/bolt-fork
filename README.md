@@ -62,6 +62,7 @@ bun run test:bats
 - `GET /transactions/:hash`
 - `GET /accounts/:address/balance`
 - `GET /accounts/:address/nonce`
+- `GET /accounts/:address/state`
 - `GET /mempool`
 - `GET /mempool/transactions`
 - `GET /health`
@@ -114,6 +115,21 @@ bun run storage restore ./backup ./restored-data
 ```
 
 restore requires an empty destination and verifies staged data before replacing it.
+
+## testnet tools
+
+the reference wallet signs locally and verifies testnet chain identity before use:
+
+```bash
+bun run wallet create --api https://testnet.example --keystore ~/.bolt/testnet-wallet.json
+bun run wallet show --api https://testnet.example --keystore ~/.bolt/testnet-wallet.json
+```
+
+the faucet is a separate single-worker service backed by SQLite. it requires a private node API, expected genesis hash, mounted hot-key file, persistent database, and public TLS proxy. testnet chain state can be cleared while preserving node identity only while the node is stopped:
+
+```bash
+bun run reset:testnet ./data --confirm-reset-testnet
+```
 
 ## license
 

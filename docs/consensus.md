@@ -36,6 +36,10 @@ the root recursively authenticates ordered state evolution. it does not provide 
 
 block work is calculated from the proof-of-work target. cumulative work is the sum of exact block work, not the sum of displayed difficulty values. equal-work forks keep the current canonical chain.
 
+## difficulty adjustment
+
+difficulty adjustment uses integer arithmetic. non-genesis epochs contain the configured number of blocks. for testnet, blocks 1 through 60 form the first epoch and block 61 receives the first adjusted difficulty. adjustment measures the 59 timestamp gaps, uses the first block's difficulty as the base, and clamps elapsed time to a 4x increase or 1/4 decrease. there is no timeout minimum-difficulty exception.
+
 ## limits
 
 total UTF-8 serialized consensus block size must not exceed configured `maxBlockSize`. `miner` metadata is excluded. `maxTransactionSize` and `minFeePerByte` govern mempool admission and reorganization restoration, not block validity.
@@ -44,7 +48,7 @@ total UTF-8 serialized consensus block size must not exceed configured `maxBlock
 
 genesis uses fixed millisecond timestamps, configured nonce and difficulty, empty transaction merkle root, and empty account state root. every shipped nonce satisfies proof of work at its current configured difficulty. startup validates configured genesis before storage writes and rejects stored genesis that differs from configuration. persisted stores carry storage version and chain id metadata. nodes reject data from older schemas or another chain.
 
-mainnet startup is disabled until launch difficulty is selected. current mainnet difficulty is not a launch decision.
+mainnet startup is disabled until launch difficulty is selected. current mainnet difficulty is not a launch decision. pre-alpha testnet uses a calibrated 60,000,000 bootstrap difficulty and a fresh genesis nonce; public canary measurement may require another reset before identity freeze.
 
 ## issuance
 

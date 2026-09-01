@@ -120,6 +120,37 @@ Unit tests cover isolated behavior. Integration tests cover component boundaries
 bun run scripts/generate-wallet.ts
 ```
 
+## reference testnet wallet
+
+the testnet wallet verifies chain ID, genesis hash, and address prefix; stores the mnemonic under PBKDF2-SHA256 and AES-256-GCM; and signs transactions locally.
+
+```bash
+bun run wallet create --api http://127.0.0.1:7333 --keystore ~/.bolt/testnet-wallet.json
+bun run wallet show --api http://127.0.0.1:7333 --keystore ~/.bolt/testnet-wallet.json
+bun run wallet send --api http://127.0.0.1:7333 --keystore ~/.bolt/testnet-wallet.json --to ADDRESS --amount 1.0
+bun run wallet status --api http://127.0.0.1:7333 --hash HASH
+```
+
+remote APIs must use HTTPS. the wallet is a testnet reference, not a production custody product.
+
+## testnet faucet
+
+the faucet runs as one process with one SQLite writer and durable prepared transactions. configure `BOLT_API`, `TESTNET_GENESIS_HASH`, `FAUCET_KEY_FILE`, and `FAUCET_IP_SECRET`; keep the node API private and terminate public TLS at a reverse proxy.
+
+```bash
+bun run faucet
+```
+
+the hot key file must be owner-only. refill uses an offline transfer to the faucet address; no remote refill endpoint exists.
+
+## testnet reset
+
+stop the node before reset. this command deletes LMDB chain state and preserves `.identity`. Kubo identity lives in its separate volume and is not changed.
+
+```bash
+bun run reset:testnet ./data --confirm-reset-testnet
+```
+
 ## resources
 
 - [bun documentation](https://bun.sh/docs)

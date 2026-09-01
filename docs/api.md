@@ -38,7 +38,7 @@ responses do not include wildcard cors headers. pagination routes return `400` f
 | method | path | behavior |
 |---|---|---|
 | `GET` | `/health` | returns `status: "ok"` and current millisecond timestamp |
-| `GET` | `/blockchain/info` | returns network, height, tip hash, difficulty, cumulative difficulty, timing configuration, formatted maximum supply, and formatted current reward |
+| `GET` | `/blockchain/info` | returns chain identity, network policy, height, tip hash, difficulty, cumulative difficulty, timing configuration, formatted maximum supply, and formatted current reward |
 | `GET` | `/blocks` | returns blocks newest first with `total`, `limit`, `offset`, and `count` |
 | `GET` | `/blocks/:hashOrHeight` | reads a non-negative decimal height or 64-character lowercase hexadecimal hash |
 
@@ -50,10 +50,15 @@ responses do not include wildcard cors headers. pagination routes return `400` f
 | `GET` | `/transactions/:hash` | checks the mempool first, then one canonical storage snapshot; returns pending or confirmed status |
 | `GET` | `/accounts/:address/balance` | validates the active network prefix and returns raw and formatted balance |
 | `GET` | `/accounts/:address/nonce` | validates the active network prefix and returns account nonce |
+| `GET` | `/accounts/:address/state` | returns confirmed balance/nonce and mempool-aware available balance/next nonce from serialized admission state |
 | `GET` | `/mempool` | returns size, bytes, fee-per-byte values, and formatted total fees |
 | `GET` | `/mempool/transactions` | returns a bounded page with `total`, `limit`, `offset`, and `count` |
 
 confirmed transaction responses calculate confirmations from the block location and canonical height read by the same storage operation. transaction submission does not report network broadcast state.
+
+`/blockchain/info` includes `chainId`, `genesisHash`, `addressPrefix`, `minFeePerByte`, `maxTransactionSize`, and `protocolVersion`. clients must verify these fields before signing.
+
+transaction rejection responses include stable `code` values: `invalid_nonce`, `insufficient_balance`, `fee_too_low`, `wrong_chain`, or `invalid_transaction`.
 
 ### mining
 
