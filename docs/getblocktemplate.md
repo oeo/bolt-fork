@@ -46,11 +46,11 @@ sha256   = 648b51f2920ff55c2b45c15c503958b03cf27baaebed6e45c5b2747cade6349d
 
 sha-256 is the only supported consensus algorithm. another algorithm requires an explicit network or hard-fork rule and a new template version.
 
-## API
+## api
 
 mining routes are disabled by default:
 
 - `POST /mining/template`
 - `POST /mining/submit`
 
-enabling requires non-empty `MINING_API_TOKEN`. requests use `Authorization: Bearer <token>`. comparison hashes both values and uses constant-time byte comparison. server bounds body size, active mining requests, submission rate, job count, identifiers, and numeric fields.
+enabling requires `MINING_API_ENABLED=true` and non-empty `MINING_API_TOKEN`. requests use `Authorization: Bearer <token>`. comparison hashes both values and uses constant-time byte comparison. server bounds body size, active mining requests, submission rate, job count, identifiers, and numeric fields.

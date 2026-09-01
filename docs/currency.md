@@ -1,26 +1,26 @@
 # bolt currency system
 
-## Currency units
+## currency units
 
 bolt uses a two-tier denomination system:
 
 - **BOLT** - The main currency unit (like BTC in Bitcoin)
 - **watt** - The smallest indivisible unit (like satoshi in Bitcoin)
 
-### Conversion
+### conversion
 
 - 1 BOLT = 100,000,000 watts (10^8)
 - 1 watt = 0.00000001 BOLT
 - Precision: 8 decimal places
 
-### Why "watts"?
+### why "watts"?
 
 The term "watts" was chosen to:
 1. Differentiate bolt from Bitcoin (which uses satoshis)
 2. Fit the electrical/energy theme (bolt = lightning, watts = electrical power)
 3. Create a memorable and unique identity for the currency
 
-## Internal representation
+## internal representation
 
 All amounts are stored internally as `bigint` values in watts:
 
@@ -35,7 +35,7 @@ const halfBolt = 50_000_000n; // watts
 const fee = 1000n;
 ```
 
-## Configuration
+## configuration
 
 Currency fundamentals are defined as protocol constants in `src/constants.ts`:
 
@@ -57,7 +57,7 @@ export const mainnet: ChainConfig = {
 };
 ```
 
-## Utility functions
+## utility functions
 
 The `src/utils/currency.ts` module provides conversion utilities:
 
@@ -77,36 +77,36 @@ parseAmount("50 BOLT") // 5000000000n
 parseAmount("1000 watts") // 1000n
 ```
 
-## Transaction fees
+## transaction fees
 
 - Minimum fee: 1 watt per byte
 - Fees are calculated in watts
 - Example: 250-byte transaction = minimum 250 watts
 
-## Economic parameters
+## economic parameters
 
 Economic parameters vary by network:
 
-### Mainnet
+### mainnet
 - **Initial block reward**: 50 BOLT (5,000,000,000 watts)
 - **Halving interval**: Every 210,000 blocks
 - **Maximum supply**: 21,000,000 BOLT (2.1 quadrillion watts)
 - **Block time target**: 5 minutes (300 seconds)
 - **startup**: disabled until launch difficulty is selected
 
-### Testnet
+### testnet
 - **Initial block reward**: 50 BOLT
 - **Halving interval**: Every 10,000 blocks (faster for testing)
 - **Maximum supply**: 21,000,000 BOLT
 - **Block time target**: 1 minute (60 seconds)
 
-### Devnet
+### devnet
 - **Initial block reward**: 1000 BOLT (for easy testing)
 - **Halving interval**: Every 1,000 blocks
 - **Maximum supply**: 21,000,000 BOLT
 - **Block time target**: 10 seconds
 
-## Network selection
+## network selection
 
 Select the network via the `BOLT_NETWORK` environment variable:
 

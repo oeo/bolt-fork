@@ -48,7 +48,7 @@ The compose stack starts bolt, Kubo, and monitoring services.
 compose publishes api, metrics, Prometheus, and Grafana to host loopback. tcp p2p and ipfs swarm ports publish on all host interfaces for peer connectivity. public api routes remain unauthenticated, and Grafana uses default `admin` credentials unless configured otherwise. Kubo rpc remains inside the docker network. set `NODE_HOST` to a routable address before connecting nodes across hosts.
 
 ```bash
-docker compose up -d
+docker compose up -d --wait
 docker compose logs -f bolt
 docker compose down
 ```

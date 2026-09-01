@@ -2,7 +2,7 @@
 
 status reviewed 2026-08-31 after two adversarial passes. current work follows the minimal stability path.
 
-## completed release gates
+## completed stability gates
 
 implemented:
 

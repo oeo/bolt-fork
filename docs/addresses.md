@@ -1,6 +1,6 @@
 # bolt addresses
 
-## Address format
+## address format
 
 bolt uses Bitcoin-style base58-encoded addresses with the following structure:
 - 20-byte public key hash (RIPEMD160 of SHA256)
@@ -9,11 +9,11 @@ bolt uses Bitcoin-style base58-encoded addresses with the following structure:
 
 Example address: `1KUwSMN3Nijxr18keUBP1wJa11JFiHUt7D`
 
-## HD key derivation
+## hd key derivation
 
 bolt uses hierarchical deterministic (HD) key generation following BIP44 standard with a custom coin type.
 
-### Derivation path
+### derivation path
 
 ```
 m / 44' / 1057' / account' / change / index
@@ -25,18 +25,18 @@ m / 44' / 1057' / account' / change / index
 - `change` - 0 for external addresses, 1 for internal (change) addresses
 - `index` - Address index within the account, starting from 0
 
-### Example paths
+### example paths
 
 - First address: `m/44'/1057'/0'/0/0`
 - Second address: `m/44'/1057'/0'/0/1`
 - First change address: `m/44'/1057'/0'/1/0`
 - Second account, first address: `m/44'/1057'/1'/0/0`
 
-### Mnemonic generation
+### mnemonic generation
 
 bolt supports both 12-word (128-bit) and 24-word (256-bit) BIP39 mnemonic phrases for seed generation.
 
-## Address generation
+## address generation
 
 Addresses can be generated using the `generateAddress()` function from `src/crypto/address.ts`:
 
@@ -49,7 +49,7 @@ const { address, privateKey, publicKey } = generateAddress();
 
 For HD key generation with mnemonic phrases, use the HD key functions in the same module.
 
-## Technical details
+## technical details
 
 - **Elliptic curve**: secp256k1 (same as Bitcoin/Ethereum)
 - **wallet address key format**: uncompressed (65 bytes)
@@ -57,7 +57,7 @@ For HD key generation with mnemonic phrases, use the HD key functions in the sam
 - **Address encoding**: Base58check
 - **Checksum**: First 4 bytes of double SHA256
 
-## Security considerations
+## security considerations
 
 - Never share your mnemonic phrase or private keys
 - The 160-bit address space provides sufficient collision resistance

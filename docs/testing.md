@@ -27,6 +27,8 @@ run type checking:
 
 ```bash
 bun run typecheck
+bun run typecheck:scripts
+bun run test:dormant
 ```
 
 run deployment smoke tests:
@@ -46,8 +48,10 @@ bun audit
 ci performs these gates:
 
 1. install dependencies from the frozen lockfile.
-2. run type checking.
-3. run bun tests with a timeout and bail on first failure.
-4. run a ten-minute-bounded bats deployment test.
+2. typecheck source and maintained scripts.
+3. reject dormant `.disabled` and `.skip` files.
+4. audit dependencies.
+5. run bun tests with a timeout and bail on first failure.
+6. run a ten-minute-bounded bats deployment test.
 
 only active suites contribute to these gates. report test totals, coverage, or performance only from current generated output.

@@ -4,7 +4,7 @@
 
 ## status
 
-bolt is not ready for production use. see [plan.md](plan.md) for completed release-gate remediation and future scope.
+bolt is not ready for production use. see [plan.md](plan.md) for completed stability work and remaining launch gates.
 
 ## currency
 
@@ -29,7 +29,7 @@ the compose stack works without `.env`. mining and mining api default to disable
 
 ```bash
 bun install
-docker compose up -d
+docker compose up -d --wait
 docker compose logs -f
 docker compose down
 ```

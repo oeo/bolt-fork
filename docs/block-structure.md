@@ -81,7 +81,7 @@ transactions from another chain are invalid. transfer `from` and `to` addresses 
 - `previousHash` must match previous block hash
 - timestamp must be strictly greater than parent block timestamp
 - timestamp must be greater than median of past 11 blocks
-- timestamp cannot be more than 2 hours in future
+- timestamp cannot exceed the active network's configured future-time drift
 - coinbase value must equal block reward + sum of transaction fees
 - coinbase timestamp must equal block timestamp
 - transfer timestamps must not exceed block timestamp
