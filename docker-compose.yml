@@ -18,6 +18,8 @@ services:
       NODE_HOST: ${NODE_HOST:-bolt-node}
       BOLT_NETWORK: ${BOLT_NETWORK:-testnet}
       TCP_PORT: ${TCP_PORT:-8333}
+      STATIC_PEERS: ${STATIC_PEERS:-}
+      P2P_ADVERTISE: "false"
       API_PORT: 7333
       API_HOST: 0.0.0.0
       METRICS_PORT: 7336
@@ -33,7 +35,6 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_DIR: /app/logs
     ports:
-      - "${TCP_PORT:-8333}:${TCP_PORT:-8333}"
       - "127.0.0.1:${API_PORT:-7333}:7333"
       - "127.0.0.1:${METRICS_PORT:-7336}:7336"
     volumes:

@@ -1,0 +1,12 @@
+services:
+  bolt:
+    environment:
+      NODE_HOST: ${NODE_HOST:?set NODE_HOST to a routable seed address}
+      P2P_ADVERTISE: "true"
+    ports:
+      - "${TCP_PORT:-8333}:${TCP_PORT:-8333}/tcp"
+
+  ipfs:
+    ports:
+      - "${IPFS_SWARM_PORT:-4001}:4001/tcp"
+      - "${IPFS_SWARM_PORT:-4001}:4001/udp"

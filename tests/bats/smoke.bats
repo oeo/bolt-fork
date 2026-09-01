@@ -109,6 +109,16 @@ wait_for_peer() {
   return 1
 }
 
+wait_for_peer_direction() {
+  local service="$1"
+  local direction="$2"
+  for _ in $(seq 1 60); do
+    node_eval "$service" "const t=await fetch('http://127.0.0.1:7336/metrics').then(r=>r.text()); const m=t.match(/^bolt_network_peers_${direction} (\\d+)$/m); if(!m||Number(m[1])<1) process.exit(1)" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
 wait_for_log() {
   local service="$1"
   local text="$2"
@@ -151,7 +161,10 @@ wait_for_log() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"via 172.29.10.2"* ]]
   wait_for_log bolt-a "announced tcp endpoint: 172.29.10.10:8333"
-  wait_for_log bolt-b "announced tcp endpoint: 172.29.20.10:8333"
+  run sh -c "! docker compose --project-directory '$PROJECT_ROOT' logs bolt-b | grep -F 'announced tcp endpoint:'"
+  [ "$status" -eq 0 ]
+  wait_for_peer_direction bolt-a inbound
+  wait_for_peer_direction bolt-b outbound
 
   target="$(mine_blocks bolt-a 2fQ4Xu3dv16nKNxZfBKkHfC759K79xRpsYC 1)"
   target_height="${target%% *}"

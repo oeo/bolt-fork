@@ -9,8 +9,6 @@ services:
       - source: enable-ipfs-pubsub
         target: /container-init.d/001-enable-pubsub.sh
         mode: 0555
-    ports:
-      - "${IPFS_SWARM_PORT:-4001}:4001"
     volumes:
       - ipfs-data:/data/ipfs
     environment:
