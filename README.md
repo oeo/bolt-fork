@@ -36,7 +36,7 @@ docker compose down
 
 ## multi-node deployment test
 
-the bats suite places two bolt nodes and their Kubo daemons on separate Docker networks joined only by a pinned router fixture. it verifies routed discovery, block synchronization, pending transaction relay, router interruption and recovery, and state persistence across restart.
+the bats suite places two bolt nodes and their Kubo daemons on separate Docker networks joined only by a pinned router fixture. it mines through the external getblocktemplate api, verifies routed discovery, block synchronization, pending transaction relay, competing partition branches, higher-work convergence, router interruption and recovery, and state persistence across restart.
 
 ```bash
 bun run test:bats
@@ -84,9 +84,12 @@ METRICS_PORT=7336
 BOLT_NETWORK=devnet
 IPFS_API=http://localhost:5001
 IPFS_BOOTSTRAP_ENABLED=true
+STATIC_PEERS=
 ```
 
 `BOLT_NETWORK` accepts `mainnet`, `testnet`, or `devnet`. mainnet startup is disabled until launch difficulty is selected.
+
+`STATIC_PEERS` accepts comma-separated `nodeId@host:port` entries. static peers are identity-bound during the signed handshake and supplement ipfs discovery.
 
 ## testing
 

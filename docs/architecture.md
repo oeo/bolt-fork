@@ -21,7 +21,7 @@ block acceptance validates:
 - transaction execution and resulting account state root
 - account balances and nonces
 
-canonical storage tracks cumulative work. competing branches can trigger a reorganization only after candidate blocks, state transitions, difficulty, timestamps, and cumulative work are validated. network synchronization validates candidate headers and cumulative work before requesting block bodies.
+canonical storage tracks cumulative work. competing branches can trigger a reorganization only after candidate blocks, state transitions, difficulty, timestamps, and cumulative work are validated. headers-first network synchronization is the only owner of remote branch acquisition. direct competing block submissions are rejected as stale work.
 
 ## networking
 
@@ -84,7 +84,7 @@ bun runs typescript directly. tcp uses `Bun.listen` and `Bun.connect`. hashing u
 ## current network limits
 
 - block body download is sequential.
-- candidate headers, reorganization depth, requested transactions, and candidate body bytes have fixed policy bounds.
+- candidate headers, requested transactions, and candidate body bytes have fixed policy bounds. reorganization depth has no fixed block-count limit while the complete candidate must fit the body-byte bound.
 - synchronization evaluates one peer candidate at a time.
 - checkpoints and finalized blocks are not implemented.
 

@@ -31,6 +31,8 @@ validated announcements enter a short-lived candidate table. repeat announcement
 
 these limits preserve bounded and rotating discovery capacity. they do not prevent sybil identities. advertised height and tip hash do not determine chain selection.
 
+configured static peers use `nodeId@host:port` and dial directly after the tcp listener starts. the signed handshake must authenticate the configured node id. static peers supplement ipfs discovery; they do not bypass transport authentication.
+
 ## tcp protocol
 
 current protocol version is `6`.
@@ -68,7 +70,7 @@ peers answer with a signed `verack` that binds both identities, both nonces, and
 7. canonical extensions pass through `Blockchain.addBlock()`. forks remain buffered until the complete validated branch passes `Blockchain.reorganize()`.
 8. mempool synchronization starts after chain convergence.
 
-network policy accepts at most 4,000 candidate headers across active peer requests, a reorganization depth of 100 blocks, and candidate body bytes totaling 16 configured maximum blocks. transaction body requests allow 500 globally and 50 per peer session. body download is sequential. unsolicited blocks are ignored.
+network policy accepts at most 4,000 candidate headers across active peer requests and candidate body bytes totaling 16 configured maximum blocks. transaction body requests allow 500 globally and 50 per peer session. body download is sequential. reorganization has no fixed block-count limit, but the complete candidate must fit the byte bound. unsolicited blocks are ignored.
 
 ## inventory and transactions
 
@@ -94,7 +96,7 @@ authenticated dispatch charges one per-session token bucket before storage or va
 
 main `docker-compose.yml` joins bolt and ipfs services to `bolt-network`. tcp port `8333` is published for peer traffic. api and metrics ports bind to host loopback. the default `NODE_HOST` is the docker hostname; cross-host deployments must set it to a routable address.
 
-`docker-compose.bats.yml` gives each bolt node a separate Kubo daemon and Docker network. only a pinned router fixture joins both networks. tests install routes through that fixture, peer Kubo by routed IP address, verify routable endpoint announcements, and disable public bootstrap. tcp port `8333` remains unpublished.
+`docker-compose.bats.yml` gives each bolt node a separate Kubo daemon and Docker network. only a pinned router fixture joins both networks. tests install routes through that fixture, peer Kubo by routed IP address, mine through authenticated getblocktemplate routes, create competing partition branches, verify higher-work convergence, and disable public bootstrap. tcp port `8333` remains unpublished.
 
 this topology verifies routed layer-3 discovery and data exchange on one Docker host. it does not test outbound NAT behavior or verify inbound NAT traversal, public firewall policy, internet routing, or cross-host deployment. a two-host deployment remains a release gate and requires operator-provided reachable hosts and routable `NODE_HOST` values.
 
@@ -102,8 +104,8 @@ this topology verifies routed layer-3 discovery and data exchange on one Docker 
 
 network startup reads these environment variables:
 
-- `NETWORK_MODE`, defaults to `tcp`. legacy `ipfs` mode falls back to tcp mode.
 - `TCP_PORT`, tcp listen and announcement port.
+- `STATIC_PEERS`, comma-separated `nodeId@host:port` identity-bound seed endpoints.
 - `IPFS_API`, ipfs rpc endpoint.
 - `IPFS_BOOTSTRAP_ENABLED`, defaults to `true`. this controls bolt's explicit fallback connections and does not modify Kubo's bootstrap list. isolated deployments must disable both.
 - `NODE_HOST`, host placed in tcp peer announcements.

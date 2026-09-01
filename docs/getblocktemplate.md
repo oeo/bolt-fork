@@ -27,6 +27,25 @@ first request with new `longpollId` returns current template. repeated unchanged
 
 submission accepts bounded UUID template ID, safe non-negative nonce, and optional exact template timestamp. service reconstructs prepared header, validates proof of work, and calls `Blockchain.addBlock()`.
 
+## external hashing
+
+template `version: 1` uses sha-256 over this utf-8 string with no prefix or newline:
+
+```text
+height:timestamp:previousHash:merkleRoot:stateRoot:difficulty:nonce
+```
+
+decimal integers contain no padding. hashes are 64-character lowercase hexadecimal strings. nonce range is `0` through `9007199254740991`. a solution is valid when the unsigned 256-bit block hash is less than or equal to template `target`.
+
+fixed vector:
+
+```text
+preimage = 1:1700000001001:0000000000000000000000000000000000000000000000000000000000000000:1111111111111111111111111111111111111111111111111111111111111111:2222222222222222222222222222222222222222222222222222222222222222:100000:42
+sha256   = 648b51f2920ff55c2b45c15c503958b03cf27baaebed6e45c5b2747cade6349d
+```
+
+sha-256 is the only supported consensus algorithm. another algorithm requires an explicit network or hard-fork rule and a new template version.
+
 ## API
 
 mining routes are disabled by default:

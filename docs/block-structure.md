@@ -18,6 +18,14 @@
 
 `miner` is non-consensus metadata. it is excluded from block hashing and consensus block-size measurement.
 
+header version 1 hashes the utf-8 encoding of colon-separated decimal integers and lowercase hashes:
+
+```text
+height:timestamp:previousHash:merkleRoot:stateRoot:difficulty:nonce
+```
+
+there is no prefix, padding, or trailing newline. external mining vectors live in [getblocktemplate](getblocktemplate.md).
+
 ## transactions array
 
 ```typescript

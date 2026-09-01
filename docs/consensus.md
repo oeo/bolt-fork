@@ -58,4 +58,4 @@ the storage transition compares expected tip hash, height, and cumulative work i
 
 confirmed transfers leave the mempool in the same transaction that indexes their block. removing or expiring a transfer also removes its sender's nonce descendants. a reorganization removes replacement-chain transfers, validates detached transfers against replacement account state and active mempool policy in sender and nonce order, then restores valid transfers with durable arrival times. in-memory mempool state changes only after persistence commits.
 
-active network synchronization rejects candidates whose common ancestor is more than 100 blocks behind the current tip. this is synchronization policy, not a consensus rule inside `Blockchain.reorganize()`. checkpoints and finalized blocks are not implemented.
+active network synchronization does not impose a fixed block-count reorganization limit. complete candidate bodies remain bounded by configured byte capacity and are applied only after the candidate has greater validated cumulative work. checkpoints and finalized blocks are not implemented.

@@ -64,6 +64,8 @@ confirmed transaction responses calculate confirmations from the block location 
 
 mining routes require `MINING_API_ENABLED=true`, non-empty `MINING_API_TOKEN`, and bearer authorization. disabled routes return `404`. request concurrency, submission rate, body size, job count, identifiers, and numeric fields are bounded.
 
+template version 1 exposes the exact target and fixed header fields required for sha-256 nonce solving. [getblocktemplate](getblocktemplate.md) defines the language-neutral preimage and fixed vector.
+
 ## bigint encoding
 
 raw bigint values are json strings with an `n` suffix. request bodies use the same representation when a field must deserialize to bigint.

@@ -27,6 +27,7 @@ MINING_API_TOKEN=
 API_HOST=127.0.0.1
 API_PORT=7333
 TCP_PORT=8333
+STATIC_PEERS=
 METRICS_HOST=127.0.0.1
 METRICS_PORT=7336
 BOLT_NETWORK=devnet
@@ -37,6 +38,8 @@ IPFS_BOOTSTRAP_ENABLED=true
 `BOLT_NETWORK` accepts `mainnet`, `testnet`, or `devnet`. mainnet startup is disabled until launch difficulty is selected.
 
 fallback mining requires `MINER_ADDRESS` with active network prefix. mining API requires both `MINING_API_ENABLED=true` and non-empty `MINING_API_TOKEN`.
+
+`STATIC_PEERS` accepts comma-separated identity-bound `nodeId@host:port` entries. Kubo remains the normal discovery dependency; static peers provide deterministic seed dialing.
 
 ## single node
 
@@ -58,7 +61,7 @@ bun run src/index.ts
 
 ## multi-node deployment test
 
-`docker-compose.bats.yml` starts two bolt nodes with separate Kubo daemons on isolated Docker networks. a pinned router fixture is the only member of both networks. the test installs explicit routes, connects Kubo by routed IP address, and disables public bootstrap so discovery does not depend on internet peers.
+`docker-compose.bats.yml` starts two bolt nodes with separate Kubo daemons on isolated Docker networks. a pinned router fixture is the only member of both networks. the test installs explicit routes, connects Kubo by routed IP address, disables public bootstrap, mines through authenticated getblocktemplate routes, creates competing partition branches, and verifies higher-work convergence.
 
 ```bash
 bun run test:bats
