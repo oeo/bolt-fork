@@ -85,7 +85,6 @@ export interface BlockTemplate {
   
   // mining data
   target: string;
-  bits: string;
   
   // transaction data
   transactions: Transaction[];
@@ -97,7 +96,6 @@ export interface BlockTemplate {
   // template metadata
   transactionCount: number;
   blockSizeBytes: number;
-  sigOpsCount: number;
   
   // longpoll support
   longpollId: string;

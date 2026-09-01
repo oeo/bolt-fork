@@ -215,6 +215,38 @@ describe('validated network synchronization', () => {
     expect((await target.getLatestBlock())?.hash).toBe(sourceBlocks.at(-1)!.hash);
   });
 
+  it('reorganizes across more than 100 blocks within the candidate byte limit', async () => {
+    const config = { ...devnet, difficultyAdjustmentInterval: 1000 };
+    const source = await createChain(config);
+    const target = await createChain(config);
+    const sourceBlocks: BlockClass[] = [];
+    const base = Date.now();
+
+    for (let height = 1; height <= 102; height++) {
+      sourceBlocks.push(await appendBlock(source, base + height, undefined, config));
+    }
+    for (let height = 1; height <= 101; height++) {
+      await appendBlock(target, base + 1000 + height, undefined, config);
+    }
+
+    const { sync, peer } = await createSync(target, config);
+    (sync as any).headerRequests.set('session', {
+      peerId: peer.nodeId,
+      sessionId: 'session',
+      deadline: Date.now() + 1000,
+      headers: []
+    });
+    await (sync as any).handleHeaders(peer.nodeId, 'session', sourceBlocks.map(header));
+    for (const block of sourceBlocks) {
+      await (sync as any).handleBlock(peer.nodeId, 'session', block.toObject());
+    }
+    for (let attempt = 0; attempt < 100 && await target.getHeight() !== 102; attempt++) await Bun.sleep(1);
+
+    expect(await target.getHeight()).toBe(102);
+    expect((await target.getLatestBlock())?.hash).toBe(sourceBlocks.at(-1)!.hash);
+    expect(await target.getCumulativeDifficulty()).toBe(await source.getCumulativeDifficulty());
+  });
+
   it('ignores unsolicited blocks and transactions', async () => {
     const source = await createChain();
     const target = await createChain();

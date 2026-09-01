@@ -126,6 +126,18 @@ describe('GetBlockTemplateService', () => {
     expect((await service.submitBlock({ templateId: template.templateId, nonce: -1 })).valid).toBe(false);
   });
 
+  test('serializes simultaneous solutions for one template', async () => {
+    const template = await getTemplate();
+    const results = await Promise.all([
+      service.submitBlock({ templateId: template.templateId, nonce: 0 }),
+      service.submitBlock({ templateId: template.templateId, nonce: 1 }),
+    ]);
+
+    expect(results.filter(result => result.valid)).toHaveLength(1);
+    expect(results.filter(result => !result.valid)).toHaveLength(1);
+    expect(await blockchain.getHeight()).toBe(1);
+  });
+
   test('first longpoll use returns, repeated use wakes on chain change', async () => {
     const template = await getTemplate();
     expect((await service.getBlockTemplate({ payoutAddress, longpollId: template.longpollId })).templateId)

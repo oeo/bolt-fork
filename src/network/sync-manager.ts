@@ -38,7 +38,6 @@ export interface SyncManagerConfig {
   transactionRelay?: TransactionRelay;
   batchSize?: number;
   syncTimeout?: number;
-  maxReorgDepth?: number;
   maxCandidateBlockBytes?: number;
   maxHeaderCandidates?: number;
   maxTransactionRequests?: number;
@@ -117,7 +116,6 @@ export class SyncManager extends EventEmitter {
     this.config = {
       batchSize: 10,
       syncTimeout: 30000,
-      maxReorgDepth: 100,
       maxCandidateBlockBytes: 16 * config.chainConfig.maxBlockSize,
       maxHeaderCandidates: MAX_HEADERS * 2,
       maxTransactionRequests: 500,
@@ -652,10 +650,7 @@ export class SyncManager extends EventEmitter {
     this.validatingHeaders = true;
 
     try {
-      const validation = await this.config.blockchain.validateHeaderChain(
-        combined,
-        this.config.maxReorgDepth
-      );
+      const validation = await this.config.blockchain.validateHeaderChain(combined);
       if (this.headerRequests.get(sessionId) !== reservation) return;
       if (!validation.valid || !validation.ancestor || validation.cumulativeDifficulty === undefined) {
         this.headerRequests.delete(sessionId);

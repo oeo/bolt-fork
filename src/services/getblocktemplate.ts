@@ -99,7 +99,6 @@ export class GetBlockTemplateService {
       timestamp: block.timestamp,
       difficulty: block.difficulty,
       target: difficultyToTarget(block.difficulty).toString(16).padStart(64, '0'),
-      bits: difficultyToTarget(block.difficulty).toString(16).padStart(64, '0').slice(0, 8),
       transactions,
       coinbaseTransaction: block.transactions[0],
       coinbaseValue: blockReward + totalFees,
@@ -107,7 +106,6 @@ export class GetBlockTemplateService {
       blockReward,
       transactionCount: block.transactions.length,
       blockSizeBytes,
-      sigOpsCount: transactions.length,
       longpollId: crypto.randomUUID(),
       submitOld: false,
     };

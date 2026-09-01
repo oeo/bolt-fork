@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'bun:test';
-import { BlockClass, createGenesisBlock } from '../../src/core/block';
+import { BlockClass, calculateBlockHeaderHash, createGenesisBlock } from '../../src/core/block';
 import { Transaction } from '../../src/types';
 import { EMPTY_STATE_ROOT_PARENT, calculateStateRoot } from '../../src/core/block-executor';
 import { calculateTransactionHash } from '../../src/crypto/signature';
@@ -28,6 +28,18 @@ describe('Block Class', () => {
       const result = genesis.validate();
       expect(result.valid).toBe(true);
     });
+  });
+
+  it('matches the external mining header v1 vector', () => {
+    expect(calculateBlockHeaderHash({
+      index: 1,
+      timestamp: 1_700_000_001_001,
+      previousHash: '00'.repeat(32),
+      merkleRoot: '11'.repeat(32),
+      stateRoot: '22'.repeat(32),
+      difficulty: 100_000,
+      nonce: 42,
+    })).toBe('648b51f2920ff55c2b45c15c503958b03cf27baaebed6e45c5b2747cade6349d');
   });
   
   describe('Block creation', () => {

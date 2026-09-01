@@ -13,7 +13,6 @@ import {
 import { TransactionClass, createCoinbaseTransaction } from './transaction';
 import { getDifficultyAdjustment, shouldAdjustDifficulty, DifficultyConfig, calculateBlockWork, calculateCumulativeDifficulty } from './difficulty';
 import { HashAlgorithm, hash } from '../crypto/hash';
-import { ForkManager } from './fork-manager';
 import { getLogger } from '../utils/logger';
 import { EMPTY_STATE_ROOT_PARENT, calculateStateRoot, executeBlock, type BlockExecution } from './block-executor';
 import {
@@ -36,7 +35,6 @@ export class Blockchain extends EventEmitter {
   private difficultyConfig: DifficultyConfig;
   private currentHeight: number = -1;
   private isInitialized: boolean = false;
-  private forkManager: ForkManager;
   private chainWriteTail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -51,7 +49,6 @@ export class Blockchain extends EventEmitter {
     this.storage = storage;
     this.config = config;
     this.hashAlgorithm = hashAlgorithm;
-    this.forkManager = new ForkManager();
 
     // setup difficulty config from chain config
     this.difficultyConfig = {
@@ -211,9 +208,7 @@ export class Blockchain extends EventEmitter {
         logger.debug(`Block ${block.index} already exists with same hash`);
         return { valid: true };
       }
-      // different block at same height - need to handle as competing block
-      logger.warn(`Different block at height ${block.index}, handling as competing block`);
-      return await this.handleCompetingBlockUnlocked(block);
+      return { valid: false, error: 'Competing block does not extend canonical tip' };
     }
 
     // get previous block
@@ -411,7 +406,7 @@ export class Blockchain extends EventEmitter {
     return this.storage.getCumulativeDifficulty();
   }
 
-  async validateHeaderChain(headers: BlockHeader[], maxReorgDepth = Number.MAX_SAFE_INTEGER): Promise<{
+  async validateHeaderChain(headers: BlockHeader[]): Promise<{
     valid: boolean;
     error?: string;
     ancestor?: Block;
@@ -423,9 +418,6 @@ export class Blockchain extends EventEmitter {
       return { valid: false, error: 'Header chain has no canonical ancestor' };
     }
     const currentHeight = await this.getHeight();
-    if (currentHeight - ancestor.index > maxReorgDepth) {
-      return { valid: false, error: 'Header chain exceeds reorganization depth' };
-    }
 
     const candidate = new Map<number, BlockHeader>();
     const getHeader = async (height: number): Promise<BlockHeader | null> =>
@@ -669,129 +661,6 @@ export class Blockchain extends EventEmitter {
   }
 
   /**
-   * select best chain based on cumulative difficulty
-   */
-  async selectBestChain(
-    candidateBlocks: Block[],
-    candidateCumulativeDifficulty: bigint
-  ): Promise<boolean> {
-    const currentCumulative = await this.getCumulativeDifficulty();
-
-    logger.info(
-      `Comparing chains: current=${currentCumulative}, candidate=${candidateCumulativeDifficulty}`
-    );
-
-    // select chain with highest cumulative difficulty
-    if (candidateCumulativeDifficulty > currentCumulative) {
-      logger.info('Candidate chain has higher cumulative difficulty, switching...');
-
-      // TODO: implement chain reorganization
-      // This would involve:
-      // 1. Finding common ancestor
-      // 2. Rolling back current chain to common ancestor
-      // 3. Applying new blocks from candidate chain
-      // 4. Re-processing all transactions
-
-      return true;
-    } else if (candidateCumulativeDifficulty === currentCumulative) {
-      // when equal, keep current (first seen wins)
-      logger.info('Chains have equal difficulty, keeping current');
-      return false;
-    } else {
-      logger.info('Current chain has higher difficulty, keeping current');
-      return false;
-    }
-  }
-
-  /**
-   * handle a competing block that may trigger reorganization
-   */
-  async handleCompetingBlock(block: BlockClass, peerId?: string): Promise<ValidationResult> {
-    return this.withChainWrite(() => this.handleCompetingBlockUnlocked(block, peerId));
-  }
-
-  private async handleCompetingBlockUnlocked(block: BlockClass, peerId?: string): Promise<ValidationResult> {
-    logger.info(`Handling competing block ${block.index} with hash ${block.hash}`);
-
-    const structureValidation = block.validate(this.hashAlgorithm, this.config.maxTimeDrift * 1000);
-    if (!structureValidation.valid) return structureValidation;
-    const sizeValidation = block.validateSize(this.config.maxBlockSize);
-    if (!sizeValidation.valid) return sizeValidation;
-    
-    // check if this block extends a known fork
-    const fork = this.forkManager.updateFork(block.previousHash, block.toObject(), peerId);
-    
-    if (!fork) {
-      // new fork or orphan block
-      const previousBlock = await this.storage.getBlockByHash(block.previousHash);
-      if (previousBlock) {
-        // new fork starting from our chain
-        const forkBase = await this.storage.getBlock(previousBlock.index);
-        if (forkBase) {
-          let forkCumulativeDifficulty = calculateBlockWork(block.difficulty);
-          for (let height = 0; height <= forkBase.index; height++) {
-            const canonicalBlock = await this.storage.getBlock(height);
-            if (!canonicalBlock) return { valid: false, error: `Missing canonical block ${height}` };
-            forkCumulativeDifficulty += calculateBlockWork(canonicalBlock.difficulty);
-          }
-          this.forkManager.addFork(block.toObject(), forkCumulativeDifficulty, peerId);
-        }
-      } else {
-        // orphan block
-        this.forkManager.addOrphan(block.toObject());
-        return { valid: false, error: 'Orphan block, parent not found' };
-      }
-    }
-    
-    // check if this fork should trigger reorganization
-    const ourCumulativeDifficulty = await this.getCumulativeDifficulty();
-    const ourLatestBlock = await this.getLatestBlock();
-    const bestFork = this.forkManager.getBestFork();
-    
-    if (bestFork) {
-      const comparison = this.forkManager.compareFork(
-        bestFork, 
-        this.currentHeight, 
-        ourCumulativeDifficulty,
-        ourLatestBlock?.hash
-      );
-      
-      if (comparison.shouldReorganize) {
-        logger.warn(`Fork should trigger reorganization: work ${bestFork.cumulativeDifficulty} vs ${ourCumulativeDifficulty}, hash ${bestFork.tipHash} vs ${ourLatestBlock?.hash}`);
-        
-        // find common ancestor
-        const commonAncestorHeight = await this.findCommonAncestor(bestFork.blocks);
-        let success = false;
-        if (commonAncestorHeight >= 0) {
-          success = await this.reorganizeUnlocked(commonAncestorHeight, bestFork.blocks);
-        }
-        this.forkManager.removeFork(bestFork.tipHash);
-        if (success) return { valid: true };
-      }
-    }
-    
-    return { valid: false, error: 'Block on competing chain with less work' };
-  }
-  
-  /**
-   * find common ancestor between our chain and fork
-   */
-  async findCommonAncestor(forkBlocks: Block[]): Promise<number> {
-    // start from the earliest block in the fork
-    const earliestForkBlock = forkBlocks[0];
-    
-    // check if fork's previous block exists in our chain
-    const previousBlock = await this.storage.getBlockByHash(earliestForkBlock.previousHash);
-    if (previousBlock) {
-      return previousBlock.index;
-    }
-    
-    // if not found, we need more blocks from the fork to find common ancestor
-    logger.warn('Cannot find common ancestor, need more fork history');
-    return -1;
-  }
-
-  /**
    * reorganize blockchain from a specific height
    */
   async reorganize(commonAncestorHeight: number, newBlocks: Block[]): Promise<boolean> {
@@ -807,15 +676,6 @@ export class Blockchain extends EventEmitter {
     if (!expectedTip || !ancestor || commonAncestorHeight >= expectedTip.index) return false;
 
     const expectedCumulativeDifficulty = await this.storage.getCumulativeDifficulty();
-    let candidateCumulativeDifficulty = 0n;
-    const candidateTransactionHashes = new Set<string>();
-    for (let height = 0; height <= commonAncestorHeight; height++) {
-      const block = await this.storage.getBlock(height);
-      if (!block) return false;
-      for (const transaction of block.transactions) candidateTransactionHashes.add(transaction.hash);
-      candidateCumulativeDifficulty += calculateBlockWork(block.difficulty);
-    }
-
     const candidateBlocks = new Map<number, Block>();
     const getCandidateBlock = async (height: number): Promise<Block | null> => {
       const candidate = candidateBlocks.get(height);
@@ -827,6 +687,11 @@ export class Blockchain extends EventEmitter {
       const block = await this.storage.getBlock(height);
       if (block) removedBlocks.push(block);
     }
+    let candidateCumulativeDifficulty = expectedCumulativeDifficulty;
+    for (const block of removedBlocks) {
+      candidateCumulativeDifficulty -= calculateBlockWork(block.difficulty);
+    }
+    const candidateTransactionHashes = new Set<string>();
     const mempoolEntries = await this.storage.getMempoolEntries();
     const accountStates = await this.storage.getAccountStates(
       this.touchedAddresses([...newBlocks, ...removedBlocks], mempoolEntries.map(entry => entry.transaction)),
@@ -844,6 +709,8 @@ export class Blockchain extends EventEmitter {
       if (!sizeValidation.valid) return false;
       for (const transaction of block.transactions) {
         if (candidateTransactionHashes.has(transaction.hash)) return false;
+        const confirmed = await this.storage.getConfirmedTransaction(transaction.hash);
+        if (confirmed && confirmed.blockHeight <= commonAncestorHeight) return false;
         candidateTransactionHashes.add(transaction.hash);
       }
 

@@ -13,6 +13,7 @@ import { TransactionRelay } from '../../src/network/transaction-relay';
 import { generateAddress } from '../../src/crypto/address';
 import { sign } from '../../src/crypto/signature';
 import { mainnet } from '../../src/config/chains/mainnet';
+import { parseStaticPeer } from '../../src/network/network-orchestrator';
 import type { NodeIdentity } from '../../src/utils/identity';
 
 const genesisHash = 'ab'.repeat(32);
@@ -854,6 +855,16 @@ describe('peer discovery authentication', () => {
     expect(parsePeerEndpoint(announcement.tcp)).toEqual({ host: '2606:4700:4700::1111', port: 8333 });
     expect(await (service as any).validatePeerEndpoint(announcement)).toBe(true);
     expect(await (service as any).validatePeerEndpoint({ ...announcement, height: Infinity })).toBe(false);
+  });
+
+  it('validates identity-bound static peers', () => {
+    const identity = createIdentity();
+
+    expect(parseStaticPeer(`${identity.address}@seed.example:8333`, mainnet.addressPrefix)).toEqual({
+      nodeId: identity.address,
+      tcp: 'seed.example:8333'
+    });
+    expect(() => parseStaticPeer(`invalid@seed.example:8333`, mainnet.addressPrefix)).toThrow('static peer');
   });
 
   it('emits fresh announcements and ignores validation completed after stop', async () => {

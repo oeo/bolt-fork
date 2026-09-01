@@ -26,8 +26,8 @@ interface NodeConfig {
   apiHost: string;
   metricsPort: number;
   metricsHost: string;
-  networkMode?: 'ipfs' | 'tcp' | 'hybrid';
   tcpPort?: number;
+  staticPeers?: string[];
   
   // node identity
   role: 'bootstrap' | 'miner' | 'full';
@@ -168,15 +168,9 @@ class BoltIPFSNode {
     await this.mempool.initialize();
     logger.info('Mempool initialized');
     
-    // determine network mode
-    const networkMode = this.config.networkMode || 'ipfs';
-    const mode = networkMode === 'tcp' ? NetworkMode.TCP : 
-                  networkMode === 'hybrid' ? NetworkMode.TCP :
-                  NetworkMode.IPFS;
-    
     // create network orchestrator
     this.networkOrchestrator = new NetworkOrchestrator({
-      mode,
+      mode: NetworkMode.TCP,
       identity: nodeIdentity,
       blockchain: this.blockchain,
       mempool: this.mempool,
@@ -184,7 +178,8 @@ class BoltIPFSNode {
       tcpPort: this.config.tcpPort || 8333,
       ipfsApi: this.config.ipfsApi,
       ipfsBootstrap: this.config.ipfsBootstrap,
-      externalHost: process.env.NODE_HOST || 'localhost'
+      externalHost: process.env.NODE_HOST || 'localhost',
+      staticPeers: this.config.staticPeers
     });
     
     // setup network orchestrator event handlers
@@ -567,9 +562,8 @@ function parseConfig(): NodeConfig {
     ipfsApi: process.env.IPFS_API || 'http://localhost:5001',
     ipfsBootstrap: process.env.IPFS_BOOTSTRAP_ENABLED !== 'false',
     
-    // network mode (default to tcp)
-    networkMode: (process.env.NETWORK_MODE as 'ipfs' | 'tcp') || 'tcp',
-    tcpPort: parseInt(process.env.TCP_PORT || '8333')
+    tcpPort: parseInt(process.env.TCP_PORT || '8333'),
+    staticPeers: (process.env.STATIC_PEERS || '').split(',').map(peer => peer.trim()).filter(Boolean)
   };
   
   return config;

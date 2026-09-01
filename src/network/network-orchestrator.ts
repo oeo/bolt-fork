@@ -12,13 +12,13 @@ import type { ChainConfig } from '../config/chain';
 import type { Block } from '../core/block';
 import type { Transaction } from '../core/transaction';
 import type { NodeIdentity } from '../utils/identity';
-import type { PeerEndpoint } from './peer-discovery';
+import { parsePeerEndpoint, type PeerEndpoint } from './peer-discovery';
+import { validateAddress } from '../crypto/address';
 
 const logger = getLogger(__filename);
 
 export enum NetworkMode {
-  TCP = 'tcp',        // tcp-based networking with ipfs discovery
-  IPFS = 'ipfs'       // legacy mode (not implemented)
+  TCP = 'tcp'
 }
 
 export interface NetworkOrchestratorConfig {
@@ -31,6 +31,17 @@ export interface NetworkOrchestratorConfig {
   ipfsApi?: string;
   ipfsBootstrap?: boolean;
   externalHost?: string;
+  staticPeers?: string[];
+}
+
+export function parseStaticPeer(value: string, addressPrefix: number): Pick<PeerEndpoint, 'nodeId' | 'tcp'> {
+  const separator = value.indexOf('@');
+  const nodeId = value.slice(0, separator);
+  const tcp = value.slice(separator + 1);
+  if (separator < 1 || !validateAddress(nodeId, addressPrefix) || !parsePeerEndpoint(tcp)) {
+    throw new Error(`invalid static peer: ${value}`);
+  }
+  return { nodeId, tcp };
 }
 
 /**
@@ -73,14 +84,7 @@ export class NetworkOrchestrator extends EventEmitter {
     logger.info(`starting network services in ${this.mode} mode`);
     
     try {
-      switch (this.mode) {
-        case NetworkMode.IPFS:
-          await this.startIPFSMode();
-          break;
-        case NetworkMode.TCP:
-          await this.startTCPMode();
-          break;
-      }
+      await this.startTCPMode();
       this.isRunning = true;
     } catch (error) {
       try {
@@ -110,15 +114,6 @@ export class NetworkOrchestrator extends EventEmitter {
     this.isRunning = false;
     logger.info('network orchestrator stopped');
     if (errors.length > 0) throw new AggregateError(errors, 'network shutdown failed');
-  }
-  
-  /**
-   * start ipfs-based networking (legacy)
-   */
-  private async startIPFSMode(): Promise<void> {
-    logger.error('ipfs mode is no longer supported - using tcp mode instead');
-    this.mode = NetworkMode.TCP;
-    await this.startTCPMode();
   }
   
   /**
@@ -199,6 +194,12 @@ export class NetworkOrchestrator extends EventEmitter {
       this.txRelay.start();
       await this.syncManager.start();
       await this.connectionManager.start();
+
+      for (const value of this.config.staticPeers ?? []) {
+        void this.connectionManager.connectToPeer(
+          parseStaticPeer(value, this.config.chainConfig.addressPrefix) as PeerEndpoint
+        );
+      }
 
       const height = await this.config.blockchain.getHeight();
       const latestBlock = await this.config.blockchain.getLatestBlock();
@@ -286,13 +287,7 @@ export class NetworkOrchestrator extends EventEmitter {
    */
   async broadcastBlock(block: Block): Promise<void> {
     if (!this.isRunning) return;
-    switch (this.mode) {
-      case NetworkMode.IPFS:
-        break;
-      case NetworkMode.TCP:
-        this.inventoryManager?.announceBlock(block.hash);
-        break;
-    }
+    this.inventoryManager?.announceBlock(block.hash);
   }
   
   /**
@@ -301,15 +296,7 @@ export class NetworkOrchestrator extends EventEmitter {
   async broadcastTransaction(tx: Transaction): Promise<void> {
     if (!this.isRunning) return;
     
-    switch (this.mode) {
-      case NetworkMode.IPFS:
-        break;
-      case NetworkMode.TCP:
-        if (this.txRelay) {
-          this.txRelay.relayTransaction(tx);
-        }
-        break;
-    }
+    this.txRelay?.relayTransaction(tx);
   }
   
   /**
@@ -321,14 +308,11 @@ export class NetworkOrchestrator extends EventEmitter {
       isRunning: this.isRunning
     };
     
-    if (this.mode === NetworkMode.IPFS) {
-    } else {
-      stats.discovery = this.discoveryService?.getStats();
-      stats.connections = this.connectionManager?.getStats();
-      stats.sync = { isSyncing: this.syncManager?.isSyncing() || false };
-      stats.inventory = this.inventoryManager?.getStats();
-      stats.txRelay = this.txRelay?.getStats();
-    }
+    stats.discovery = this.discoveryService?.getStats();
+    stats.connections = this.connectionManager?.getStats();
+    stats.sync = { isSyncing: this.syncManager?.isSyncing() || false };
+    stats.inventory = this.inventoryManager?.getStats();
+    stats.txRelay = this.txRelay?.getStats();
     
     return stats;
   }
@@ -337,10 +321,6 @@ export class NetworkOrchestrator extends EventEmitter {
    * get connected peer count
    */
   getPeerCount(): number {
-    if (this.mode === NetworkMode.IPFS) {
-      return 0;
-    } else {
-      return this.connectionManager?.getConnectedPeers().length || 0;
-    }
+    return this.connectionManager?.getConnectedPeers().length || 0;
   }
 }
