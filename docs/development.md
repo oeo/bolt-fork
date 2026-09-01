@@ -59,6 +59,38 @@ To run bolt directly, start Kubo first and set `IPFS_API` to its api address:
 bun run src/index.ts
 ```
 
+`BOLT_NETWORK` is required for direct startup. missing or unknown values fail before storage or networking opens.
+
+## two-host testnet canary
+
+use the same root Compose stack on each host. initialize both nodes once, record their bolt node IDs and Kubo peer IDs, then configure reciprocal peers.
+
+host A:
+
+```bash
+BOLT_NETWORK=testnet
+NODE_HOST=seed-a.example.org
+STATIC_PEERS=<bolt-b-node-id>@seed-b.example.org:8333
+```
+
+host B:
+
+```bash
+BOLT_NETWORK=testnet
+NODE_HOST=seed-b.example.org
+STATIC_PEERS=<bolt-a-node-id>@seed-a.example.org:8333
+```
+
+publish TCP `8333` and Kubo swarm `4001` TCP/UDP. keep API, metrics, faucet backend, and Kubo RPC private. configure each Kubo node's `Peering.Peers` with the other seed's Kubo peer ID and swarm address. public libp2p bootstrap remains fallback connectivity.
+
+both hosts must run the same commit and image digest. compare consensus status:
+
+```bash
+curl -s http://127.0.0.1:7333/blockchain/info
+```
+
+height, latest block hash, latest state root, cumulative difficulty, genesis hash, and protocol version must agree after convergence.
+
 ## multi-node deployment test
 
 `docker-compose.bats.yml` starts two bolt nodes with separate Kubo daemons on isolated Docker networks. a pinned router fixture is the only member of both networks. the test installs explicit routes, connects Kubo by routed IP address, disables public bootstrap, mines through authenticated getblocktemplate routes, creates competing partition branches, and verifies higher-work convergence.
@@ -150,6 +182,20 @@ stop the node before reset. this command deletes LMDB chain state and preserves 
 ```bash
 bun run reset:testnet ./data --confirm-reset-testnet
 ```
+
+reset rehearsal:
+
+1. stop bolt on both hosts.
+2. preserve each `.identity` and Kubo repository.
+3. clear chain state with `reset:testnet`.
+4. deploy a release with new chain ID, genesis timestamp, difficulty, nonce, and hash.
+5. update wallet and faucet expected identity.
+6. confirm old storage and old signed transactions are rejected.
+7. publish reset generation and history. balances and transactions do not migrate.
+
+## testnet launch gate
+
+create the release-candidate tag before canary. mine through height 61 so the first 60-block testnet epoch retargets. independently calculate the expected difficulty from blocks 1 through 60. test static peers, Kubo discovery, transaction relay, competing branches, restart, Kubo interruption, storage verification, and backup/restore. observe for 24 hours before freezing the candidate identity.
 
 ## resources
 

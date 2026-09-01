@@ -55,4 +55,6 @@ ci performs these gates:
 5. run bun tests with a timeout and bail on first failure.
 6. run a ten-minute-bounded bats deployment test.
 
+public release adds a manual two-host canary through the first testnet retarget. local Docker routing does not replace this gate.
+
 only active suites contribute to these gates. report test totals, coverage, or performance only from current generated output.

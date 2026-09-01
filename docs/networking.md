@@ -110,6 +110,8 @@ network startup reads these environment variables:
 - `IPFS_BOOTSTRAP_ENABLED`, defaults to `true`. this controls bolt's explicit fallback connections and does not modify Kubo's bootstrap list. isolated deployments must disable both.
 - `NODE_HOST`, host placed in tcp peer announcements.
 
+public testnet seed operators should configure reciprocal bolt `STATIC_PEERS` and Kubo `Peering.Peers`. public libp2p bootstrap nodes remain fallback DHT connectivity and do not replace topic-specific seed peering.
+
 connection and sync tuning values are constructor options. they are not environment variables in current startup wiring.
 
 ## limits

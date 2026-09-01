@@ -88,7 +88,7 @@ IPFS_BOOTSTRAP_ENABLED=true
 STATIC_PEERS=
 ```
 
-`BOLT_NETWORK` accepts `mainnet`, `testnet`, or `devnet`. mainnet startup is disabled until launch difficulty is selected.
+`BOLT_NETWORK` accepts `mainnet`, `testnet`, or `devnet` and is required for direct node startup. mainnet startup is disabled until launch difficulty is selected. Compose supplies testnet by default.
 
 `STATIC_PEERS` accepts comma-separated `nodeId@host:port` entries. static peers are identity-bound during the signed handshake and supplement ipfs discovery.
 

@@ -38,7 +38,7 @@ responses do not include wildcard cors headers. pagination routes return `400` f
 | method | path | behavior |
 |---|---|---|
 | `GET` | `/health` | returns `status: "ok"` and current millisecond timestamp |
-| `GET` | `/blockchain/info` | returns chain identity, network policy, height, tip hash, difficulty, cumulative difficulty, timing configuration, formatted maximum supply, and formatted current reward |
+| `GET` | `/blockchain/info` | returns chain identity, network policy, height, tip hash, state root, difficulty, cumulative difficulty, timing configuration, formatted maximum supply, and formatted current reward |
 | `GET` | `/blocks` | returns blocks newest first with `total`, `limit`, `offset`, and `count` |
 | `GET` | `/blocks/:hashOrHeight` | reads a non-negative decimal height or 64-character lowercase hexadecimal hash |
 

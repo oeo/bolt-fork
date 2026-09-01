@@ -111,7 +111,7 @@ Economic parameters vary by network:
 Select the network via the `BOLT_NETWORK` environment variable:
 
 ```bash
-BOLT_NETWORK=mainnet  # Production network (default)
+BOLT_NETWORK=mainnet  # Production network (startup currently disabled)
 BOLT_NETWORK=testnet  # Test network
 BOLT_NETWORK=devnet   # Local development
 ```

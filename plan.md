@@ -21,6 +21,9 @@ implemented:
 - [x] reference testnet wallet creates encrypted keystores, signs locally, and rejects wrong-chain endpoints
 - [x] single-worker SQLite faucet persists prepared transactions and bounds cooldowns, queue, and daily payouts
 - [x] explicit testnet reset clears chain state while preserving node identity
+- [x] direct node startup requires explicit network selection and candidate genesis hash is pinned by test
+- [x] Kubo pubsub uses supported configuration instead of deprecated daemon flag
+- [x] consensus status includes state root; metrics distinguish accepted, locally mined, and reorganized blocks
 
 ## open findings
 
@@ -32,6 +35,7 @@ high:
 
 - [ ] run a real two-host testnet trial with routable tcp endpoints and redundant Kubo peers
 - [ ] measure large LMDB canonical transitions before raising the candidate body-byte limit
+- [ ] mine a release candidate through height 61 and verify first retarget independently
 
 medium:
 

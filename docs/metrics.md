@@ -14,12 +14,14 @@ api metric labels use finite values. methods normalize to `GET`, `POST`, or `OTH
 |---|---|
 | every metrics scrape | blockchain height, difficulty, cumulative difficulty, and mempool gauges |
 | integrated node scrape | node health, sync state, role, storage size, and peer counts before registry export |
-| `block:added` event | block counters and histograms, regular transaction metrics, mining success, mining time, and mining revenue |
+| `block:added` event | accepted-block histograms and regular transaction count |
+| local mining event | locally mined block count, mining success, mining time, mining revenue, and hash rate |
+| `chain:reorganized` event | canonical reorganization count |
 | `transactionAdded` event | mempool additions |
 | mining event and timer | hash rate and mining difficulty |
 | rest api request | request count, duration, and uncaught error count |
 
-the block event records mining success for every accepted block, including blocks not mined locally. transaction processing time recorded there is currently a fixed value. these series should not be interpreted as measured local mining or transaction-validation latency.
+accepted remote blocks do not count as locally mined. transaction processing latency is not recorded because production does not currently measure validation duration.
 
 no production caller currently updates gbt metrics, mining attempts, block or transaction validation errors, mempool removals, rejections or evictions, network message or bandwidth metrics, storage operation or error metrics, or active api connections. helper methods exist for these families, but their presence is not an integration guarantee.
 
@@ -31,6 +33,7 @@ no production caller currently updates gbt metrics, mining attempts, block or tr
 bolt_blockchain_height
 bolt_blockchain_difficulty
 bolt_blockchain_cumulative_difficulty
+bolt_chain_reorganizations_total
 bolt_blocks_mined_total
 bolt_block_processing_seconds
 bolt_block_size_bytes
