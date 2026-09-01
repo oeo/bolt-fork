@@ -33,14 +33,12 @@ services:
       IPFS_API: http://ipfs:5001
       IPFS_BOOTSTRAP_ENABLED: ${IPFS_BOOTSTRAP_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      LOG_DIR: /app/logs
     ports:
       - "127.0.0.1:${API_PORT:-7333}:7333"
       - "127.0.0.1:${METRICS_PORT:-7336}:7336"
     volumes:
       - bolt-data:/data
       - bolt-backups:/backups
-      - ./logs:/app/logs
     healthcheck:
       test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:7333/health').then(r=>{if(!r.ok)process.exit(1)})"]
       interval: 5s
