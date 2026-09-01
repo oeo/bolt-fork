@@ -102,6 +102,9 @@ export class MetricsService {
   // network metrics (future)
   private networkPeersConnected: Gauge;
   private networkPeersTotal: Gauge;
+  private networkPeersInbound: Gauge;
+  private networkPeersOutbound: Gauge;
+  private networkReady: Gauge;
   private networkMessagesReceived: Counter;
   private networkMessagesSent: Counter;
   private networkBandwidthIn: Counter;
@@ -414,6 +417,24 @@ export class MetricsService {
     this.networkPeersTotal = new Gauge({
       name: 'bolt_network_peers_total',
       help: 'Total number of known peers',
+      registers: [this.registry]
+    });
+
+    this.networkPeersInbound = new Gauge({
+      name: 'bolt_network_peers_inbound',
+      help: 'Authenticated inbound peer connections',
+      registers: [this.registry]
+    });
+
+    this.networkPeersOutbound = new Gauge({
+      name: 'bolt_network_peers_outbound',
+      help: 'Authenticated outbound peer connections',
+      registers: [this.registry]
+    });
+
+    this.networkReady = new Gauge({
+      name: 'bolt_network_ready',
+      help: 'Whether the node has at least one authenticated peer',
       registers: [this.registry]
     });
     
@@ -749,9 +770,12 @@ export class MetricsService {
   /**
    * Update network metrics
    */
-  updateNetworkMetrics(connectedPeers: number, totalPeers: number): void {
+  updateNetworkMetrics(connectedPeers: number, totalPeers: number, inbound = 0, outbound = 0): void {
     this.networkPeersConnected.set(connectedPeers);
     this.networkPeersTotal.set(totalPeers);
+    this.networkPeersInbound.set(inbound);
+    this.networkPeersOutbound.set(outbound);
+    this.networkReady.set(connectedPeers > 0 ? 1 : 0);
   }
   
   /**

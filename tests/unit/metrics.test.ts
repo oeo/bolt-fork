@@ -191,11 +191,14 @@ describe('Metrics Service', async () => {
   
   describe('network metrics', async () => {
     test('should update network peer counts', async () => {
-      metrics.updateNetworkMetrics(10, 50);
+      metrics.updateNetworkMetrics(10, 50, 4, 6);
       
       const metricsOutput = await metrics.getMetrics();
       expect(metricsOutput).toContain('bolt_network_peers_connected 10');
       expect(metricsOutput).toContain('bolt_network_peers_total 50');
+      expect(metricsOutput).toContain('bolt_network_peers_inbound 4');
+      expect(metricsOutput).toContain('bolt_network_peers_outbound 6');
+      expect(metricsOutput).toContain('bolt_network_ready 1');
     });
     
     test('should record network messages', async () => {

@@ -8,7 +8,7 @@ import { encodeCanonicalFields } from '../utils/serialization';
 const logger = getLogger(__filename);
 
 // protocol version
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 export const PROTOCOL_HEADER_SIZE = 56;
 export const PROTOCOL_AUTH_TAG_OFFSET = 24;
 export const PROTOCOL_AUTH_TAG_SIZE = 32;
@@ -785,6 +785,7 @@ export class Protocol {
       'inv': MessageType.INV,
       'headers': MessageType.HEADERS,
       'reject': MessageType.REJECT,
+      'mempool': MessageType.MEMPOOL,
     };
     
     const type = typeMap[command.toLowerCase()];
@@ -826,6 +827,9 @@ export class Protocol {
       case MessageType.TX:
         payloadBytes = this.serializeTransaction(payload);
         break;
+      case MessageType.MEMPOOL:
+        payloadBytes = new Uint8Array();
+        break;
       default:
         throw new Error(`serialization not implemented for ${command}`);
     }
@@ -856,6 +860,7 @@ export class Protocol {
       [MessageType.INV]: 'inv',
       [MessageType.HEADERS]: 'headers',
       [MessageType.REJECT]: 'reject',
+      [MessageType.MEMPOOL]: 'mempool',
     };
     
     const command = commandMap[header.type];
@@ -900,6 +905,9 @@ export class Protocol {
         break;
       case MessageType.TX:
         decodedPayload = this.deserializeTransaction(payload);
+        break;
+      case MessageType.MEMPOOL:
+        decodedPayload = payload.length === 0 ? {} : null;
         break;
         default:
           logger.warn(`deserialization not implemented for ${command}`);

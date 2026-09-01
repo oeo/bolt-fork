@@ -13,7 +13,7 @@ import { TransactionRelay } from '../../src/network/transaction-relay';
 import { generateAddress } from '../../src/crypto/address';
 import { sign } from '../../src/crypto/signature';
 import { mainnet } from '../../src/config/chains/mainnet';
-import { parseStaticPeer } from '../../src/network/network-orchestrator';
+import { NetworkOrchestrator, parseStaticPeer } from '../../src/network/network-orchestrator';
 import type { NodeIdentity } from '../../src/utils/identity';
 
 const genesisHash = 'ab'.repeat(32);
@@ -865,6 +865,43 @@ describe('peer discovery authentication', () => {
       tcp: 'seed.example:8333'
     });
     expect(() => parseStaticPeer(`invalid@seed.example:8333`, mainnet.addressPrefix)).toThrow('static peer');
+  });
+
+  it('redials disconnected static peers without discovery metadata', async () => {
+    const identity = createIdentity();
+    const peer = parseStaticPeer(`${identity.address}@seed.example:8333`, mainnet.addressPrefix);
+    const orchestrator = Object.create(NetworkOrchestrator.prototype) as any;
+    let authenticated = false;
+    const dialed: any[] = [];
+    orchestrator.staticPeers = [peer];
+    orchestrator.connectionManager = {
+      isAuthenticated: () => authenticated,
+      connectToPeer: async (target: any) => { dialed.push(target); return true; }
+    };
+
+    orchestrator.connectStaticPeers();
+    await Promise.resolve();
+    expect(dialed).toEqual([peer]);
+    authenticated = true;
+    orchestrator.connectStaticPeers();
+    expect(dialed).toHaveLength(1);
+  });
+
+  it('subscribes without creating announcement state when advertising is disabled', () => {
+    const service = new PeerDiscoveryService({
+      identity: createIdentity(),
+      chainId: mainnet.chainId,
+      genesisHash,
+      addressPrefix: mainnet.addressPrefix,
+      tcpHost: 'unreachable.invalid',
+      tcpPort: 8333,
+      advertise: false,
+    });
+
+    (service as any).startAnnouncing(0, genesisHash);
+
+    expect((service as any).announceTimer).toBeUndefined();
+    expect((service as any).chainUpdateHandler).toBeUndefined();
   });
 
   it('emits fresh announcements and ignores validation completed after stop', async () => {

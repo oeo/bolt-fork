@@ -421,6 +421,16 @@ describe('validated network synchronization', () => {
     const targetMempool = new Mempool(storages.get(target)!, devnet);
     await sourceMempool.initialize();
     await targetMempool.initialize();
+    const preexisting = await createSignedTransaction(
+      devnet.chainId,
+      funded.address,
+      generateAddress(devnet.addressPrefix).address,
+      devnet.initialReward / 2n,
+      0,
+      1000n,
+      hexToBytes(funded.privateKey)
+    );
+    await sourceMempool.addTransaction(preexisting);
     const genesisHash = (await source.getBlock(0))!.hash;
     const sourceIdentity = { ...generateAddress(devnet.addressPrefix), createdAt: Date.now() };
     const targetIdentity = { ...generateAddress(devnet.addressPrefix), createdAt: Date.now() };
@@ -440,15 +450,13 @@ describe('validated network synchronization', () => {
       maxMessageSize: devnet.maxBlockSize,
       allowPrivatePeers: true
     });
-    const sourcePeers = new Map<string, any>();
-    const targetPeers = new Map<string, any>();
     const sourceDiscovery = Object.assign(new EventEmitter(), {
-      getPeer: (peerId: string) => sourcePeers.get(peerId),
-      getKnownPeers: () => [...sourcePeers.values()]
+      getPeer: () => undefined,
+      getKnownPeers: () => []
     });
     const targetDiscovery = Object.assign(new EventEmitter(), {
-      getPeer: (peerId: string) => targetPeers.get(peerId),
-      getKnownPeers: () => [...targetPeers.values()]
+      getPeer: () => undefined,
+      getKnownPeers: () => []
     });
     const sourceInventory = new InventoryManager({
       connectionManager: sourceConnections,
@@ -520,19 +528,22 @@ describe('validated network synchronization', () => {
         capabilities: ['full_node'],
         signature: 'ab'.repeat(64)
       };
-      targetPeers.set(sourceIdentity.address, endpoint);
       expect(await targetConnections.connectToPeer(endpoint)).toBe(true);
       for (let attempt = 0; attempt < 200 && await target.getHeight() !== 1; attempt++) await Bun.sleep(5);
 
       expect(await target.getHeight()).toBe(1);
       expect((await target.getLatestBlock())?.hash).toBe(block.hash);
+      for (let attempt = 0; attempt < 200 && !targetMempool.hasTransaction(preexisting.hash); attempt++) {
+        await Bun.sleep(5);
+      }
+      expect(targetMempool.hasTransaction(preexisting.hash)).toBe(true);
 
       const transaction = await createSignedTransaction(
         devnet.chainId,
         funded.address,
         generateAddress(devnet.addressPrefix).address,
-        devnet.initialReward / 2n,
-        0,
+        devnet.initialReward / 4n,
+        1,
         1000n,
         hexToBytes(funded.privateKey)
       );

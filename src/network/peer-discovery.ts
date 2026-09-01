@@ -56,6 +56,7 @@ export interface PeerDiscoveryConfig {
   maxAnnouncementsPerMinute?: number;
   maxTotalAnnouncementsPerMinute?: number;
   maxValidAnnouncementsPerMinute?: number;
+  advertise?: boolean;
 }
 
 /**
@@ -98,6 +99,7 @@ export class PeerDiscoveryService extends EventEmitter {
       maxAnnouncementsPerMinute: 30,
       maxTotalAnnouncementsPerMinute: 1000,
       maxValidAnnouncementsPerMinute: 250,
+      advertise: true,
       bootstrap: true,
       ipfsApi: process.env.IPFS_API || 'http://localhost:5001',
       ...config
@@ -138,7 +140,6 @@ export class PeerDiscoveryService extends EventEmitter {
       
       this.isRunning = true;
       
-      // start announcing ourselves
       this.startAnnouncing(chainHeight, chainHash);
       
       // start cleanup of stale peers
@@ -327,6 +328,7 @@ export class PeerDiscoveryService extends EventEmitter {
    * start announcing our tcp endpoint
    */
   private startAnnouncing(initialHeight: number, initialHash: string): void {
+    if (!this.config.advertise) return;
     logger.info(`starting announcements for tcp endpoint ${this.config.tcpHost}:${this.config.tcpPort}`);
     
     let currentHeight = initialHeight;

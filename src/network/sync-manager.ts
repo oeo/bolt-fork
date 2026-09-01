@@ -93,7 +93,7 @@ export enum SyncState {
 export class SyncManager extends EventEmitter {
   private config: SyncManagerConfig;
   private syncState: SyncState = SyncState.IDLE;
-  private syncTarget: PeerEndpoint | null = null;
+  private syncPeerId: string | null = null;
   private targetHeight: number = 0;
   private syncTimer: any;
   private blockTimeout: any;
@@ -273,7 +273,7 @@ export class SyncManager extends EventEmitter {
       await Promise.allSettled([...this.messageQueues.values(), ...this.backgroundTasks]);
     }
     this.syncState = SyncState.IDLE;
-    this.syncTarget = null;
+    this.syncPeerId = null;
     this.activeSync = null;
     this.headerRequests.clear();
     this.transactionRequests.clear();
@@ -308,6 +308,7 @@ export class SyncManager extends EventEmitter {
 
     const commandCost: Record<string, number> = {
       ping: 1,
+      mempool: 2,
       inv: 2,
       tx: 8,
       block: 16,
@@ -417,10 +418,10 @@ export class SyncManager extends EventEmitter {
 
     this.activeSync = null;
     this.syncState = SyncState.SYNCED;
-    this.syncTarget = null;
+    this.syncPeerId = null;
     this.emit('sync:complete');
     if (sync.headers.length === MAX_HEADERS) await this.requestHeaders(sync.peerId);
-    else await this.config.transactionRelay?.syncMempool(sync.peerId);
+    else this.requestMempool(sync.peerId);
   }
 
   private abortSync(reason: string): void {
@@ -429,7 +430,7 @@ export class SyncManager extends EventEmitter {
     this.blockTimeout = null;
     this.activeSync = null;
     this.syncState = SyncState.IDLE;
-    this.syncTarget = null;
+    this.syncPeerId = null;
   }
   
   /**
@@ -469,6 +470,9 @@ export class SyncManager extends EventEmitter {
         break;
       case 'getblocks':
         await this.handleGetBlocks(peerId, payload);
+        break;
+      case 'mempool':
+        await this.config.transactionRelay?.syncMempool(peerId);
         break;
       default:
         logger.debug(`unhandled message type: ${command}`);
@@ -621,11 +625,7 @@ export class SyncManager extends EventEmitter {
     }));
     if (headers.length === 0) {
       this.headerRequests.delete(sessionId);
-      const localTip = await this.config.blockchain.getLatestBlock();
-      const peer = this.config.discoveryService.getPeer(peerId);
-      if (request.headers.length === 0 && localTip && peer?.tipHash === localTip.hash) {
-        await this.config.transactionRelay?.syncMempool(peerId);
-      }
+      if (request.headers.length === 0) this.requestMempool(peerId);
       return;
     }
     if (request.headers.length + headers.length > this.config.maxHeaderCandidates!) {
@@ -684,7 +684,7 @@ export class SyncManager extends EventEmitter {
       };
       this.headerRequests.delete(sessionId);
       this.syncState = SyncState.SYNCING;
-      this.syncTarget = this.config.discoveryService.getPeer(peerId) || null;
+      this.syncPeerId = peerId;
       this.targetHeight = combined.at(-1)!.index;
       this.requestNextBlock();
     } finally {
@@ -869,6 +869,10 @@ export class SyncManager extends EventEmitter {
     const pong = this.config.protocol.encodeMessage('pong', ping);
     this.config.connectionManager.sendMessage(peerId, pong);
   }
+
+  private requestMempool(peerId: string): void {
+    this.config.connectionManager.sendMessage(peerId, this.config.protocol.encodeMessage('mempool', {}));
+  }
   
   /**
    * send version message to peer
@@ -1017,7 +1021,7 @@ export class SyncManager extends EventEmitter {
       targetHeight: this.targetHeight || null,
       currentHeight,
       syncProgress: Math.min(100, Math.max(0, progress)),
-      syncPeer: this.syncTarget?.nodeId || null
+      syncPeer: this.syncPeerId
     };
   }
 }

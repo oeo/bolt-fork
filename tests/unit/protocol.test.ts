@@ -28,7 +28,13 @@ describe('network protocol', () => {
 
   describe('message serialization', () => {
     it('should use the chain-bound protocol version', () => {
-      expect(PROTOCOL_VERSION).toBe(6);
+      expect(PROTOCOL_VERSION).toBe(7);
+    });
+
+    it('round-trips an empty mempool request', () => {
+      const encoded = protocol.encodeMessage('mempool', {});
+
+      expect(protocol.decodeMessage(encoded)).toEqual({ command: 'mempool', payload: {} });
     });
 
     it('should serialize and deserialize messages with correct header', () => {

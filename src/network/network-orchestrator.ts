@@ -32,6 +32,7 @@ export interface NetworkOrchestratorConfig {
   ipfsBootstrap?: boolean;
   externalHost?: string;
   staticPeers?: string[];
+  advertise?: boolean;
 }
 
 export function parseStaticPeer(value: string, addressPrefix: number): Pick<PeerEndpoint, 'nodeId' | 'tcp'> {
@@ -63,6 +64,8 @@ export class NetworkOrchestrator extends EventEmitter {
   private peerAuthenticatedHandler?: (peerId: string, sessionId: string) => void;
   
   private isRunning: boolean = false;
+  private staticPeers: Pick<PeerEndpoint, 'nodeId' | 'tcp'>[] = [];
+  private staticPeerTimer?: ReturnType<typeof setInterval>;
   
   constructor(config: NetworkOrchestratorConfig) {
     super();
@@ -103,6 +106,8 @@ export class NetworkOrchestrator extends EventEmitter {
   async stop(): Promise<void> {
     logger.info('stopping network orchestrator');
     const errors: unknown[] = [];
+    if (this.staticPeerTimer) clearInterval(this.staticPeerTimer);
+    this.staticPeerTimer = undefined;
     this.cleanupTCPEventHandlers();
     
     if (this.discoveryService) try { await this.discoveryService.stop(); } catch (error) { errors.push(error); }
@@ -145,7 +150,8 @@ export class NetworkOrchestrator extends EventEmitter {
       tcpHost: tcpHost,
       tcpPort: tcpPort,
       ipfsApi: this.config.ipfsApi,
-      bootstrap: this.config.ipfsBootstrap ?? true
+      bootstrap: this.config.ipfsBootstrap ?? true,
+      advertise: this.config.advertise ?? true
     });
     
     // create connection manager
@@ -195,11 +201,11 @@ export class NetworkOrchestrator extends EventEmitter {
       await this.syncManager.start();
       await this.connectionManager.start();
 
-      for (const value of this.config.staticPeers ?? []) {
-        void this.connectionManager.connectToPeer(
-          parseStaticPeer(value, this.config.chainConfig.addressPrefix) as PeerEndpoint
-        );
-      }
+      this.staticPeers = (this.config.staticPeers ?? []).map(value =>
+        parseStaticPeer(value, this.config.chainConfig.addressPrefix)
+      );
+      this.connectStaticPeers();
+      this.staticPeerTimer = setInterval(() => this.connectStaticPeers(), 10_000);
 
       const height = await this.config.blockchain.getHeight();
       const latestBlock = await this.config.blockchain.getLatestBlock();
@@ -280,6 +286,14 @@ export class NetworkOrchestrator extends EventEmitter {
     this.blockAddedHandler = undefined;
     this.peerAnnouncementHandler = undefined;
     this.peerAuthenticatedHandler = undefined;
+  }
+
+  private connectStaticPeers(): void {
+    for (const peer of this.staticPeers) {
+      if (!this.connectionManager?.isAuthenticated(peer.nodeId)) {
+        void this.connectionManager?.connectToPeer(peer as PeerEndpoint);
+      }
+    }
   }
   
   /**

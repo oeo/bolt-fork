@@ -27,6 +27,7 @@ interface NodeConfig {
   metricsHost: string;
   tcpPort?: number;
   staticPeers?: string[];
+  p2pAdvertise?: boolean;
   
   // node identity
   role: 'bootstrap' | 'miner' | 'full';
@@ -179,7 +180,8 @@ class BoltIPFSNode {
       ipfsApi: this.config.ipfsApi,
       ipfsBootstrap: this.config.ipfsBootstrap,
       externalHost: process.env.NODE_HOST || 'localhost',
-      staticPeers: this.config.staticPeers
+      staticPeers: this.config.staticPeers,
+      advertise: this.config.p2pAdvertise
     });
     
     // setup network orchestrator event handlers
@@ -315,11 +317,17 @@ class BoltIPFSNode {
             let activePeers = 0;
             let totalPeers = 0;
             if (this.networkOrchestrator) {
-              const peerCount = this.networkOrchestrator.getPeerCount();
-              activePeers = peerCount;
-              totalPeers = peerCount;
+              const network = this.networkOrchestrator.getNetworkStats();
+              activePeers = network.connections?.authenticatedConnections || 0;
+              totalPeers = network.connections?.totalConnections || 0;
+              this.metrics.updateNetworkMetrics(
+                activePeers,
+                totalPeers,
+                network.connections?.authenticatedInboundConnections || 0,
+                network.connections?.authenticatedOutboundConnections || 0
+              );
             }
-            this.metrics.updateNetworkMetrics(activePeers, totalPeers);
+            if (!this.networkOrchestrator) this.metrics.updateNetworkMetrics(0, 0);
             
             const metricsData = await this.metrics.getMetrics();
             return new Response(metricsData, {
@@ -544,7 +552,8 @@ function parseConfig(): NodeConfig {
     ipfsBootstrap: process.env.IPFS_BOOTSTRAP_ENABLED !== 'false',
     
     tcpPort: parseInt(process.env.TCP_PORT || '8333'),
-    staticPeers: (process.env.STATIC_PEERS || '').split(',').map(peer => peer.trim()).filter(Boolean)
+    staticPeers: (process.env.STATIC_PEERS || '').split(',').map(peer => peer.trim()).filter(Boolean),
+    p2pAdvertise: process.env.P2P_ADVERTISE === 'true'
   };
   
   return config;

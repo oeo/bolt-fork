@@ -788,19 +788,30 @@ export class ConnectionManager extends EventEmitter {
     authenticatedConnections: number;
     inboundConnections: number;
     outboundConnections: number;
+    authenticatedInboundConnections: number;
+    authenticatedOutboundConnections: number;
     maxConnections: number;
   } {
     let inbound = 0;
     let outbound = 0;
+    let authenticatedInbound = 0;
+    let authenticatedOutbound = 0;
     for (const connection of this.connections.values()) {
-      if (connection.inbound) inbound++;
-      else outbound++;
+      if (connection.inbound) {
+        inbound++;
+        if (connection.authenticated) authenticatedInbound++;
+      } else {
+        outbound++;
+        if (connection.authenticated) authenticatedOutbound++;
+      }
     }
     return {
       totalConnections: this.connections.size,
       authenticatedConnections: this.peerToSession.size,
       inboundConnections: inbound,
       outboundConnections: outbound,
+      authenticatedInboundConnections: authenticatedInbound,
+      authenticatedOutboundConnections: authenticatedOutbound,
       maxConnections: this.config.maxConnections
     };
   }
