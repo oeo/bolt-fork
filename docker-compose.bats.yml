@@ -91,7 +91,7 @@ services:
 
   ipfs-a:
     image: ipfs/kubo:v0.43.0@sha256:63f5502f7a01b82a675e45bae81b2f5dfa90248ec4a86cd0a58c218347e1f2d2
-    command: ["daemon", "--migrate=true", "--enable-pubsub-experiment"]
+    command: ["daemon", "--migrate=true"]
     configs:
       - source: disable-ipfs-bootstrap
         target: /container-init.d/001-disable-bootstrap.sh
@@ -111,7 +111,7 @@ services:
 
   ipfs-b:
     image: ipfs/kubo:v0.43.0@sha256:63f5502f7a01b82a675e45bae81b2f5dfa90248ec4a86cd0a58c218347e1f2d2
-    command: ["daemon", "--migrate=true", "--enable-pubsub-experiment"]
+    command: ["daemon", "--migrate=true"]
     configs:
       - source: disable-ipfs-bootstrap
         target: /container-init.d/001-disable-bootstrap.sh

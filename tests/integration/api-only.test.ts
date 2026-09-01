@@ -71,6 +71,7 @@ describe('API Server Integration', () => {
     expect(info.network).toBe(chainConfig.name);
     expect(info.chainId).toBe(chainConfig.chainId);
     expect(info.genesisHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(info.latestStateRoot).toMatch(/^[0-9a-f]{64}$/);
     expect(info.addressPrefix).toBe(chainConfig.addressPrefix);
     expect(info.minFeePerByte).toBe(`${chainConfig.minFeePerByte}n`);
     expect(info.maxTransactionSize).toBeGreaterThan(0);

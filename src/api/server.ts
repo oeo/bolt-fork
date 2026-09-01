@@ -342,6 +342,7 @@ export class ApiServer {
       protocolVersion: PROTOCOL_VERSION,
       height,
       latestBlockHash: latestBlock?.hash,
+      latestStateRoot: latestBlock?.stateRoot,
       difficulty,
       cumulativeDifficulty,
       targetBlockTime: chainConfig.targetBlockTime,

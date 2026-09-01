@@ -81,6 +81,12 @@ describe('Metrics Service', async () => {
       expect(metricsOutput).toContain('bolt_block_validation_errors_total');
       expect(metricsOutput).toContain('error_type="invalid_hash"');
     });
+
+    test('should record canonical reorganizations', async () => {
+      metrics.recordChainReorganization();
+
+      expect(await metrics.getMetrics()).toContain('bolt_chain_reorganizations_total 1');
+    });
   });
   
   describe('mempool metrics', async () => {

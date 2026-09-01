@@ -1,5 +1,4 @@
 #!/bin/sh
 set -eu
 
-ipfs bootstrap rm --all
 ipfs config --json Pubsub.Enabled true

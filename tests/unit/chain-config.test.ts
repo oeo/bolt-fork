@@ -2,9 +2,12 @@ import { describe, it, expect, beforeEach } from 'bun:test';
 import { mainnet } from '../../src/config/chains/mainnet';
 import { testnet } from '../../src/config/chains/testnet';
 import { devnet } from '../../src/config/chains/devnet';
+import { Blockchain } from '../../src/core/blockchain';
+import { MemoryAdapter } from '../../src/storage/memory';
 import type { ChainConfig } from '../../src/config/chain';
 import { createGenesisBlock } from '../../src/core/block';
 import { EMPTY_STATE_ROOT_PARENT, calculateStateRoot } from '../../src/core/block-executor';
+import { join } from 'node:path';
 
 describe('Chain Configuration', () => {
   describe('mainnet config', () => {
@@ -67,6 +70,30 @@ describe('Chain Configuration', () => {
 
     it('should ship a mined genesis nonce', () => {
       expect(testnet.genesisNonce).toBe(93448977);
+    });
+
+    it('pins the candidate testnet genesis hash', async () => {
+      const blockchain = new Blockchain(new MemoryAdapter(), testnet);
+      await blockchain.initialize();
+      expect((await blockchain.getBlock(0))?.hash).toBe(
+        '00000006aaca1551a4cde02df90be7610ea3c446ed715a542a2b554226957c25'
+      );
+      await blockchain.close();
+    });
+  });
+
+  describe('network selection', () => {
+    it('fails before startup when BOLT_NETWORK is missing or unknown', async () => {
+      for (const network of ['', 'unknown']) {
+        const child = Bun.spawn(['bun', '-e', 'await import("./src/config/chain.ts")'], {
+          cwd: join(import.meta.dir, '../..'),
+          env: { ...Bun.env, BOLT_NETWORK: network },
+          stdout: 'ignore',
+          stderr: 'pipe',
+        });
+        expect(await child.exited).not.toBe(0);
+        expect(await new Response(child.stderr).text()).toContain('BOLT_NETWORK');
+      }
     });
   });
 

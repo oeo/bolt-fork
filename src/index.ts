@@ -11,7 +11,6 @@ import { createStorage } from './storage';
 import { config as chainConfig } from './config/chain';
 import { getLogger } from './utils/logger';
 import { serialize } from './utils/bigint';
-import { TransactionClass } from './core/transaction';
 import { IdentityManager } from './utils/identity';
 import { serve } from 'bun';
 import * as fs from 'fs';
@@ -66,6 +65,7 @@ class BoltIPFSNode {
   private statusInterval?: ReturnType<typeof setInterval>;
   private miningMetricsInterval?: ReturnType<typeof setInterval>;
   private blockHandler?: (block: any) => Promise<void>;
+  private reorgHandler?: () => void;
   private minedBlockHandler?: (block: any, miningStats: any) => Promise<void>;
   private mempoolHandler?: () => void;
   private signalHandlers = new Map<NodeJS.Signals, () => void>();
@@ -246,28 +246,7 @@ class BoltIPFSNode {
       try {
         const blockSize = serialize(block).length;
         
-        // separate coinbase from regular transactions
-        let regularTxCount = 0;
-        let coinbaseTx = null;
-        let totalFees = 0n;
-        
-        if (block.transactions && block.transactions.length > 0) {
-          for (const txData of block.transactions) {
-            const tx = TransactionClass.fromObject(txData);
-            
-            if (tx.isCoinbase()) {
-              coinbaseTx = tx;
-            } else {
-              // this is a regular transaction
-              regularTxCount++;
-              
-              // record transaction processing metrics for non-coinbase transactions
-              const txSize = serialize(txData).length;
-              this.metrics.recordTransactionProcessing(0.001, txSize, tx.fee || 0n);
-              totalFees += tx.fee || 0n;
-            }
-          }
-        }
+        const regularTxCount = block.transactions?.filter((tx: any) => tx.from !== null).length ?? 0;
         
         // calculate block time (time between this block and previous)
         let blockTimeSeconds = 10; // default to 10 seconds if we can't calculate
@@ -280,11 +259,7 @@ class BoltIPFSNode {
         }
         
         // record block metrics with ONLY regular transaction count (excluding coinbase)
-        this.metrics.recordBlockMined(blockTimeSeconds, blockSize, regularTxCount);
-        
-        // record mining success metrics (even if not locally mined)
-        const reward = coinbaseTx ? coinbaseTx.amount : 0n;
-        this.metrics.recordMiningSuccess(blockTimeSeconds, reward - totalFees);
+        this.metrics.recordBlockAccepted(blockTimeSeconds, blockSize, regularTxCount);
         
         logger.debug(`Metrics recorded for block ${block.index} with ${regularTxCount} regular transactions (${block.transactions?.length || 0} total including coinbase)`);
       } catch (error: any) {
@@ -292,6 +267,8 @@ class BoltIPFSNode {
       }
     };
     this.blockchain.on('block:added', this.blockHandler);
+    this.reorgHandler = () => this.metrics.recordChainReorganization();
+    this.blockchain.on('chain:reorganized', this.reorgHandler);
   }
   
   private setupNetworkHandlers(): void {
@@ -394,6 +371,9 @@ class BoltIPFSNode {
           if (this.networkOrchestrator) {
             await this.networkOrchestrator.broadcastBlock(block);
           }
+          const reward = block.transactions?.[0]?.amount ?? 0n;
+          const fees = block.transactions?.slice(1).reduce((sum: bigint, tx: any) => sum + tx.fee, 0n) ?? 0n;
+          this.metrics.recordMiningSuccess((miningStats?.timeMs ?? 0) / 1000, reward - fees);
         } catch (error: any) {
           logger.error('Failed to broadcast block:', { 
             error: error.message
@@ -510,6 +490,7 @@ class BoltIPFSNode {
     // close storage
     if (this.mempoolHandler && this.mempool) this.mempool.off('transactionAdded', this.mempoolHandler);
     if (this.blockHandler && this.blockchain) this.blockchain.off('block:added', this.blockHandler);
+    if (this.reorgHandler && this.blockchain) this.blockchain.off('chain:reorganized', this.reorgHandler);
     if (this.mempool) try { await this.mempool.shutdown(); } catch (error) { errors.push(error); }
     if (this.storage) try { await this.storage.close(); } catch (error) { errors.push(error); }
     logger.info('Storage closed');

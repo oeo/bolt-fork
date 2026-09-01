@@ -52,6 +52,7 @@ export class MetricsService {
   private blockDifficulty: Gauge;
   private cumulativeDifficulty: Gauge;
   private blocksMinedTotal: Counter;
+  private chainReorganizations: Counter;
   private blockProcessingTime: Histogram;
   private blockSize: Histogram;
   private transactionsPerBlock: Histogram;
@@ -155,6 +156,12 @@ export class MetricsService {
     this.blocksMinedTotal = new Counter({
       name: 'bolt_blocks_mined_total',
       help: 'Total number of blocks mined',
+      registers: [this.registry]
+    });
+
+    this.chainReorganizations = new Counter({
+      name: 'bolt_chain_reorganizations_total',
+      help: 'Total committed canonical chain reorganizations',
       registers: [this.registry]
     });
     
@@ -592,6 +599,10 @@ export class MetricsService {
    */
   recordBlockMined(processingTime: number, blockSize: number, transactionCount: number): void {
     this.blocksMinedTotal.inc();
+    this.recordBlockAccepted(processingTime, blockSize, transactionCount);
+  }
+
+  recordBlockAccepted(processingTime: number, blockSize: number, transactionCount: number): void {
     this.blockProcessingTime.observe(processingTime);
     this.blockSize.observe(blockSize);
     this.transactionsPerBlock.observe(transactionCount);
@@ -676,9 +687,14 @@ export class MetricsService {
    * Record successful mining
    */
   recordMiningSuccess(miningTime: number, revenue: bigint): void {
+    this.blocksMinedTotal.inc();
     this.miningSuccessTotal.inc();
     this.miningTime.observe(miningTime);
     this.miningRevenue.inc(Number(revenue));
+  }
+
+  recordChainReorganization(): void {
+    this.chainReorganizations.inc();
   }
   
   /**

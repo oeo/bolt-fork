@@ -40,9 +40,13 @@ export interface ChainConfig {
 }
 
 // load once at startup
-const network = process.env.BOLT_NETWORK || 'mainnet';
+const network = process.env.BOLT_NETWORK;
+if (!network || !['mainnet', 'testnet', 'devnet'].includes(network)) {
+  throw new Error('BOLT_NETWORK must be mainnet, testnet, or devnet');
+}
 const configModule = require(join(__dirname, 'chains', `${network}.ts`));
-export const config: ChainConfig = configModule[network] || configModule.default;
+export const config: ChainConfig = configModule[network];
+if (!config) throw new Error(`Missing chain configuration: ${network}`);
 
 // get the configured hash algorithm for mining
 export const miningHashAlgorithm = config.hashAlgorithm || 'sha256';
